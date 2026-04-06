@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "FastAPI Project"
     DEBUG: bool = False
+    SQLALCHEMY_DATABASE_URI: str = "postgresql://user:password@localhost:5432/dbname"
 
 
 settings = Settings()
