@@ -49,6 +49,35 @@ def list_project_structure(root_dir: str = ".") -> str:
     except Exception as e:
         return f"Error listing structure: {str(e)}"
 
+def replace_file_lines(path: str, start_line: int, end_line: int, replacement_content: str) -> str:
+    try:
+        if not os.path.exists(path):
+            return f"Error: File '{path}' does not exist."
+            
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            
+        if start_line < 1 or start_line > len(lines):
+            return f"Error: start_line {start_line} is out of bounds."
+            
+        if end_line < start_line:
+            return f"Error: end_line cannot be before start_line."
+            
+        prefix = lines[:start_line - 1]
+        suffix = lines[end_line:] if end_line <= len(lines) else []
+        
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(prefix)
+            if replacement_content:
+                f.write(replacement_content)
+                if not replacement_content.endswith("\n"):
+                    f.write("\n")
+            f.writelines(suffix)
+            
+        return f"Successfully replaced lines {start_line} to {end_line} in {path}."
+    except Exception as e:
+        return f"Error replacing lines: {str(e)}"
+
 # The OpenAI JSON Schema for these tools
 AGENT_TOOLS = [
     {
@@ -121,6 +150,23 @@ AGENT_TOOLS = [
                 }
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_file_lines",
+            "description": "Surgically replace specific lines of code inside a file. Lines are 1-indexed. The start_line is the first line to replace, and end_line is the exact last line to replace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the file."},
+                    "start_line": {"type": "integer", "description": "1-indexed starting line number of the block to replace."},
+                    "end_line": {"type": "integer", "description": "1-indexed ending line number (inclusive) to replace."},
+                    "replacement_content": {"type": "string", "description": "The exact string content to insert perfectly over the replacing lines."}
+                },
+                "required": ["path", "start_line", "end_line", "replacement_content"]
+            }
+        }
     }
 ]
 
@@ -131,6 +177,7 @@ TOOL_REGISTRY: Dict[str, Callable] = {
     "run_bash_command": run_bash_command,
     "search_files": search_files,
     "list_project_structure": list_project_structure,
+    "replace_file_lines": replace_file_lines,
 }
 
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
