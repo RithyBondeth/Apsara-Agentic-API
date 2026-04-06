@@ -33,6 +33,22 @@ def run_bash_command(command: str) -> str:
     except Exception as e:
         return f"Error executing command: {str(e)}"
 
+def search_files(pattern: str, root_dir: str = ".") -> str:
+    try:
+        cmd = f"grep -rnI '{pattern}' {root_dir} | head -n 100"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return result.stdout if result.stdout else "No matches found."
+    except Exception as e:
+        return f"Error searching files: {str(e)}"
+
+def list_project_structure(root_dir: str = ".") -> str:
+    try:
+        cmd = f"find {root_dir} -maxdepth 3 -not -path '*/\\.*' | head -n 100"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return result.stdout if result.stdout else "Empty or could not read."
+    except Exception as e:
+        return f"Error listing structure: {str(e)}"
+
 # The OpenAI JSON Schema for these tools
 AGENT_TOOLS = [
     {
@@ -77,6 +93,34 @@ AGENT_TOOLS = [
                 "required": ["command"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Globally string search project files (like grep).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "The search term or regex."},
+                    "root_dir": {"type": "string", "description": "The root directory to search. Default is '.'"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_project_structure",
+            "description": "List all files up to 3 folders deep for discovery.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "root_dir": {"type": "string", "description": "The root directory to tree map. Default is '.'"}
+                }
+            }
+        }
     }
 ]
 
@@ -85,6 +129,8 @@ TOOL_REGISTRY: Dict[str, Callable] = {
     "read_file": read_file,
     "write_to_file": write_to_file,
     "run_bash_command": run_bash_command,
+    "search_files": search_files,
+    "list_project_structure": list_project_structure,
 }
 
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
