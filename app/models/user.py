@@ -1,17 +1,28 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
-from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
+import uuid
+from datetime import datetime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID
 from app.db.base_class import Base
 
+class UserModel(Base):
+    __tablename__ = "users"
 
-class User(Base):
-    """
-    User model representing the 'user' table.
-    The table name is automatically generated as 'user' by the Base class.
-    """
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String, unique=True, index=True, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    is_active = Column(Boolean(), default=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    password_hash = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    #Relationships
+    subscriptions = relationship("UserSubscriptionModel", back_populates="user", cascade="all, delete-orphan")
+    token_usages = relationship("UsageModel", back_populates="user", cascade="all, delete-orphan")
+    projects = relationship("ProjectModel", back_populates="user", cascade="all, delete-orphan")
+    conversations = relationship("ConversationModel", back_populates="user", cascade="all, delete-orphan")
+    
+
+
+    
+
+    
