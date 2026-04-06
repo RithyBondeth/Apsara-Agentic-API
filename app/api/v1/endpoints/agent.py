@@ -14,6 +14,7 @@ router = APIRouter()
 
 class AgentRequest(BaseModel):
     instruction: str
+    model: str = "gpt-4o"
 
 def get_conversation_history(db: Session, conversation_id: UUID) -> list:
     """Fetch previous conversation turns seamlessly from DB and convert to LLM standard map."""
@@ -66,7 +67,7 @@ async def execute_agent_for_conversation(
 
     # 4. Stream generation via Server-Sent Events natively to UI
     async def event_generator():
-        async for chunk_str in run_agent_stream(history):
+        async for chunk_str in run_agent_stream(history, model=request.model):
             # Send immediate feed down to client UI
             yield f"data: {chunk_str}\n\n"
             
@@ -81,7 +82,7 @@ async def execute_agent_for_conversation(
                             project_id=project_id,
                             conversation_id=conversation_id,
                             tokens_used=usage_data["total_tokens"],
-                            model="gpt-4o"
+                            model=request.model
                         )
                         db.add(usage_row)
                         db.commit()

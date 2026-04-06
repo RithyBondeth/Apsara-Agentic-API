@@ -1,18 +1,17 @@
 import os
 from typing import Any
-from openai import AsyncOpenAI
+import litellm
 from app.services.agent.tools import AGENT_TOOLS
 
-# Initialize AsyncOpenAI client (fail gracefully if missing on boot)
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "dummy_key_for_boot"))
+litellm.suppress_debug_info = True
 
 async def call_llm(messages: list[dict], model: str = "gpt-4o") -> tuple[Any, Any]:
     """
-    Sends the conversation to OpenAI with our configured tools.
+    Sends the conversation to OpenAI with our configured tools via LiteLLM router.
     Returns (Response Message Object, Usage Dictionary Object)
     """
     try:
-        response = await client.chat.completions.create(
+        response = await litellm.acompletion(
             model=model,
             messages=messages,
             tools=AGENT_TOOLS,
