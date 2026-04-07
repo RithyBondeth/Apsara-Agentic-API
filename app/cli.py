@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -367,6 +368,10 @@ class ConsoleUI:
         self.latest_hidden_events: list[HiddenCliEvent] = []
         self.current_turn_hidden_events: list[HiddenCliEvent] = []
         self.work_notice_shown = False
+        self.spinner_message = "Apsara is working"
+        self.spinner_stop_event = threading.Event()
+        self.spinner_thread: Optional[threading.Thread] = None
+        self.spinner_lock = threading.Lock()
 
     def style(self, text: str, *codes: str) -> str:
         if not self.use_color:
@@ -375,6 +380,7 @@ class ConsoleUI:
         return f"\033[{joined_codes}m{text}\033[0m"
 
     def print_line(self, text: str = "") -> None:
+        self.stop_spinner()
         print(text)
 
     def badge(self, text: str, fg_code: str = "30", bg_code: str = "47") -> str:
@@ -430,13 +436,74 @@ class ConsoleUI:
         self.print_line(f"{self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
 
     def begin_turn(self) -> None:
+        self.stop_spinner()
         self.current_turn_hidden_events = []
         self.work_notice_shown = False
 
-    def note_working(self) -> None:
+    def spinner_enabled(self) -> bool:
+        return sys.stdout.isatty() and os.environ.get("CI") is None
+
+    def spinner_frames(self) -> list[str]:
+        gold = "38;2;214;171;65"
+        amber = "38;2;242;201;76"
+        blue = "38;2;111;154;255"
+        cyan = "38;2;122;210;222"
+        text_color = "38;2;236;220;184"
+        muted = "38;2;147;130;107"
+        frames = [
+            (f"{self.style('◜◈◝', gold)} {self.style(self.spinner_message, text_color)}{self.style('   ', muted)}"),
+            (f"{self.style('◠◆◠', amber)} {self.style(self.spinner_message, text_color)}{self.style('.  ', muted)}"),
+            (f"{self.style('◞◉◟', blue)} {self.style(self.spinner_message, text_color)}{self.style('.. ', muted)}"),
+            (f"{self.style('◡◈◡', cyan)} {self.style(self.spinner_message, text_color)}{self.style('...', muted)}"),
+        ]
+        if not self.use_color:
+            return [
+                f"<> {self.spinner_message}   ",
+                f"<> {self.spinner_message}.  ",
+                f"<> {self.spinner_message}.. ",
+                f"<> {self.spinner_message}...",
+            ]
+        return frames
+
+    def render_spinner_line(self, frame: str) -> str:
+        return f"\r\033[2K{self.badge('apsara', '15', '48;2;133;92;219')} {frame}"
+
+    def _spinner_worker(self) -> None:
+        frames = self.spinner_frames()
+        index = 0
+        while not self.spinner_stop_event.is_set():
+            with self.spinner_lock:
+                sys.stdout.write(self.render_spinner_line(frames[index % len(frames)]))
+                sys.stdout.flush()
+            index += 1
+            if self.spinner_stop_event.wait(0.12):
+                break
+
+    def start_spinner(self, message: str) -> None:
+        self.spinner_message = message
+        if not self.spinner_enabled():
+            self.print_notice("work", f"{message}...", "17", "48;2;242;201;76", "38;2;236;220;184")
+            return
+        if self.spinner_thread and self.spinner_thread.is_alive():
+            return
+        self.spinner_stop_event.clear()
+        self.spinner_thread = threading.Thread(target=self._spinner_worker, daemon=True)
+        self.spinner_thread.start()
+
+    def stop_spinner(self) -> None:
+        if not self.spinner_thread:
+            return
+        self.spinner_stop_event.set()
+        self.spinner_thread.join(timeout=0.3)
+        with self.spinner_lock:
+            sys.stdout.write("\r\033[2K")
+            sys.stdout.flush()
+        self.spinner_thread = None
+
+    def note_working(self, message: str = "Apsara is working") -> None:
         if self.work_notice_shown:
             return
-        self.print_notice("work", "Apsara is working...", "17", "48;2;242;201;76", "38;2;236;220;184")
+        self.start_spinner(message)
         self.work_notice_shown = True
 
     def hide_event(self, kind: str, title: str, detail: str = "") -> None:
@@ -446,6 +513,7 @@ class ConsoleUI:
         self.hidden_events = self.hidden_events[-80:]
 
     def finish_turn(self) -> None:
+        self.stop_spinner()
         self.latest_hidden_events = list(self.current_turn_hidden_events)
         if self.latest_hidden_events:
             self.info(
@@ -922,7 +990,8 @@ def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
 
     if event_type == "status":
         message = str(event.get("message", "")).strip() or "Apsara is thinking."
-        ui.note_working()
+        normalized = "Apsara is thinking" if "thinking" in message.lower() else "Apsara is working"
+        ui.note_working(normalized)
         ui.hide_event("status", message, message)
         return
 
