@@ -227,6 +227,7 @@ I’m testing an early version of Apsara by Bondeth, a local coding assistant CL
 
 ## 11. Related Docs
 
+- Alpha release notes: [RELEASE_NOTES_ALPHA.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RELEASE_NOTES_ALPHA.md)
 - Tester quickstart: [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/TESTER_QUICKSTART.md)
 - Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md)
 - Main project README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/README.md)
