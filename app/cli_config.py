@@ -25,10 +25,20 @@ class CliDefaults:
 
 
 @dataclass
+class CliUi:
+    welcome_title: Optional[str] = None
+    welcome_subtitle: Optional[str] = None
+    powered_by: Optional[str] = None
+    welcome_animation: Optional[bool] = None
+    welcome_frame_delay_ms: Optional[int] = None
+
+
+@dataclass
 class CliConfig:
     path: Path
     exists: bool
     defaults: CliDefaults
+    ui: CliUi
 
 
 def _optional_str(value: Any, field_name: str) -> Optional[str]:
@@ -68,12 +78,20 @@ def _optional_string_list(value: Any, field_name: str) -> Optional[list[str]]:
 def load_cli_config(config_path: Optional[str] = None) -> CliConfig:
     path = Path(config_path).expanduser().resolve() if config_path else DEFAULT_CONFIG_PATH
     if not path.exists():
-        return CliConfig(path=path, exists=False, defaults=CliDefaults())
+        return CliConfig(
+            path=path,
+            exists=False,
+            defaults=CliDefaults(),
+            ui=CliUi(),
+        )
 
     parsed = tomllib.loads(path.read_text(encoding="utf-8"))
     defaults_raw = parsed.get("defaults", {})
     if not isinstance(defaults_raw, dict):
         raise ValueError("Config section 'defaults' must be a table.")
+    ui_raw = parsed.get("ui", {})
+    if not isinstance(ui_raw, dict):
+        raise ValueError("Config section 'ui' must be a table.")
 
     defaults = CliDefaults(
         workspace=_optional_str(defaults_raw.get("workspace"), "defaults.workspace"),
@@ -95,5 +113,18 @@ def load_cli_config(config_path: Optional[str] = None) -> CliConfig:
         ),
         color=_optional_bool(defaults_raw.get("color"), "defaults.color"),
     )
+    ui = CliUi(
+        welcome_title=_optional_str(ui_raw.get("welcome_title"), "ui.welcome_title"),
+        welcome_subtitle=_optional_str(
+            ui_raw.get("welcome_subtitle"), "ui.welcome_subtitle"
+        ),
+        powered_by=_optional_str(ui_raw.get("powered_by"), "ui.powered_by"),
+        welcome_animation=_optional_bool(
+            ui_raw.get("welcome_animation"), "ui.welcome_animation"
+        ),
+        welcome_frame_delay_ms=_optional_int(
+            ui_raw.get("welcome_frame_delay_ms"), "ui.welcome_frame_delay_ms"
+        ),
+    )
 
-    return CliConfig(path=path, exists=True, defaults=defaults)
+    return CliConfig(path=path, exists=True, defaults=defaults, ui=ui)

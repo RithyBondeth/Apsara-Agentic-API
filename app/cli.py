@@ -3,8 +3,10 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -288,6 +290,92 @@ def describe_action(action: str, payload: dict[str, Any]) -> tuple[str, Optional
         return (f"Run command in {cwd}: {command}", None)
 
     return (f"Approve action: {action}", None)
+
+
+def terminal_width(default: int = 96) -> int:
+    return shutil.get_terminal_size((default, 24)).columns
+
+
+def center_text(text: str, width: int) -> str:
+    if len(text) >= width:
+        return text
+    return text.center(width)
+
+
+def track_title(text: str) -> str:
+    words = [word for word in text.strip().split() if word]
+    if not words:
+        return ""
+    tracked_words = [" ".join(list(word.upper())) for word in words]
+    return "   ".join(tracked_words)
+
+
+def should_animate_welcome(config: CliConfig) -> bool:
+    if config.ui.welcome_animation is False:
+        return False
+    if os.environ.get("CI"):
+        return False
+    return sys.stdout.isatty()
+
+
+def welcome_frame_delay_seconds(config: CliConfig) -> float:
+    frame_delay_ms = config.ui.welcome_frame_delay_ms
+    if frame_delay_ms is None:
+        frame_delay_ms = 22
+    frame_delay_ms = max(0, min(frame_delay_ms, 250))
+    return frame_delay_ms / 1000.0
+
+
+def build_welcome_lines(config: CliConfig) -> list[tuple[str, tuple[str, ...]]]:
+    title = config.ui.welcome_title or "Welcome to Apsara Agentic"
+    subtitle = config.ui.welcome_subtitle or "Your local coding assistant"
+    powered_by = config.ui.powered_by or "Powered by you"
+
+    title_mark = track_title("Apsara Agentic")
+    accent_width = max(len(title_mark), len(title), len(subtitle), len(powered_by)) + 6
+    accent_rule = "." + "-" * accent_width + "."
+
+    lines = [
+        (accent_rule, ("2", "38;2;137;114;88")),
+        ("", ()),
+        (title_mark, ("1", "38;2;247;198;123")),
+        (title, ("1", "38;2;245;238;227")),
+        (subtitle, ("38;2;214;200;182",)),
+        (powered_by, ("38;2;186;148;104",)),
+        ("", ()),
+        (accent_rule, ("2", "38;2;137;114;88")),
+    ]
+    return [(text, codes) for text, codes in lines]
+
+
+def render_welcome_banner(ui: ConsoleUI, config: CliConfig) -> list[tuple[str, tuple[str, ...]]]:
+    width = max(72, min(terminal_width(), 108))
+    return [
+        (center_text(text, width) if text else "", codes)
+        for text, codes in build_welcome_lines(config)
+    ]
+
+
+def print_welcome_banner(ui: ConsoleUI, config: CliConfig) -> None:
+    lines = render_welcome_banner(ui, config)
+    if not lines:
+        return
+
+    animate = should_animate_welcome(config)
+    frame_delay = welcome_frame_delay_seconds(config)
+
+    for index, (text, codes) in enumerate(lines):
+        if not text:
+            ui.print_line()
+        else:
+            ui.print_line(ui.style(text, *codes))
+
+        if animate and index < len(lines) - 1:
+            time.sleep(frame_delay)
+
+    if animate:
+        time.sleep(frame_delay * 1.5)
+    ui.print_line()
 
 
 def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
@@ -886,6 +974,7 @@ async def chat_loop(
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
 
+    print_welcome_banner(ui, config)
     ui.info(f"Workspace: {options.workspace_root}")
     if options.stateless:
         ui.info("Session mode: stateless")
