@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apsara-agentic"
+version = "0.1.0"
+description = "Apsara agentic backend and local coding assistant CLI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+  "fastapi[standard]>=0.110.0",
+  "pydantic-settings>=2.2.1",
+  "python-dotenv>=1.0.1",
+  "sqlalchemy>=2.0.29",
+  "psycopg2-binary>=2.9.9",
+  "alembic>=1.13.1",
+  "openai>=1.16.0",
+  "litellm>=1.35.0",
+  "tomli>=2.0.1",
+]
+
+[project.scripts]
+apsara = "app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
