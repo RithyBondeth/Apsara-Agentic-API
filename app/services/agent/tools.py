@@ -13,6 +13,8 @@ class ToolSecurityError(Exception):
     """Raised when a tool request breaks sandbox rules."""
 
 
+ConfirmationCallback = Callable[[str, Dict[str, Any]], bool]
+
 _workspace_root_override: ContextVar[Optional[Path]] = ContextVar(
     "workspace_root_override", default=None
 )
@@ -25,6 +27,9 @@ _allowed_commands_override: ContextVar[Optional[Set[str]]] = ContextVar(
 _max_file_size_override: ContextVar[Optional[int]] = ContextVar(
     "max_file_size_override", default=None
 )
+_confirmation_callback_override: ContextVar[Optional[ConfirmationCallback]] = ContextVar(
+    "confirmation_callback_override", default=None
+)
 
 
 @contextmanager
@@ -33,11 +38,13 @@ def agent_runtime_context(
     enable_bash: Optional[bool] = None,
     allowed_commands: Optional[Set[str]] = None,
     max_file_size_bytes: Optional[int] = None,
+    confirmation_callback: Optional[ConfirmationCallback] = None,
 ) -> Iterator[None]:
     workspace_token = None
     bash_token = None
     commands_token = None
     file_size_token = None
+    confirmation_token = None
 
     try:
         if workspace_root is not None:
@@ -48,8 +55,14 @@ def agent_runtime_context(
             commands_token = _allowed_commands_override.set(set(allowed_commands))
         if max_file_size_bytes is not None:
             file_size_token = _max_file_size_override.set(max_file_size_bytes)
+        if confirmation_callback is not None:
+            confirmation_token = _confirmation_callback_override.set(
+                confirmation_callback
+            )
         yield
     finally:
+        if confirmation_token is not None:
+            _confirmation_callback_override.reset(confirmation_token)
         if file_size_token is not None:
             _max_file_size_override.reset(file_size_token)
         if commands_token is not None:
@@ -112,6 +125,13 @@ def _format_exception(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {str(exc)}"
 
 
+def _confirm_action(action: str, payload: Dict[str, Any]) -> bool:
+    callback = _confirmation_callback_override.get()
+    if callback is None:
+        return True
+    return callback(action, payload)
+
+
 def read_file(path: str) -> str:
     try:
         resolved_path = _resolve_path(path, must_exist=True)
@@ -134,6 +154,14 @@ def read_file(path: str) -> str:
 def write_to_file(path: str, content: str) -> str:
     try:
         resolved_path = _resolve_path(path)
+        if not _confirm_action(
+            "write_to_file",
+            {
+                "path": str(resolved_path),
+                "content_preview": content[:800],
+            },
+        ):
+            return f"Error writing file: write to '{resolved_path}' was not approved."
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.write(content)
@@ -165,6 +193,16 @@ def run_bash_command(command: str) -> str:
                 f"Error: Command '{command_name}' is not allowed. "
                 f"Allowed commands: {allowed}"
             )
+
+        if not _confirm_action(
+            "run_bash_command",
+            {
+                "command": command,
+                "command_name": command_name,
+                "cwd": str(_workspace_root()),
+            },
+        ):
+            return f"Error executing command: command '{command}' was not approved."
 
         result = subprocess.run(
             args,
@@ -288,6 +326,20 @@ def replace_file_lines(
             return f"Error: start_line {start_line} is out of bounds."
         if end_line < start_line:
             return "Error: end_line cannot be before start_line."
+
+        if not _confirm_action(
+            "replace_file_lines",
+            {
+                "path": str(resolved_path),
+                "start_line": start_line,
+                "end_line": end_line,
+                "replacement_preview": replacement_content[:800],
+            },
+        ):
+            return (
+                "Error replacing lines: "
+                f"update to '{resolved_path}' was not approved."
+            )
 
         prefix = lines[: start_line - 1]
         suffix = lines[end_line:] if end_line <= len(lines) else []

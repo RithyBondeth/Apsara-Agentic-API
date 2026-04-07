@@ -20,6 +20,12 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
    pip install -r requirements.txt
    ```
 
+   To install the local CLI as an `apsara` command in your active Python environment:
+
+   ```bash
+   pip install -e .
+   ```
+
 2. Configure `.env`:
 
    ```env
@@ -52,25 +58,48 @@ Protected agent routes require an `X-User-Id` header containing the UUID of an e
 
 The project includes a local CLI that runs the agent directly against a workspace on your machine.
 
+Optional global config file:
+
+```toml
+# ~/.apsara/config.toml
+[defaults]
+workspace = "/absolute/path/to/your/project"
+model = "gpt-4o"
+session = "default"
+stateless = false
+allow_bash = false
+allowed_commands = ["pwd", "rg", "pytest"]
+max_file_size = 1000000
+auto_approve = false
+color = true
+```
+
 Run one instruction:
 
 ```bash
-python3 -m app.cli run "Summarize this codebase" --workspace /path/to/project
+apsara run "Summarize this codebase" --workspace /path/to/project
 ```
 
 Open an interactive session:
 
 ```bash
-python3 -m app.cli chat --workspace /path/to/project --session main
+apsara chat --workspace /path/to/project --session main
 ```
 
 List saved sessions for a workspace:
 
 ```bash
-python3 -m app.cli sessions --workspace /path/to/project
+apsara sessions --workspace /path/to/project
 ```
 
-By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. Use `--allow-bash` plus `--allowed-commands` if you want to opt into local non-interactive command execution for the CLI.
+Useful flags:
+
+- `--config /path/to/config.toml` to override the default global config path
+- `--allow-bash --allowed-commands pwd,rg,pytest` to opt into local non-interactive command execution
+- `--auto-approve` to skip confirmation prompts for writes and commands
+- `--no-color` to disable colored terminal output
+
+By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`.
 
 ## API Surface
 
