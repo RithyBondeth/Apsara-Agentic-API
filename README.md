@@ -120,7 +120,7 @@ Useful flags:
 - `--auto-approve` to skip confirmation prompts for writes and commands
 - `--no-color` to disable colored terminal output
 
-By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
+By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`; in the interactive approval flow, `Enter` approves, `n` rejects, and `a` approves the rest of the session. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
 
 The CLI automatically loads `.env` files from the workspace root and the current working directory before it runs. Explicitly exported shell variables still take precedence.
 

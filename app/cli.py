@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+import select
 import shutil
 import sys
 import tempfile
@@ -14,6 +15,18 @@ from pathlib import Path
 from typing import Any, Optional, Sequence, Set
 
 from dotenv import dotenv_values
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - Windows fallback
+    termios = None
+    tty = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - Unix fallback
+    msvcrt = None
 
 from app.cli_config import CliConfig, CliDefaults, DEFAULT_CONFIG_PATH, load_cli_config
 from app.services.agent.tools import (
@@ -235,47 +248,118 @@ class ConsoleUI:
     def print_line(self, text: str = "") -> None:
         print(text)
 
+    def badge(self, text: str, fg_code: str = "30", bg_code: str = "47") -> str:
+        if not self.use_color:
+            return f"[{text.upper()}]"
+        return self.style(f" {text.upper()} ", "1", fg_code, bg_code)
+
+    def muted(self, text: str) -> str:
+        return self.style(text, "2", "38;2;170;176;189")
+
+    def prompt(self, label: str = "you") -> str:
+        return f"\n{self.badge(label, '15', '48;2;49;104;194')} "
+
+    def print_block(self, text: str, color_code: Optional[str] = None) -> None:
+        for raw_line in text.splitlines() or [""]:
+            line = f"  {raw_line}"
+            self.print_line(self.style(line, color_code) if color_code else line)
+
+    def print_notice(self, label: str, text: str, fg_code: str, bg_code: str, body_color: str) -> None:
+        self.print_line(f"{self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
+
     def status(self, text: str) -> None:
-        self.print_line(self.style(f"[status] {text}", "33"))
+        self.print_notice("status", text, "17", "48;2;242;201;76", "38;2;236;220;184")
 
     def info(self, text: str) -> None:
-        self.print_line(self.style(text, "36"))
+        self.print_notice("info", text, "15", "48;2;73;127;221", "38;2;188;218;255")
 
     def success(self, text: str) -> None:
-        self.print_line(self.style(text, "32"))
+        self.print_notice("ok", text, "15", "48;2;61;153;117", "38;2;186;239;203")
 
     def warning(self, text: str) -> None:
-        self.print_line(self.style(text, "33"))
+        self.print_notice("warn", text, "17", "48;2;239;167;74", "38;2;247;223;181")
 
     def error(self, text: str) -> None:
-        self.print_line(self.style(text, "31"))
+        self.print_notice("error", text, "15", "48;2;191;87;84", "38;2;255;205;205")
 
     def assistant(self, text: str) -> None:
         self.print_line()
-        self.print_line(self.style("assistant>", "1", "35"))
-        self.print_line(text)
+        self.print_line(
+            f"{self.badge('assistant', '15', '48;2;133;92;219')} "
+            f"{self.style('Apsara response', '38;2;233;220;255')}"
+        )
+        self.print_block(text, "38;2;240;236;231")
 
     def tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         arguments_text = json.dumps(arguments, ensure_ascii=True)
-        self.print_line(self.style(f"[tool] {name} {arguments_text}", "34"))
+        self.print_line(
+            f"{self.badge('tool', '15', '48;2;64;128;191')} "
+            f"{self.style(name, '38;2;201;231;255')}"
+        )
+        self.print_block(arguments_text, "38;2;169;200;224")
 
     def tool_result(self, result: str) -> None:
-        self.print_line(self.style("[tool-result]", "34"))
-        self.print_line(result)
+        self.print_line(
+            f"{self.badge('result', '15', '48;2;53;106;167')} "
+            f"{self.style('Tool output', '38;2;201;231;255')}"
+        )
+        self.print_block(result, "38;2;219;229;240")
 
     def blocked(self, text: str) -> None:
-        self.warning(f"[blocked] {text}")
+        self.warning(f"Blocked: {text}")
 
     def usage(self, usage_data: dict[str, Any]) -> None:
         self.success(
-            "[usage] "
+            "Tokens "
             f"prompt={usage_data.get('prompt_tokens', '?')} "
             f"completion={usage_data.get('completion_tokens', '?')} "
             f"total={usage_data.get('total_tokens', '?')}"
         )
 
     def session_saved(self, session_path: Path) -> None:
-        self.info(f"[session] saved to {session_path}")
+        self.info(f"Session saved to {session_path}")
+
+    def read_single_key(self) -> str:
+        if msvcrt is not None:  # pragma: no cover - Windows fallback
+            key = msvcrt.getwch()
+            if key in {"\x00", "\xe0"}:
+                key += msvcrt.getwch()
+            return key
+
+        if termios is not None and tty is not None and sys.stdin.isatty():
+            file_descriptor = sys.stdin.fileno()
+            original_settings = termios.tcgetattr(file_descriptor)
+            try:
+                tty.setraw(file_descriptor)
+                key = sys.stdin.read(1)
+                if key == "\x1b" and select.select([sys.stdin], [], [], 0.02)[0]:
+                    key += sys.stdin.read(1)
+                    if select.select([sys.stdin], [], [], 0.02)[0]:
+                        key += sys.stdin.read(1)
+                return key
+            finally:
+                termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
+
+        return input().strip()[:1]
+
+    def prompt_confirmation_choice(self) -> str:
+        self.print_line(
+            f"  {self.badge('enter', '17', '48;2;121;210;184')} approve   "
+            f"{self.badge('n', '17', '48;2;239;167;74')} reject   "
+            f"{self.badge('a', '17', '48;2;111;154;255')} always approve"
+        )
+
+        while True:
+            key = self.read_single_key()
+            if key in {"", "\r", "\n", "y", "Y"}:
+                self.print_line(f"  {self.muted('approved')}")
+                return "approve"
+            if key in {"a", "A"}:
+                self.print_line(f"  {self.muted('always approve enabled')}")
+                return "always"
+            if key in {"n", "N", "\x1b", "q", "Q", "\x03"}:
+                self.print_line(f"  {self.muted('rejected')}")
+                return "reject"
 
     def confirm_action(self, action: str, payload: dict[str, Any]) -> bool:
         if self.approve_all:
@@ -289,15 +373,22 @@ class ConsoleUI:
             return False
 
         title, preview = describe_action(action, payload)
-        self.warning(f"[confirm] {title}")
+        self.print_line()
+        self.print_line(
+            f"{self.badge('approve', '17', '48;2;255;196;108')} "
+            f"{self.style(title, '1', '38;2;247;237;222')}"
+        )
         if preview:
-            self.print_line(truncate_text(preview, max_lines=12, max_chars=900))
-        response = input(self.style("Approve? [y]es/[n]o/[a]ll: ", "1", "33")).strip().lower()
+            self.print_block(
+                truncate_text(preview, max_lines=12, max_chars=900),
+                "38;2;205;211;222",
+            )
+        choice = self.prompt_confirmation_choice()
 
-        if response == "a":
+        if choice == "always":
             self.approve_all = True
             return True
-        return response in {"y", "yes"}
+        return choice == "approve"
 
 
 def describe_action(action: str, payload: dict[str, Any]) -> tuple[str, Optional[str]]:
@@ -596,7 +687,7 @@ def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
             ui.assistant(content)
         tool_calls = event.get("tool_calls", [])
         if tool_calls:
-            ui.info(f"[assistant] dispatched {len(tool_calls)} tool call(s)")
+            ui.info(f"Assistant dispatched {len(tool_calls)} tool call(s)")
         return
 
     if event_type == "tool_call":
@@ -616,7 +707,7 @@ def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
         return
 
     if event_type == "error":
-        ui.error(f"[error] {event.get('message', '')}")
+        ui.error(str(event.get("message", "")))
         return
 
 
@@ -730,7 +821,7 @@ def handle_chat_command(
 
     if command_text == "/clear":
         history.clear()
-        ui.warning("[session] cleared in memory")
+        ui.warning("Session cleared in memory")
         return True, current_model
 
     if command_text == "/history":
@@ -1190,7 +1281,7 @@ async def chat_loop(
 
     while True:
         try:
-            instruction = input(ui.style("\nyou> ", "1", "36")).strip()
+            instruction = input(ui.prompt("you")).strip()
         except EOFError:
             ui.print_line()
             break
