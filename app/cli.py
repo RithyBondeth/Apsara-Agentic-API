@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence, Set
 
+from dotenv import dotenv_values
+
 from app.cli_config import CliConfig, CliDefaults, DEFAULT_CONFIG_PATH, load_cli_config
 from app.services.agent.tools import (
     agent_runtime_context,
@@ -188,6 +190,35 @@ def resolve_runtime_options(
     )
 
 
+def load_cli_environment(args: argparse.Namespace, config: CliConfig) -> list[Path]:
+    workspace = resolve_value(getattr(args, "workspace", None), config.defaults.workspace, ".")
+    candidates = [
+        resolve_workspace(str(workspace)),
+        Path.cwd().resolve(),
+    ]
+
+    loaded_paths: list[Path] = []
+    seen_paths: set[Path] = set()
+    for base_path in candidates:
+        env_path = base_path / ".env"
+        if env_path in seen_paths or not env_path.exists():
+            continue
+        seen_paths.add(env_path)
+
+        values = dotenv_values(env_path)
+        loaded_any = False
+        for key, value in values.items():
+            if value is None or key in os.environ:
+                continue
+            os.environ[key] = value
+            loaded_any = True
+
+        if loaded_any:
+            loaded_paths.append(env_path)
+
+    return loaded_paths
+
+
 class ConsoleUI:
     def __init__(self, use_color: bool, auto_approve: bool = False):
         self.use_color = use_color
@@ -329,7 +360,7 @@ def welcome_frame_delay_seconds(config: CliConfig) -> float:
 def build_welcome_lines(config: CliConfig) -> list[tuple[str, tuple[str, ...]]]:
     title = config.ui.welcome_title or "Welcome to Apsara Agentic"
     subtitle = config.ui.welcome_subtitle or "Your local coding assistant"
-    powered_by = config.ui.powered_by or "Powered by you"
+    powered_by = config.ui.powered_by or "Powered by Bondeth"
 
     title_mark = track_title("Apsara Agentic")
     accent_width = max(len(title_mark), len(title), len(subtitle), len(powered_by)) + 6
@@ -1234,6 +1265,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         config = load_cli_config(args.config)
+        load_cli_environment(args, config)
         return asyncio.run(dispatch_command(args, config))
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
