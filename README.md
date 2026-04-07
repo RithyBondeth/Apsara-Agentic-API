@@ -14,6 +14,8 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
 
 ## Setup
 
+For a step-by-step local run guide, see [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md).
+
 1. Install dependencies:
 
    ```bash
