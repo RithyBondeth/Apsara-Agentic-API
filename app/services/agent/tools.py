@@ -1,3 +1,4 @@
+import difflib
 import os
 import shlex
 import subprocess
@@ -30,6 +31,9 @@ _max_file_size_override: ContextVar[Optional[int]] = ContextVar(
 _confirmation_callback_override: ContextVar[Optional[ConfirmationCallback]] = ContextVar(
     "confirmation_callback_override", default=None
 )
+MAX_CONFIRMATION_FILE_BYTES = 200_000
+MAX_CONFIRMATION_DIFF_PREVIEW_LINES = 80
+MAX_CONFIRMATION_DIFF_FULL_LINES = 240
 
 
 @contextmanager
@@ -125,6 +129,52 @@ def _format_exception(prefix: str, exc: Exception) -> str:
     return f"{prefix}: {str(exc)}"
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(_workspace_root()))
+    except ValueError:
+        return str(path)
+
+
+def _read_confirmation_text(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    if path.stat().st_size > MAX_CONFIRMATION_FILE_BYTES:
+        return ""
+    with path.open("r", encoding="utf-8") as file_handle:
+        return file_handle.read()
+
+
+def _build_text_diff(
+    before_text: str,
+    after_text: str,
+    display_path: str,
+) -> tuple[str, str, bool]:
+    diff_lines = list(
+        difflib.unified_diff(
+            before_text.splitlines(),
+            after_text.splitlines(),
+            fromfile=f"a/{display_path}",
+            tofile=f"b/{display_path}",
+            lineterm="",
+        )
+    )
+    if not diff_lines:
+        diff_lines = [f"No textual changes for {display_path}."]
+
+    preview_lines = diff_lines[:MAX_CONFIRMATION_DIFF_PREVIEW_LINES]
+    preview_truncated = len(diff_lines) > MAX_CONFIRMATION_DIFF_PREVIEW_LINES
+    if preview_truncated:
+        preview_lines.append("... [diff preview truncated]")
+
+    full_lines = diff_lines[:MAX_CONFIRMATION_DIFF_FULL_LINES]
+    full_truncated = len(diff_lines) > MAX_CONFIRMATION_DIFF_FULL_LINES
+    if full_truncated:
+        full_lines.append("... [full diff truncated]")
+
+    return "\n".join(preview_lines), "\n".join(full_lines), full_truncated
+
+
 def _confirm_action(action: str, payload: Dict[str, Any]) -> bool:
     callback = _confirmation_callback_override.get()
     if callback is None:
@@ -154,11 +204,24 @@ def read_file(path: str) -> str:
 def write_to_file(path: str, content: str) -> str:
     try:
         resolved_path = _resolve_path(path)
+        existing_content = _read_confirmation_text(resolved_path)
+        display_path = _display_path(resolved_path)
+        diff_preview, diff_full, diff_truncated = _build_text_diff(
+            existing_content,
+            content,
+            display_path,
+        )
         if not _confirm_action(
             "write_to_file",
             {
                 "path": str(resolved_path),
+                "display_path": display_path,
                 "content_preview": content[:800],
+                "existing_preview": existing_content[:800],
+                "diff_preview": diff_preview,
+                "diff_full": diff_full,
+                "diff_truncated": diff_truncated,
+                "is_new_file": not resolved_path.exists(),
             },
         ):
             return f"Error writing file: write to '{resolved_path}' was not approved."
@@ -327,22 +390,41 @@ def replace_file_lines(
         if end_line < start_line:
             return "Error: end_line cannot be before start_line."
 
+        original_content = "".join(lines)
+        original_slice = "".join(lines[start_line - 1 : end_line])
+        prefix = lines[: start_line - 1]
+        suffix = lines[end_line:] if end_line <= len(lines) else []
+        updated_content = "".join(prefix)
+        if replacement_content:
+            updated_content += replacement_content
+            if not replacement_content.endswith("\n"):
+                updated_content += "\n"
+        updated_content += "".join(suffix)
+        display_path = _display_path(resolved_path)
+        diff_preview, diff_full, diff_truncated = _build_text_diff(
+            original_content,
+            updated_content,
+            display_path,
+        )
+
         if not _confirm_action(
             "replace_file_lines",
             {
                 "path": str(resolved_path),
+                "display_path": display_path,
                 "start_line": start_line,
                 "end_line": end_line,
+                "original_preview": original_slice[:800],
                 "replacement_preview": replacement_content[:800],
+                "diff_preview": diff_preview,
+                "diff_full": diff_full,
+                "diff_truncated": diff_truncated,
             },
         ):
             return (
                 "Error replacing lines: "
                 f"update to '{resolved_path}' was not approved."
             )
-
-        prefix = lines[: start_line - 1]
-        suffix = lines[end_line:] if end_line <= len(lines) else []
 
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.writelines(prefix)

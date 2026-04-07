@@ -61,6 +61,13 @@ class DoctorCheckResult:
 
 
 @dataclass
+class HiddenCliEvent:
+    kind: str
+    title: str
+    detail: str
+
+
+@dataclass
 class ContextTrimResult:
     request_history: list[dict[str, Any]]
     dropped_turns: int
@@ -356,6 +363,10 @@ class ConsoleUI:
         self.use_color = use_color
         self.auto_approve = auto_approve
         self.approve_all = auto_approve
+        self.hidden_events: list[HiddenCliEvent] = []
+        self.latest_hidden_events: list[HiddenCliEvent] = []
+        self.current_turn_hidden_events: list[HiddenCliEvent] = []
+        self.work_notice_shown = False
 
     def style(self, text: str, *codes: str) -> str:
         if not self.use_color:
@@ -400,8 +411,70 @@ class ConsoleUI:
             else:
                 self.print_line(f"  {self.style(line, '38;2;240;236;231')}")
 
+    def render_diff_text(self, diff_text: str) -> None:
+        for raw_line in diff_text.splitlines() or [""]:
+            if raw_line.startswith(("---", "+++")):
+                self.print_line(f"  {self.style(raw_line, '38;2;140;191;255')}")
+            elif raw_line.startswith("@@"):
+                self.print_line(f"  {self.style(raw_line, '38;2;250;216;143')}")
+            elif raw_line.startswith("+") and not raw_line.startswith("+++"):
+                self.print_line(f"  {self.style(raw_line, '38;2;152;224;171')}")
+            elif raw_line.startswith("-") and not raw_line.startswith("---"):
+                self.print_line(f"  {self.style(raw_line, '38;2;255;168;168')}")
+            elif raw_line.startswith("... ["):
+                self.print_line(f"  {self.muted(raw_line)}")
+            else:
+                self.print_line(f"  {self.style(raw_line, '38;2;220;225;235')}")
+
     def print_notice(self, label: str, text: str, fg_code: str, bg_code: str, body_color: str) -> None:
         self.print_line(f"{self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
+
+    def begin_turn(self) -> None:
+        self.current_turn_hidden_events = []
+        self.work_notice_shown = False
+
+    def note_working(self) -> None:
+        if self.work_notice_shown:
+            return
+        self.print_notice("work", "Apsara is working...", "17", "48;2;242;201;76", "38;2;236;220;184")
+        self.work_notice_shown = True
+
+    def hide_event(self, kind: str, title: str, detail: str = "") -> None:
+        event = HiddenCliEvent(kind=kind, title=title, detail=detail)
+        self.current_turn_hidden_events.append(event)
+        self.hidden_events.append(event)
+        self.hidden_events = self.hidden_events[-80:]
+
+    def finish_turn(self) -> None:
+        self.latest_hidden_events = list(self.current_turn_hidden_events)
+        if self.latest_hidden_events:
+            self.info(
+                f"Hidden {len(self.latest_hidden_events)} internal event(s). Type /details to inspect."
+            )
+
+    def show_hidden_events(self) -> None:
+        events = self.latest_hidden_events or self.hidden_events[-12:]
+        if not events:
+            self.info("No hidden internal activity yet.")
+            return
+
+        self.print_line()
+        self.print_notice(
+            "details",
+            f"Showing {len(events)} hidden internal event(s)",
+            "15",
+            "48;2;93;108;137",
+            "38;2;217;226;242",
+        )
+        for index, event in enumerate(events, start=1):
+            self.print_line(
+                f"  {self.badge(event.kind, '15', '48;2;82;94;120')} "
+                f"{self.style(event.title, '38;2;230;234;242')}"
+            )
+            if event.detail:
+                self.render_rich_text(truncate_text(event.detail, max_lines=18, max_chars=1600))
+            if index < len(events):
+                self.print_line()
 
     def status(self, text: str) -> None:
         self.print_notice("status", text, "17", "48;2;242;201;76", "38;2;236;220;184")
@@ -478,12 +551,17 @@ class ConsoleUI:
 
         return input().strip()[:1]
 
-    def prompt_confirmation_choice(self) -> str:
-        self.print_line(
-            f"  {self.badge('enter', '17', '48;2;121;210;184')} approve   "
-            f"{self.badge('n', '17', '48;2;239;167;74')} reject   "
-            f"{self.badge('a', '17', '48;2;111;154;255')} always approve"
-        )
+    def prompt_confirmation_choice(self, *, allow_view: bool = False) -> str:
+        options = [
+            f"{self.badge('enter', '17', '48;2;121;210;184')} approve",
+            f"{self.badge('n', '17', '48;2;239;167;74')} reject",
+            f"{self.badge('a', '17', '48;2;111;154;255')} always approve",
+        ]
+        if allow_view:
+            options.append(
+                f"{self.badge('v', '17', '48;2;93;108;137')} view full diff"
+            )
+        self.print_line(f"  {'   '.join(options)}")
 
         while True:
             key = self.read_single_key()
@@ -493,6 +571,8 @@ class ConsoleUI:
             if key in {"a", "A"}:
                 self.print_line(f"  {self.muted('always approve enabled')}")
                 return "always"
+            if allow_view and key in {"v", "V"}:
+                return "view"
             if key in {"n", "N", "\x1b", "q", "Q", "\x03"}:
                 self.print_line(f"  {self.muted('rejected')}")
                 return "reject"
@@ -508,47 +588,74 @@ class ConsoleUI:
             )
             return False
 
-        title, preview = describe_action(action, payload)
+        title, preview, diff_preview, diff_full = describe_action(action, payload)
         self.print_line()
         self.print_line(
             f"{self.badge('approve', '17', '48;2;255;196;108')} "
             f"{self.style(title, '1', '38;2;247;237;222')}"
         )
-        if preview:
+        if diff_preview:
+            self.render_diff_text(diff_preview)
+        elif preview:
             self.print_block(
                 truncate_text(preview, max_lines=12, max_chars=900),
                 "38;2;205;211;222",
             )
-        choice = self.prompt_confirmation_choice()
 
-        if choice == "always":
-            self.approve_all = True
-            return True
-        return choice == "approve"
+        while True:
+            choice = self.prompt_confirmation_choice(allow_view=bool(diff_full and diff_full != diff_preview))
+            if choice == "view":
+                self.print_line()
+                self.print_notice(
+                    "diff",
+                    "Full change preview",
+                    "15",
+                    "48;2;93;108;137",
+                    "38;2;217;226;242",
+                )
+                self.render_diff_text(diff_full)
+                continue
+            if choice == "always":
+                self.approve_all = True
+                return True
+            return choice == "approve"
 
 
-def describe_action(action: str, payload: dict[str, Any]) -> tuple[str, Optional[str]]:
+def describe_action(
+    action: str, payload: dict[str, Any]
+) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
     if action == "write_to_file":
-        path = payload.get("path", "<unknown>")
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
         preview = payload.get("content_preview")
-        return (f"Write file {path}", preview if isinstance(preview, str) else None)
+        if payload.get("is_new_file"):
+            title = f"Create file {path}"
+        else:
+            title = f"Update file {path}"
+        return (
+            title,
+            preview if isinstance(preview, str) else None,
+            payload.get("diff_preview") if isinstance(payload.get("diff_preview"), str) else None,
+            payload.get("diff_full") if isinstance(payload.get("diff_full"), str) else None,
+        )
 
     if action == "replace_file_lines":
-        path = payload.get("path", "<unknown>")
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
         start_line = payload.get("start_line", "?")
         end_line = payload.get("end_line", "?")
         preview = payload.get("replacement_preview")
         return (
             f"Replace lines {start_line}-{end_line} in {path}",
             preview if isinstance(preview, str) else None,
+            payload.get("diff_preview") if isinstance(payload.get("diff_preview"), str) else None,
+            payload.get("diff_full") if isinstance(payload.get("diff_full"), str) else None,
         )
 
     if action == "run_bash_command":
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
-        return (f"Run command in {cwd}: {command}", None)
+        return (f"Run command in {cwd}: {command}", None, None, None)
 
-    return (f"Approve action: {action}", None)
+    return (f"Approve action: {action}", None, None, None)
 
 
 def terminal_width(default: int = 96) -> int:
@@ -814,24 +921,49 @@ def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
     event_type = event.get("type")
 
     if event_type == "status":
-        ui.status(str(event.get("message", "")))
+        message = str(event.get("message", "")).strip() or "Apsara is thinking."
+        ui.note_working()
+        ui.hide_event("status", message, message)
         return
 
     if event_type == "assistant_dispatch":
         content = str(event.get("content") or "").strip()
-        if content:
-            ui.assistant(content)
         tool_calls = event.get("tool_calls", [])
+        detail_parts: list[str] = []
+        if content:
+            detail_parts.append(content)
         if tool_calls:
-            ui.info(f"Apsara dispatched {len(tool_calls)} tool call(s)")
+            tool_names = ", ".join(
+                str(tool_call.get("function", {}).get("name", "unknown_tool"))
+                for tool_call in tool_calls
+            )
+            detail_parts.append(f"Tool calls: {tool_names}")
+        ui.note_working()
+        ui.hide_event(
+            "thinking",
+            f"Apsara planned {len(tool_calls)} tool call(s)" if tool_calls else "Apsara drafted an internal step",
+            "\n\n".join(part for part in detail_parts if part),
+        )
         return
 
     if event_type == "tool_call":
-        ui.tool_call(str(event.get("name", "unknown_tool")), event.get("arguments", {}))
+        tool_name = str(event.get("name", "unknown_tool"))
+        ui.note_working()
+        ui.hide_event(
+            "tool",
+            f"Tool call: {tool_name}",
+            json.dumps(event.get("arguments", {}), ensure_ascii=True, indent=2),
+        )
         return
 
     if event_type == "tool_result":
-        ui.tool_result(truncate_text(str(event.get("result", ""))))
+        tool_name = str(event.get("name", "unknown_tool"))
+        ui.note_working()
+        ui.hide_event(
+            "result",
+            f"Tool result: {tool_name}",
+            truncate_text(str(event.get("result", "")), max_lines=20, max_chars=1800),
+        )
         return
 
     if event_type == "final_answer":
@@ -977,6 +1109,7 @@ async def execute_instruction(
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
     latest_usage = None
+    ui.begin_turn()
 
     with agent_runtime_context(
         workspace_root=options.workspace_root,
@@ -1009,6 +1142,7 @@ async def execute_instruction(
                 print_event(event, ui)
                 update_history_from_event(next_history, event)
 
+    ui.finish_turn()
     return next_history, latest_usage
 
 
@@ -1032,6 +1166,7 @@ def save_if_needed(
 def print_chat_help(ui: ConsoleUI) -> None:
     ui.info("Slash commands:")
     ui.print_line("/help      Show available chat commands")
+    ui.print_line("/details   Show hidden internal activity from the latest turn")
     ui.print_line("/history   Show recent conversation turns")
     ui.print_line("/tools     Show enabled tools for this session")
     ui.print_line("/model     Show the current model")
@@ -1057,8 +1192,13 @@ def handle_chat_command(
         print_chat_help(ui)
         return True, current_model
 
+    if command_text == "/details":
+        ui.show_hidden_events()
+        return True, current_model
+
     if command_text == "/clear":
         history.clear()
+        ui.latest_hidden_events = []
         ui.warning("Session cleared in memory")
         return True, current_model
 
