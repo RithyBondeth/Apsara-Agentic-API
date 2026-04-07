@@ -60,6 +60,18 @@ class DoctorCheckResult:
     detail: str
 
 
+@dataclass
+class ContextTrimResult:
+    request_history: list[dict[str, Any]]
+    dropped_turns: int
+    dropped_messages: int
+    original_tokens: int
+    trimmed_tokens: int
+
+
+SAFE_INPUT_TOKEN_BUDGET = 24_000
+
+
 def resolve_workspace(path_str: str) -> Path:
     return Path(path_str).expanduser().resolve()
 
@@ -131,6 +143,112 @@ def truncate_text(text: str, max_lines: int = 16, max_chars: int = 1200) -> str:
     if len(lines) > max_lines:
         lines = lines[:max_lines] + ["... [truncated]"]
     return "\n".join(lines)
+
+
+def wrap_text_block(
+    text: str,
+    width: int,
+    initial_indent: str = "",
+    subsequent_indent: str = "",
+) -> list[str]:
+    if not text:
+        return [initial_indent.rstrip()]
+
+    wrapped = textwrap.wrap(
+        text,
+        width=max(width, 20),
+        initial_indent=initial_indent,
+        subsequent_indent=subsequent_indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return wrapped or [initial_indent.rstrip()]
+
+
+def clean_inline_markdown(text: str) -> str:
+    cleaned = text.replace("**", "").replace("__", "")
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def format_rich_text_lines(text: str, width: int) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    code_block = False
+    paragraph_parts: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_parts
+        if not paragraph_parts:
+            return
+        paragraph = " ".join(part.strip() for part in paragraph_parts if part.strip())
+        paragraph_parts = []
+        for wrapped in wrap_text_block(paragraph, width):
+            lines.append(("body", wrapped))
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            code_block = not code_block
+            if not code_block:
+                lines.append(("blank", ""))
+            continue
+
+        if code_block:
+            code_line = raw_line.rstrip()
+            lines.append(("code", code_line))
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            if lines and lines[-1][0] != "blank":
+                lines.append(("blank", ""))
+            continue
+
+        ordered_match = re.match(r"^(\d+)\.\s+(.*)$", stripped)
+        if ordered_match:
+            flush_paragraph()
+            number = ordered_match.group(1)
+            body = clean_inline_markdown(ordered_match.group(2))
+            for wrapped in wrap_text_block(
+                body,
+                width,
+                initial_indent=f"{number}. ",
+                subsequent_indent=" " * (len(number) + 2),
+            ):
+                lines.append(("list", wrapped))
+            continue
+
+        bullet_match = re.match(r"^[-*]\s+(.*)$", stripped)
+        if bullet_match:
+            flush_paragraph()
+            body = clean_inline_markdown(bullet_match.group(1))
+            for wrapped in wrap_text_block(
+                body,
+                width,
+                initial_indent="• ",
+                subsequent_indent="  ",
+            ):
+                lines.append(("list", wrapped))
+            continue
+
+        heading_match = re.match(r"^(?:#+\s*)?(.+?):\s*$", clean_inline_markdown(stripped))
+        if heading_match and len(stripped) <= width:
+            flush_paragraph()
+            if lines and lines[-1][0] != "blank":
+                lines.append(("blank", ""))
+            lines.append(("heading", heading_match.group(1)))
+            continue
+
+        paragraph_parts.append(clean_inline_markdown(stripped))
+
+    flush_paragraph()
+
+    while lines and lines[-1][0] == "blank":
+        lines.pop()
+
+    return lines
 
 
 def summarize_history(history: list[dict[str, Any]], limit: int = 10) -> list[str]:
@@ -264,6 +382,24 @@ class ConsoleUI:
             line = f"  {raw_line}"
             self.print_line(self.style(line, color_code) if color_code else line)
 
+    def content_width(self, fallback: int = 84) -> int:
+        terminal = terminal_width()
+        return max(44, min(fallback, terminal - 8))
+
+    def render_rich_text(self, text: str) -> None:
+        width = self.content_width()
+        for line_type, line in format_rich_text_lines(text, width):
+            if line_type == "blank":
+                self.print_line()
+            elif line_type == "heading":
+                self.print_line(f"  {self.style(line, '1', '38;2;250;216;143')}")
+            elif line_type == "list":
+                self.print_line(f"  {self.style(line, '38;2;237;232;225')}")
+            elif line_type == "code":
+                self.print_line(f"  {self.style(line, '38;2;173;203;255')}")
+            else:
+                self.print_line(f"  {self.style(line, '38;2;240;236;231')}")
+
     def print_notice(self, label: str, text: str, fg_code: str, bg_code: str, body_color: str) -> None:
         self.print_line(f"{self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
 
@@ -285,10 +421,10 @@ class ConsoleUI:
     def assistant(self, text: str) -> None:
         self.print_line()
         self.print_line(
-            f"{self.badge('assistant', '15', '48;2;133;92;219')} "
-            f"{self.style('Apsara response', '38;2;233;220;255')}"
+            f"{self.badge('apsara', '15', '48;2;133;92;219')} "
+            f"{self.style('Apsara by Bondeth', '38;2;233;220;255')}"
         )
-        self.print_block(text, "38;2;240;236;231")
+        self.render_rich_text(text)
 
     def tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         arguments_text = json.dumps(arguments, ensure_ascii=True)
@@ -599,7 +735,7 @@ def build_welcome_lines(config: CliConfig) -> list[tuple[str, tuple[str, ...]]]:
     rows.extend(
         [
         ("", ()),
-        ("A premium coding assistant for local flow", ("38;2;211;202;191",)),
+        ("A premium Apsara experience for local flow", ("38;2;211;202;191",)),
         ("", ()),
         ]
     )
@@ -687,7 +823,7 @@ def print_event(event: dict[str, Any], ui: ConsoleUI) -> None:
             ui.assistant(content)
         tool_calls = event.get("tool_calls", [])
         if tool_calls:
-            ui.info(f"Assistant dispatched {len(tool_calls)} tool call(s)")
+            ui.info(f"Apsara dispatched {len(tool_calls)} tool call(s)")
         return
 
     if event_type == "tool_call":
@@ -743,6 +879,91 @@ def update_history_from_event(
         )
 
 
+def group_conversation_turns(
+    conversation_history: list[dict[str, Any]]
+) -> list[list[dict[str, Any]]]:
+    turns: list[list[dict[str, Any]]] = []
+    current_turn: list[dict[str, Any]] = []
+
+    for message in conversation_history:
+        if message.get("role") == "user":
+            if current_turn:
+                turns.append(current_turn)
+            current_turn = [message]
+        elif current_turn:
+            current_turn.append(message)
+        else:
+            current_turn = [message]
+
+    if current_turn:
+        turns.append(current_turn)
+
+    return turns
+
+
+def flatten_conversation_turns(
+    turns: list[list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    return [message for turn in turns for message in turn]
+
+
+def trim_history_for_request(
+    conversation_history: list[dict[str, Any]],
+    model: str,
+) -> ContextTrimResult:
+    from app.services.agent.executor import SYSTEM_PROMPT
+    from app.services.agent.llm import estimate_request_tokens
+
+    base_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    original_tokens = estimate_request_tokens(
+        base_messages + conversation_history,
+        model=model,
+    )
+    if original_tokens <= SAFE_INPUT_TOKEN_BUDGET:
+        return ContextTrimResult(
+            request_history=conversation_history,
+            dropped_turns=0,
+            dropped_messages=0,
+            original_tokens=original_tokens,
+            trimmed_tokens=original_tokens,
+        )
+
+    turns = group_conversation_turns(conversation_history)
+    if not turns:
+        return ContextTrimResult(
+            request_history=conversation_history,
+            dropped_turns=0,
+            dropped_messages=0,
+            original_tokens=original_tokens,
+            trimmed_tokens=original_tokens,
+        )
+
+    kept_turns: list[list[dict[str, Any]]] = []
+    for turn in reversed(turns):
+        candidate_turns = [turn] + kept_turns
+        candidate_history = flatten_conversation_turns(candidate_turns)
+        candidate_tokens = estimate_request_tokens(
+            base_messages + candidate_history,
+            model=model,
+        )
+        if kept_turns and candidate_tokens > SAFE_INPUT_TOKEN_BUDGET:
+            break
+        kept_turns = candidate_turns
+
+    trimmed_history = flatten_conversation_turns(kept_turns)
+    trimmed_tokens = estimate_request_tokens(
+        base_messages + trimmed_history,
+        model=model,
+    )
+    return ContextTrimResult(
+        request_history=trimmed_history,
+        dropped_turns=max(len(turns) - len(kept_turns), 0),
+        dropped_messages=max(len(conversation_history) - len(trimmed_history), 0),
+        original_tokens=original_tokens,
+        trimmed_tokens=trimmed_tokens,
+    )
+
+
 async def execute_instruction(
     instruction: str,
     model: str,
@@ -751,6 +972,7 @@ async def execute_instruction(
     ui: ConsoleUI,
 ) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
     from app.services.agent.executor import run_agent_stream
+    from app.services.agent.llm import DEFAULT_MAX_COMPLETION_TOKENS
 
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
@@ -763,7 +985,23 @@ async def execute_instruction(
         max_file_size_bytes=options.max_file_size,
         confirmation_callback=None if options.auto_approve else ui.confirm_action,
     ):
-        async for chunk_str in run_agent_stream(next_history, model=model):
+        trim_result = trim_history_for_request(next_history, model=model)
+        if trim_result.dropped_turns:
+            ui.warning(
+                "Trimmed "
+                f"{trim_result.dropped_turns} earlier turn(s) "
+                f"({trim_result.dropped_messages} messages) to stay within the request budget."
+            )
+            ui.info(
+                f"Estimated input tokens: {trim_result.original_tokens} -> {trim_result.trimmed_tokens}. "
+                f"Response budget capped at about {DEFAULT_MAX_COMPLETION_TOKENS} tokens."
+            )
+        if trim_result.trimmed_tokens > SAFE_INPUT_TOKEN_BUDGET:
+            ui.warning(
+                "This prompt is still very large. If rate-limit errors continue, try /clear or --stateless."
+            )
+
+        async for chunk_str in run_agent_stream(trim_result.request_history, model=model):
             event = json.loads(chunk_str)
             if event.get("type") == "usage":
                 latest_usage = event.get("data")
@@ -1386,7 +1624,7 @@ def print_sessions(args: argparse.Namespace, config: CliConfig) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apsara",
-        description="Local CLI for the Apsara coding assistant.",
+        description="Local CLI for Apsara.",
     )
     parser.add_argument(
         "--config",
