@@ -4,7 +4,7 @@ from app.services.agent.llm import call_llm
 from app.services.agent.tools import execute_tool
 
 SYSTEM_PROMPT = """You are an expert autonomous software engineer named Apsara Agent.
-You are equipped with tools to read files, write files, search codebase, and execute bash commands.
+You are equipped with workspace-scoped tools to read files, write files, search the codebase, inspect project structure, and replace file lines. If a command tool is available, use only simple non-interactive commands that respect the workspace boundary.
 Analyze problems deeply, execute files or tools as requested to accomplish the goal. Always aim to be succinct when communicating back to the user but highly detailed in tool calls."""
 
 async def run_agent_stream(
@@ -56,6 +56,7 @@ async def run_agent_stream(
 
             yield json.dumps({
                 "type": "assistant_dispatch",
+                "content": response_msg.content,
                 "tool_calls": assistant_dict["tool_calls"]
             })
 
@@ -101,6 +102,7 @@ async def run_agent_stream(
                 
                 yield json.dumps({
                     "type": "tool_result",
+                    "name": tool_name,
                     "tool_call_id": tool_call.id,
                     "result": tool_result_str
                 })

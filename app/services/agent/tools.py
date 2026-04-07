@@ -1,191 +1,371 @@
 import os
+import shlex
 import subprocess
-from typing import Dict, Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
+
+from app.core.config import settings
+
+
+class ToolSecurityError(Exception):
+    """Raised when a tool request breaks sandbox rules."""
+
+
+def _workspace_root() -> Path:
+    return settings.agent_workspace_root_path
+
+
+def _resolve_path(path: str, *, must_exist: bool = False) -> Path:
+    requested_path = Path(path).expanduser()
+    candidate = requested_path
+    if not requested_path.is_absolute():
+        candidate = _workspace_root() / requested_path
+
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(_workspace_root())
+    except ValueError as exc:
+        raise ToolSecurityError(
+            f"Path '{path}' is outside the configured workspace root."
+        ) from exc
+
+    if must_exist and not resolved.exists():
+        raise FileNotFoundError(f"Path '{path}' does not exist.")
+
+    return resolved
+
+
+def _format_exception(prefix: str, exc: Exception) -> str:
+    return f"{prefix}: {str(exc)}"
+
 
 def read_file(path: str) -> str:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error reading file: '{path}' is not a file."
+
+        file_size = resolved_path.stat().st_size
+        if file_size > settings.AGENT_MAX_FILE_SIZE_BYTES:
+            return (
+                "Error reading file: "
+                f"'{path}' exceeds {settings.AGENT_MAX_FILE_SIZE_BYTES} bytes."
+            )
+
+        with resolved_path.open("r", encoding="utf-8") as file_handle:
+            return file_handle.read()
+    except Exception as exc:
+        return _format_exception("Error reading file", exc)
+
 
 def write_to_file(path: str, content: str) -> str:
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"Successfully wrote to {path}"
-    except Exception as e:
-        return f"Error writing file: {str(e)}"
+        resolved_path = _resolve_path(path)
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        with resolved_path.open("w", encoding="utf-8") as file_handle:
+            file_handle.write(content)
+        return f"Successfully wrote to {resolved_path}"
+    except Exception as exc:
+        return _format_exception("Error writing file", exc)
+
 
 def run_bash_command(command: str) -> str:
+    if not settings.AGENT_ENABLE_BASH_TOOL:
+        return "Error: The bash tool is disabled by configuration."
+
     try:
+        if not command.strip():
+            return "Error: Command cannot be empty."
+
+        blocked_tokens = ["|", "&", ";", "`", "$(", ">", "<", "\n"]
+        if any(token in command for token in blocked_tokens):
+            return "Error: Shell control operators are not allowed."
+
+        args = shlex.split(command)
+        if not args:
+            return "Error: Command cannot be empty."
+
+        command_name = args[0]
+        if command_name not in settings.agent_allowed_commands:
+            allowed = ", ".join(sorted(settings.agent_allowed_commands))
+            return (
+                f"Error: Command '{command_name}' is not allowed. "
+                f"Allowed commands: {allowed}"
+            )
+
         result = subprocess.run(
-            command,
-            shell=True,
+            args,
             capture_output=True,
             text=True,
-            timeout=120  # Limit to 2 minutes
+            timeout=30,
+            cwd=str(_workspace_root()),
         )
-        return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}\nEXIT CODE: {result.returncode}"
+        return (
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}\n"
+            f"EXIT CODE: {result.returncode}"
+        )
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out after 120 seconds."
-    except Exception as e:
-        return f"Error executing command: {str(e)}"
+        return "Error: Command timed out after 30 seconds."
+    except Exception as exc:
+        return _format_exception("Error executing command", exc)
+
 
 def search_files(pattern: str, root_dir: str = ".") -> str:
     try:
-        cmd = f"grep -rnI '{pattern}' {root_dir} | head -n 100"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        resolved_root = _resolve_path(root_dir, must_exist=True)
+        if not resolved_root.is_dir():
+            return f"Error searching files: '{root_dir}' is not a directory."
+
+        try:
+            result = subprocess.run(
+                [
+                    "rg",
+                    "--line-number",
+                    "--no-heading",
+                    "--text",
+                    "--max-count",
+                    "100",
+                    "--",
+                    pattern,
+                    str(resolved_root),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(_workspace_root()),
+            )
+        except FileNotFoundError:
+            result = subprocess.run(
+                ["grep", "-rnI", "--", pattern, str(resolved_root)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(_workspace_root()),
+            )
+
+        if result.returncode not in (0, 1):
+            return _format_exception("Error searching files", Exception(result.stderr))
         return result.stdout if result.stdout else "No matches found."
-    except Exception as e:
-        return f"Error searching files: {str(e)}"
+    except Exception as exc:
+        return _format_exception("Error searching files", exc)
+
 
 def list_project_structure(root_dir: str = ".") -> str:
     try:
-        cmd = f"find {root_dir} -maxdepth 3 -not -path '*/\\.*' | head -n 100"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        return result.stdout if result.stdout else "Empty or could not read."
-    except Exception as e:
-        return f"Error listing structure: {str(e)}"
+        resolved_root = _resolve_path(root_dir, must_exist=True)
+        if not resolved_root.is_dir():
+            return f"Error listing structure: '{root_dir}' is not a directory."
 
-def replace_file_lines(path: str, start_line: int, end_line: int, replacement_content: str) -> str:
+        entries: list[str] = []
+        max_depth = 3
+        max_entries = 100
+        root_depth = len(resolved_root.parts)
+
+        for current_root, dir_names, file_names in os.walk(resolved_root):
+            current_path = Path(current_root)
+            depth = len(current_path.parts) - root_depth
+            dir_names[:] = sorted(
+                [
+                    directory
+                    for directory in dir_names
+                    if not directory.startswith(".") and depth < max_depth
+                ]
+            )
+
+            if depth > max_depth:
+                continue
+
+            if current_path != resolved_root:
+                entries.append(str(current_path))
+                if len(entries) >= max_entries:
+                    break
+
+            for file_name in sorted(file_name for file_name in file_names if not file_name.startswith(".")):
+                file_path = current_path / file_name
+                entries.append(str(file_path))
+                if len(entries) >= max_entries:
+                    break
+
+            if len(entries) >= max_entries:
+                break
+
+        return "\n".join(entries) if entries else "Empty or could not read."
+    except Exception as exc:
+        return _format_exception("Error listing structure", exc)
+
+
+def replace_file_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    replacement_content: str,
+) -> str:
     try:
-        if not os.path.exists(path):
-            return f"Error: File '{path}' does not exist."
-            
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-            
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error replacing lines: '{path}' is not a file."
+
+        with resolved_path.open("r", encoding="utf-8") as file_handle:
+            lines = file_handle.readlines()
+
         if start_line < 1 or start_line > len(lines):
             return f"Error: start_line {start_line} is out of bounds."
-            
         if end_line < start_line:
-            return f"Error: end_line cannot be before start_line."
-            
-        prefix = lines[:start_line - 1]
-        suffix = lines[end_line:] if end_line <= len(lines) else []
-        
-        with open(path, "w", encoding="utf-8") as f:
-            f.writelines(prefix)
-            if replacement_content:
-                f.write(replacement_content)
-                if not replacement_content.endswith("\n"):
-                    f.write("\n")
-            f.writelines(suffix)
-            
-        return f"Successfully replaced lines {start_line} to {end_line} in {path}."
-    except Exception as e:
-        return f"Error replacing lines: {str(e)}"
+            return "Error: end_line cannot be before start_line."
 
-# The OpenAI JSON Schema for these tools
-AGENT_TOOLS = [
-    {
+        prefix = lines[: start_line - 1]
+        suffix = lines[end_line:] if end_line <= len(lines) else []
+
+        with resolved_path.open("w", encoding="utf-8") as file_handle:
+            file_handle.writelines(prefix)
+            if replacement_content:
+                file_handle.write(replacement_content)
+                if not replacement_content.endswith("\n"):
+                    file_handle.write("\n")
+            file_handle.writelines(suffix)
+
+        return (
+            "Successfully replaced lines "
+            f"{start_line} to {end_line} in {resolved_path}."
+        )
+    except Exception as exc:
+        return _format_exception("Error replacing lines", exc)
+
+
+def _tool_definition(
+    name: str,
+    description: str,
+    properties: Dict[str, Any],
+    required: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    definition = {
         "type": "function",
         "function": {
-            "name": "read_file",
-            "description": "Read the text contents of a file at a specific absolute path.",
+            "name": name,
+            "description": description,
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "The absolute path of the file to read."}
-                },
-                "required": ["path"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_to_file",
-            "description": "Create or overwrite a file with exact string contents.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "The absolute path to the file."},
-                    "content": {"type": "string", "description": "The complete text content to write."}
-                },
-                "required": ["path", "content"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_bash_command",
-            "description": "Execute a bash shell command and return stdout/stderr. Do NOT run interactive commands.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The bash command to execute."}
-                },
-                "required": ["command"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_files",
-            "description": "Globally string search project files (like grep).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {"type": "string", "description": "The search term or regex."},
-                    "root_dir": {"type": "string", "description": "The root directory to search. Default is '.'"}
-                },
-                "required": ["pattern"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_project_structure",
-            "description": "List all files up to 3 folders deep for discovery.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "root_dir": {"type": "string", "description": "The root directory to tree map. Default is '.'"}
-                }
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "replace_file_lines",
-            "description": "Surgically replace specific lines of code inside a file. Lines are 1-indexed. The start_line is the first line to replace, and end_line is the exact last line to replace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute path to the file."},
-                    "start_line": {"type": "integer", "description": "1-indexed starting line number of the block to replace."},
-                    "end_line": {"type": "integer", "description": "1-indexed ending line number (inclusive) to replace."},
-                    "replacement_content": {"type": "string", "description": "The exact string content to insert perfectly over the replacing lines."}
-                },
-                "required": ["path", "start_line", "end_line", "replacement_content"]
-            }
-        }
+                "properties": properties,
+            },
+        },
     }
+    if required:
+        definition["function"]["parameters"]["required"] = required
+    return definition
+
+
+AGENT_TOOLS = [
+    _tool_definition(
+        "read_file",
+        "Read the text contents of a file at a specific path inside the configured workspace.",
+        {
+            "path": {
+                "type": "string",
+                "description": "The file path to read. Relative paths resolve from the workspace root.",
+            }
+        },
+        ["path"],
+    ),
+    _tool_definition(
+        "write_to_file",
+        "Create or overwrite a file with exact string contents inside the configured workspace.",
+        {
+            "path": {
+                "type": "string",
+                "description": "The file path to write. Relative paths resolve from the workspace root.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The complete text content to write.",
+            },
+        },
+        ["path", "content"],
+    ),
+    _tool_definition(
+        "search_files",
+        "Search for a string or regex inside files under the configured workspace.",
+        {
+            "pattern": {
+                "type": "string",
+                "description": "The search term or regex.",
+            },
+            "root_dir": {
+                "type": "string",
+                "description": "The directory to search. Defaults to the workspace root.",
+            },
+        },
+        ["pattern"],
+    ),
+    _tool_definition(
+        "list_project_structure",
+        "List files and folders up to three levels deep under the configured workspace.",
+        {
+            "root_dir": {
+                "type": "string",
+                "description": "The directory to inspect. Defaults to the workspace root.",
+            }
+        },
+    ),
+    _tool_definition(
+        "replace_file_lines",
+        "Replace specific lines of code inside a file within the configured workspace.",
+        {
+            "path": {
+                "type": "string",
+                "description": "The file path to update.",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "1-indexed starting line number of the block to replace.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "1-indexed ending line number of the block to replace.",
+            },
+            "replacement_content": {
+                "type": "string",
+                "description": "The exact string content to insert over the replaced lines.",
+            },
+        },
+        ["path", "start_line", "end_line", "replacement_content"],
+    ),
 ]
 
-# Registry to map tool names from LLM to actual python functions
-TOOL_REGISTRY: Dict[str, Callable] = {
+if settings.AGENT_ENABLE_BASH_TOOL:
+    AGENT_TOOLS.append(
+        _tool_definition(
+            "run_bash_command",
+            "Execute an allowlisted non-interactive command from the workspace root.",
+            {
+                "command": {
+                    "type": "string",
+                    "description": "A simple command string with no shell control operators.",
+                }
+            },
+            ["command"],
+        )
+    )
+
+
+TOOL_REGISTRY: Dict[str, Callable[..., str]] = {
     "read_file": read_file,
     "write_to_file": write_to_file,
-    "run_bash_command": run_bash_command,
     "search_files": search_files,
     "list_project_structure": list_project_structure,
     "replace_file_lines": replace_file_lines,
 }
 
+if settings.AGENT_ENABLE_BASH_TOOL:
+    TOOL_REGISTRY["run_bash_command"] = run_bash_command
+
+
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     if tool_name not in TOOL_REGISTRY:
         return f"Error: Tool '{tool_name}' not found."
-    
+
     try:
         func = TOOL_REGISTRY[tool_name]
         return func(**arguments)
-    except Exception as e:
-        return f"Error executing internal tool: {str(e)}"
+    except Exception as exc:
+        return _format_exception("Error executing internal tool", exc)
