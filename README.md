@@ -7,6 +7,7 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
 - Health check endpoint with database validation
 - Agent execution endpoint with Server-Sent Events streaming
 - Conversation and message persistence in PostgreSQL
+- Local CLI for workspace-scoped coding assistance and saved sessions
 - LiteLLM-based model selection with tool calling
 - Workspace-scoped file tools for reading, writing, searching, listing, and line replacement
 - Token usage logging for each model call
@@ -46,6 +47,30 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
 ## Authentication
 
 Protected agent routes require an `X-User-Id` header containing the UUID of an existing user in the database.
+
+## Local CLI
+
+The project includes a local CLI that runs the agent directly against a workspace on your machine.
+
+Run one instruction:
+
+```bash
+python3 -m app.cli run "Summarize this codebase" --workspace /path/to/project
+```
+
+Open an interactive session:
+
+```bash
+python3 -m app.cli chat --workspace /path/to/project --session main
+```
+
+List saved sessions for a workspace:
+
+```bash
+python3 -m app.cli sessions --workspace /path/to/project
+```
+
+By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. Use `--allow-bash` plus `--allowed-commands` if you want to opt into local non-interactive command execution for the CLI.
 
 ## API Surface
 

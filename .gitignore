@@ -39,3 +39,4 @@ venv.bak/
 
 # Project
 *.log
+.apsara-cli/
