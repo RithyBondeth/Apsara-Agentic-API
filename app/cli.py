@@ -4,7 +4,9 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -432,6 +434,63 @@ class ConsoleUI:
             else:
                 self.print_line(f"  {self.style(raw_line, '38;2;220;225;235')}")
 
+    def resolve_editor_command(self) -> list[str]:
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+        try:
+            return shlex.split(editor)
+        except ValueError:
+            return [editor]
+
+    def open_editor_preview(self, title: str, diff_text: str, path_hint: Optional[str] = None) -> bool:
+        if not diff_text.strip():
+            self.warning("No diff available to open in an editor.")
+            return False
+
+        editor_command = self.resolve_editor_command()
+        if not editor_command:
+            self.error("No editor command is configured. Set $EDITOR or $VISUAL first.")
+            return False
+
+        header_lines = [
+            "Apsara by Bondeth",
+            f"Review: {title}",
+            "Close the editor to return to the approval prompt.",
+        ]
+        if path_hint:
+            header_lines.append(f"Target: {path_hint}")
+        review_text = "\n".join(header_lines) + "\n\n" + diff_text + "\n"
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".diff",
+            prefix="apsara-review-",
+            delete=False,
+        ) as temp_file:
+            temp_file.write(review_text)
+            temp_path = Path(temp_file.name)
+
+        try:
+            self.print_notice(
+                "editor",
+                f"Opening review in {' '.join(editor_command)}",
+                "15",
+                "48;2;93;108;137",
+                "38;2;217;226;242",
+            )
+            subprocess.run(editor_command + [str(temp_path)], check=False)
+            return True
+        except FileNotFoundError:
+            self.error(
+                f"Editor '{editor_command[0]}' was not found. Set $EDITOR or $VISUAL to a valid command."
+            )
+            return False
+        except Exception as exc:
+            self.error(f"Could not open editor preview: {exc}")
+            return False
+        finally:
+            temp_path.unlink(missing_ok=True)
+
     def print_notice(self, label: str, text: str, fg_code: str, bg_code: str, body_color: str) -> None:
         self.print_line(f"{self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
 
@@ -619,7 +678,12 @@ class ConsoleUI:
 
         return input().strip()[:1]
 
-    def prompt_confirmation_choice(self, *, allow_view: bool = False) -> str:
+    def prompt_confirmation_choice(
+        self,
+        *,
+        allow_view: bool = False,
+        allow_editor: bool = False,
+    ) -> str:
         options = [
             f"{self.badge('enter', '17', '48;2;121;210;184')} approve",
             f"{self.badge('n', '17', '48;2;239;167;74')} reject",
@@ -628,6 +692,10 @@ class ConsoleUI:
         if allow_view:
             options.append(
                 f"{self.badge('v', '17', '48;2;93;108;137')} view full diff"
+            )
+        if allow_editor:
+            options.append(
+                f"{self.badge('e', '15', '48;2;133;92;219')} open in $EDITOR"
             )
         self.print_line(f"  {'   '.join(options)}")
 
@@ -641,6 +709,8 @@ class ConsoleUI:
                 return "always"
             if allow_view and key in {"v", "V"}:
                 return "view"
+            if allow_editor and key in {"e", "E"}:
+                return "editor"
             if key in {"n", "N", "\x1b", "q", "Q", "\x03"}:
                 self.print_line(f"  {self.muted('rejected')}")
                 return "reject"
@@ -656,7 +726,10 @@ class ConsoleUI:
             )
             return False
 
-        title, preview, diff_preview, diff_full = describe_action(action, payload)
+        title, preview, diff_preview, diff_full, diff_editor, path_hint = describe_action(
+            action,
+            payload,
+        )
         self.print_line()
         self.print_line(
             f"{self.badge('approve', '17', '48;2;255;196;108')} "
@@ -671,7 +744,10 @@ class ConsoleUI:
             )
 
         while True:
-            choice = self.prompt_confirmation_choice(allow_view=bool(diff_full and diff_full != diff_preview))
+            choice = self.prompt_confirmation_choice(
+                allow_view=bool(diff_full and diff_full != diff_preview),
+                allow_editor=bool(diff_editor),
+            )
             if choice == "view":
                 self.print_line()
                 self.print_notice(
@@ -683,6 +759,9 @@ class ConsoleUI:
                 )
                 self.render_diff_text(diff_full)
                 continue
+            if choice == "editor":
+                self.open_editor_preview(title, diff_editor or diff_full or diff_preview or "", path_hint)
+                continue
             if choice == "always":
                 self.approve_all = True
                 return True
@@ -691,7 +770,14 @@ class ConsoleUI:
 
 def describe_action(
     action: str, payload: dict[str, Any]
-) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+) -> tuple[
+    str,
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]:
     if action == "write_to_file":
         path = payload.get("display_path") or payload.get("path", "<unknown>")
         preview = payload.get("content_preview")
@@ -704,6 +790,8 @@ def describe_action(
             preview if isinstance(preview, str) else None,
             payload.get("diff_preview") if isinstance(payload.get("diff_preview"), str) else None,
             payload.get("diff_full") if isinstance(payload.get("diff_full"), str) else None,
+            payload.get("diff_editor") if isinstance(payload.get("diff_editor"), str) else None,
+            path,
         )
 
     if action == "replace_file_lines":
@@ -716,14 +804,16 @@ def describe_action(
             preview if isinstance(preview, str) else None,
             payload.get("diff_preview") if isinstance(payload.get("diff_preview"), str) else None,
             payload.get("diff_full") if isinstance(payload.get("diff_full"), str) else None,
+            payload.get("diff_editor") if isinstance(payload.get("diff_editor"), str) else None,
+            path,
         )
 
     if action == "run_bash_command":
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
-        return (f"Run command in {cwd}: {command}", None, None, None)
+        return (f"Run command in {cwd}: {command}", None, None, None, None, None)
 
-    return (f"Approve action: {action}", None, None, None)
+    return (f"Approve action: {action}", None, None, None, None, None)
 
 
 def terminal_width(default: int = 96) -> int:
