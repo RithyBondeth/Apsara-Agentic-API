@@ -4,13 +4,18 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence, Set
 
 from app.cli_config import CliConfig, CliDefaults, DEFAULT_CONFIG_PATH, load_cli_config
-from app.services.agent.tools import agent_runtime_context, get_agent_tools
+from app.services.agent.tools import (
+    agent_runtime_context,
+    execute_tool,
+    get_agent_tools,
+)
 
 
 SESSION_ROOT_DIR = ".apsara-cli"
@@ -28,6 +33,13 @@ class ResolvedOptions:
     max_file_size: Optional[int]
     auto_approve: bool
     use_color: bool
+
+
+@dataclass
+class DoctorCheckResult:
+    name: str
+    status: str
+    detail: str
 
 
 def resolve_workspace(path_str: str) -> Path:
@@ -479,6 +491,363 @@ def handle_chat_command(
     return True, current_model
 
 
+def detect_model_credentials(model: str) -> tuple[str, Optional[list[str]], str]:
+    raw_model = model.strip()
+    provider = None
+    model_name = raw_model
+
+    if "/" in raw_model:
+        provider, model_name = raw_model.split("/", 1)
+        provider = provider.lower()
+    normalized_name = model_name.lower()
+
+    if provider in {"openai", "azure", "azure_openai"} or normalized_name.startswith(
+        ("gpt-", "o1", "o3", "o4", "o5", "codex-", "text-embedding-")
+    ):
+        if provider in {"azure", "azure_openai"}:
+            return (
+                "azure-openai",
+                ["AZURE_OPENAI_API_KEY", "AZURE_API_KEY"],
+                "Azure OpenAI-style model detected.",
+            )
+        return ("openai", ["OPENAI_API_KEY"], "OpenAI-style model detected.")
+
+    if provider == "anthropic" or normalized_name.startswith("claude"):
+        return ("anthropic", ["ANTHROPIC_API_KEY"], "Anthropic-style model detected.")
+
+    if provider in {"gemini", "google"} or normalized_name.startswith("gemini"):
+        return (
+            "gemini",
+            ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            "Gemini-style model detected.",
+        )
+
+    if provider == "groq":
+        return ("groq", ["GROQ_API_KEY"], "Groq-style model detected.")
+
+    if provider in {"together", "together_ai"}:
+        return ("together", ["TOGETHER_API_KEY"], "Together-style model detected.")
+
+    if provider == "mistral" or normalized_name.startswith("mistral"):
+        return ("mistral", ["MISTRAL_API_KEY"], "Mistral-style model detected.")
+
+    if provider == "xai":
+        return ("xai", ["XAI_API_KEY"], "xAI-style model detected.")
+
+    if provider == "deepseek" or normalized_name.startswith("deepseek"):
+        return ("deepseek", ["DEEPSEEK_API_KEY"], "DeepSeek-style model detected.")
+
+    if provider == "openrouter":
+        return (
+            "openrouter",
+            ["OPENROUTER_API_KEY"],
+            "OpenRouter-style model detected.",
+        )
+
+    if provider in {"fireworks", "fireworks_ai"}:
+        return (
+            "fireworks",
+            ["FIREWORKS_API_KEY"],
+            "Fireworks-style model detected.",
+        )
+
+    if provider == "cohere" or normalized_name.startswith("command"):
+        return ("cohere", ["COHERE_API_KEY"], "Cohere-style model detected.")
+
+    if provider == "cerebras":
+        return ("cerebras", ["CEREBRAS_API_KEY"], "Cerebras-style model detected.")
+
+    if provider == "bedrock":
+        return (
+            "bedrock",
+            ["AWS_ACCESS_KEY_ID", "AWS_PROFILE"],
+            "Bedrock-style model detected.",
+        )
+
+    if provider == "vertex_ai":
+        return (
+            "vertex_ai",
+            ["GOOGLE_APPLICATION_CREDENTIALS"],
+            "Vertex AI-style model detected.",
+        )
+
+    if provider == "ollama":
+        return ("ollama", None, "Ollama-style local model detected; no API key required.")
+
+    return (
+        "unknown",
+        None,
+        f"Could not infer credentials for model '{model}'.",
+    )
+
+
+def render_doctor_result(ui: ConsoleUI, result: DoctorCheckResult) -> None:
+    label = f"[{result.status.upper()}] {result.name}: {result.detail}"
+    if result.status == "pass":
+        ui.success(label)
+    elif result.status == "warn":
+        ui.warning(label)
+    else:
+        ui.error(label)
+
+
+def run_workspace_checks(
+    options: ResolvedOptions,
+    config: CliConfig,
+    args: argparse.Namespace,
+) -> list[DoctorCheckResult]:
+    results = []
+
+    if sys.version_info >= (3, 9):
+        results.append(
+            DoctorCheckResult(
+                "python",
+                "pass",
+                f"Python {sys.version.split()[0]} is supported.",
+            )
+        )
+    else:
+        results.append(
+            DoctorCheckResult(
+                "python",
+                "fail",
+                f"Python {sys.version.split()[0]} is below the required 3.9+.",
+            )
+        )
+
+    if config.exists:
+        results.append(
+            DoctorCheckResult(
+                "config",
+                "pass",
+                f"Loaded config from {config.path}.",
+            )
+        )
+    elif args.config:
+        results.append(
+            DoctorCheckResult(
+                "config",
+                "fail",
+                f"Config file was requested but not found at {config.path}.",
+            )
+        )
+    else:
+        results.append(
+            DoctorCheckResult(
+                "config",
+                "warn",
+                f"No config file found at {config.path}; using defaults and CLI flags.",
+            )
+        )
+
+    if options.workspace_root.exists() and options.workspace_root.is_dir():
+        results.append(
+            DoctorCheckResult(
+                "workspace",
+                "pass",
+                f"Workspace exists at {options.workspace_root}.",
+            )
+        )
+    elif options.workspace_root.exists():
+        results.append(
+            DoctorCheckResult(
+                "workspace",
+                "fail",
+                f"Workspace path exists but is not a directory: {options.workspace_root}.",
+            )
+        )
+    else:
+        results.append(
+            DoctorCheckResult(
+                "workspace",
+                "fail",
+                f"Workspace does not exist: {options.workspace_root}.",
+            )
+        )
+        return results
+
+    try:
+        session_dir = get_sessions_dir(options.workspace_root)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=str(session_dir),
+            prefix="doctor-",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_file.write("ok")
+            temp_path = Path(temp_file.name)
+        temp_path.unlink(missing_ok=True)
+        detail = (
+            f"Session storage is writable at {session_dir}."
+            if not options.stateless
+            else f"Session storage is writable at {session_dir}, but stateless mode is enabled."
+        )
+        status = "pass" if not options.stateless else "warn"
+        results.append(DoctorCheckResult("session-store", status, detail))
+    except Exception as exc:
+        results.append(
+            DoctorCheckResult(
+                "session-store",
+                "fail",
+                f"Could not write session data: {exc}",
+            )
+        )
+
+    with agent_runtime_context(
+        workspace_root=options.workspace_root,
+        enable_bash=options.allow_bash,
+        allowed_commands=options.allowed_commands,
+        max_file_size_bytes=options.max_file_size,
+        confirmation_callback=lambda action, payload: False,
+    ):
+        tool_names = [tool["function"]["name"] for tool in get_agent_tools()]
+        results.append(
+            DoctorCheckResult(
+                "tools",
+                "pass",
+                f"Enabled tools: {', '.join(tool_names)}",
+            )
+        )
+
+        structure_result = execute_tool("list_project_structure", {"root_dir": "."})
+        if structure_result.startswith("Error"):
+            results.append(
+                DoctorCheckResult(
+                    "workspace-scan",
+                    "fail",
+                    structure_result,
+                )
+            )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    "workspace-scan",
+                    "pass",
+                    "Workspace structure scan succeeded.",
+                )
+            )
+
+        if options.allow_bash:
+            default_command = "pwd"
+            if options.allowed_commands and default_command not in options.allowed_commands:
+                default_command = sorted(options.allowed_commands)[0]
+            command_result = execute_tool(
+                "run_bash_command",
+                {"command": default_command},
+            )
+            if "not approved" in command_result:
+                results.append(
+                    DoctorCheckResult(
+                        "bash-tool",
+                        "pass",
+                        (
+                            f"Bash tool is enabled with allowlist "
+                            f"{', '.join(sorted(options.allowed_commands or set()))}; "
+                            "approval prompt would be required during normal use."
+                        ),
+                    )
+                )
+            elif command_result.startswith("Error"):
+                results.append(
+                    DoctorCheckResult(
+                        "bash-tool",
+                        "fail",
+                        command_result,
+                    )
+                )
+            else:
+                results.append(
+                    DoctorCheckResult(
+                        "bash-tool",
+                        "pass",
+                        f"Bash tool is enabled and command '{default_command}' succeeded.",
+                    )
+                )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    "bash-tool",
+                    "warn",
+                    "Bash tool is disabled. Use --allow-bash if you want command execution.",
+                )
+            )
+
+    provider, env_vars, note = detect_model_credentials(options.model)
+    if env_vars is None:
+        status = "pass" if provider == "ollama" else "warn"
+        results.append(
+            DoctorCheckResult(
+                "credentials",
+                status,
+                note,
+            )
+        )
+    else:
+        present = [env_var for env_var in env_vars if os.environ.get(env_var)]
+        if present:
+            results.append(
+                DoctorCheckResult(
+                    "credentials",
+                    "pass",
+                    f"{note} Found {', '.join(present)}.",
+                )
+            )
+        else:
+            results.append(
+                DoctorCheckResult(
+                    "credentials",
+                    "fail",
+                    f"{note} Missing any of: {', '.join(env_vars)}.",
+                )
+            )
+
+    return results
+
+
+async def run_live_probe(
+    options: ResolvedOptions,
+) -> DoctorCheckResult:
+    from app.services.agent.llm import call_llm
+
+    probe_messages = [
+        {
+            "role": "user",
+            "content": "Reply with the single word READY.",
+        }
+    ]
+
+    with agent_runtime_context(
+        workspace_root=options.workspace_root,
+        enable_bash=options.allow_bash,
+        allowed_commands=options.allowed_commands,
+        max_file_size_bytes=options.max_file_size,
+        confirmation_callback=lambda action, payload: False,
+    ):
+        response_message, usage = await asyncio.wait_for(
+            call_llm(probe_messages, model=options.model),
+            timeout=15,
+        )
+
+    if isinstance(response_message, dict) and "error" in response_message:
+        return DoctorCheckResult(
+            "live-probe",
+            "fail",
+            f"Live model probe failed: {response_message['error']}",
+        )
+
+    content = str(getattr(response_message, "content", "") or "").strip()
+    usage_detail = ""
+    if usage and usage.get("total_tokens") is not None:
+        usage_detail = f" (total tokens: {usage.get('total_tokens')})"
+    return DoctorCheckResult(
+        "live-probe",
+        "pass",
+        f"Model responded with: {content or '[empty response]'}{usage_detail}",
+    )
+
+
 async def run_once(
     args: argparse.Namespace,
     config: CliConfig,
@@ -559,6 +928,60 @@ async def chat_loop(
         if latest_usage and latest_usage.get("total_tokens") is not None:
             ui.usage(latest_usage)
 
+    return 0
+
+
+async def doctor(
+    args: argparse.Namespace,
+    config: CliConfig,
+) -> int:
+    options = resolve_runtime_options(args, config.defaults)
+    ui = ConsoleUI(use_color=options.use_color, auto_approve=True)
+    results = run_workspace_checks(options, config, args)
+
+    if args.live:
+        credentials_status = next(
+            (result.status for result in results if result.name == "credentials"),
+            "warn",
+        )
+        workspace_status = next(
+            (result.status for result in results if result.name == "workspace"),
+            "fail",
+        )
+        if credentials_status == "fail" or workspace_status == "fail":
+            results.append(
+                DoctorCheckResult(
+                    "live-probe",
+                    "warn",
+                    "Live probe skipped because workspace or credentials checks failed.",
+                )
+            )
+        else:
+            results.append(await run_live_probe(options))
+
+    pass_count = 0
+    warn_count = 0
+    fail_count = 0
+
+    for result in results:
+        render_doctor_result(ui, result)
+        if result.status == "pass":
+            pass_count += 1
+        elif result.status == "warn":
+            warn_count += 1
+        else:
+            fail_count += 1
+
+    ui.print_line()
+    if fail_count:
+        ui.error(
+            f"Doctor finished with {pass_count} passed, {warn_count} warnings, and {fail_count} failures."
+        )
+        return 1
+
+    ui.success(
+        f"Doctor finished with {pass_count} passed and {warn_count} warnings."
+    )
     return 0
 
 
@@ -690,6 +1113,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace root whose saved sessions should be listed.",
     )
 
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Validate config, workspace access, tool readiness, and likely model credentials.",
+    )
+    add_shared_options(doctor_parser)
+    doctor_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Attempt a short live model probe after offline checks pass.",
+    )
+
     return parser
 
 
@@ -700,6 +1134,8 @@ async def dispatch_command(args: argparse.Namespace, config: CliConfig) -> int:
         return await chat_loop(args, config)
     if args.command == "sessions":
         return print_sessions(args, config)
+    if args.command == "doctor":
+        return await doctor(args, config)
     raise ValueError(f"Unknown command: {args.command}")
 
 

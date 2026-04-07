@@ -92,6 +92,18 @@ List saved sessions for a workspace:
 apsara sessions --workspace /path/to/project
 ```
 
+Run an environment readiness check:
+
+```bash
+apsara doctor --workspace /path/to/project --model gpt-4o
+```
+
+If you want the doctor command to attempt a real model call after the offline checks pass:
+
+```bash
+apsara doctor --workspace /path/to/project --model gpt-4o --live
+```
+
 Useful flags:
 
 - `--config /path/to/config.toml` to override the default global config path
@@ -99,7 +111,7 @@ Useful flags:
 - `--auto-approve` to skip confirmation prompts for writes and commands
 - `--no-color` to disable colored terminal output
 
-By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`.
+By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
 
 ## API Surface
 
