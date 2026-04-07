@@ -227,6 +227,7 @@ I’m testing an early version of Apsara by Bondeth, a local coding assistant CL
 
 ## 11. Related Docs
 
+- Tester quickstart: [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/TESTER_QUICKSTART.md)
 - Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md)
 - Main project README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/README.md)
 - CLI entrypoint: [app/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/app/cli.py)

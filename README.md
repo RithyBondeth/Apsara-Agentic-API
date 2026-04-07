@@ -14,7 +14,7 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
 
 ## Setup
 
-For a step-by-step local run guide, see [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md). For private tester handoff and launch prep, see [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/ALPHA_TESTING.md).
+For a step-by-step local run guide, see [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md). For private tester handoff and launch prep, see [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/ALPHA_TESTING.md). For the shortest possible tester setup, see [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/TESTER_QUICKSTART.md).
 
 1. Install dependencies:
 
