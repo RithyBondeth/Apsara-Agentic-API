@@ -149,7 +149,7 @@ def _build_text_diff(
     before_text: str,
     after_text: str,
     display_path: str,
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, str, bool]:
     diff_lines = list(
         difflib.unified_diff(
             before_text.splitlines(),
@@ -161,6 +161,7 @@ def _build_text_diff(
     )
     if not diff_lines:
         diff_lines = [f"No textual changes for {display_path}."]
+    editor_diff = "\n".join(diff_lines)
 
     preview_lines = diff_lines[:MAX_CONFIRMATION_DIFF_PREVIEW_LINES]
     preview_truncated = len(diff_lines) > MAX_CONFIRMATION_DIFF_PREVIEW_LINES
@@ -172,7 +173,12 @@ def _build_text_diff(
     if full_truncated:
         full_lines.append("... [full diff truncated]")
 
-    return "\n".join(preview_lines), "\n".join(full_lines), full_truncated
+    return (
+        "\n".join(preview_lines),
+        "\n".join(full_lines),
+        editor_diff,
+        full_truncated,
+    )
 
 
 def _confirm_action(action: str, payload: Dict[str, Any]) -> bool:
@@ -206,7 +212,7 @@ def write_to_file(path: str, content: str) -> str:
         resolved_path = _resolve_path(path)
         existing_content = _read_confirmation_text(resolved_path)
         display_path = _display_path(resolved_path)
-        diff_preview, diff_full, diff_truncated = _build_text_diff(
+        diff_preview, diff_full, diff_editor, diff_truncated = _build_text_diff(
             existing_content,
             content,
             display_path,
@@ -220,6 +226,7 @@ def write_to_file(path: str, content: str) -> str:
                 "existing_preview": existing_content[:800],
                 "diff_preview": diff_preview,
                 "diff_full": diff_full,
+                "diff_editor": diff_editor,
                 "diff_truncated": diff_truncated,
                 "is_new_file": not resolved_path.exists(),
             },
@@ -401,7 +408,7 @@ def replace_file_lines(
                 updated_content += "\n"
         updated_content += "".join(suffix)
         display_path = _display_path(resolved_path)
-        diff_preview, diff_full, diff_truncated = _build_text_diff(
+        diff_preview, diff_full, diff_editor, diff_truncated = _build_text_diff(
             original_content,
             updated_content,
             display_path,
@@ -418,6 +425,7 @@ def replace_file_lines(
                 "replacement_preview": replacement_content[:800],
                 "diff_preview": diff_preview,
                 "diff_full": diff_full,
+                "diff_editor": diff_editor,
                 "diff_truncated": diff_truncated,
             },
         ):
