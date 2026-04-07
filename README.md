@@ -78,7 +78,7 @@ color = true
 [ui]
 welcome_title = "Welcome to Apsara Agentic"
 welcome_subtitle = "A focused terminal coding assistant"
-powered_by = "Powered by Bondeth"
+powered_by = "Powered by Apsara\nDeveloped by Bondeth"
 welcome_animation = true
 welcome_frame_delay_ms = 22
 ```

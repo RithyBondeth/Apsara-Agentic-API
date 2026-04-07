@@ -360,7 +360,7 @@ def welcome_frame_delay_seconds(config: CliConfig) -> float:
 def build_welcome_lines(config: CliConfig) -> list[tuple[str, tuple[str, ...]]]:
     title = config.ui.welcome_title or "Welcome to Apsara Agentic"
     subtitle = config.ui.welcome_subtitle or "Your local coding assistant"
-    powered_by = config.ui.powered_by or "Powered by Bondeth"
+    powered_by = config.ui.powered_by or "Powered by Apsara\nDeveloped by Bondeth"
 
     title_mark = track_title("Apsara Agentic")
     accent_width = max(len(title_mark), len(title), len(subtitle), len(powered_by)) + 6
