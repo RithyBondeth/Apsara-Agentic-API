@@ -39,6 +39,7 @@ The focus of this release is:
 
 ### Local CLI Workflow
 
+- `init` command for project-first setup
 - `doctor` command for environment checks
 - `chat`, `run`, and `sessions` commands
 - automatic `.env` loading for local use

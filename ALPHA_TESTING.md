@@ -84,10 +84,10 @@ OPENAI_API_KEY=your_openai_api_key
 python3 -m app.cli doctor --workspace .
 ```
 
-7. Start the CLI:
+7. Initialize the project and start the CLI:
 
 ```bash
-python3 -m app.cli chat --workspace . --model gpt-5.4-mini
+python3 -m app.cli init --workspace . --model gpt-5.4-mini
 ```
 
 ## 5. First-Test Script

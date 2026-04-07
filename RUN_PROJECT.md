@@ -72,6 +72,15 @@ Important:
 
 This is the easiest way to confirm the project works.
 
+Recommended project-first flow:
+
+```bash
+cd /path/to/your/project
+apsara init
+```
+
+That initializes the folder and starts chat immediately. If `apsara` is not installed yet, keep using the module form below.
+
 Run the doctor command:
 
 ```bash
@@ -100,6 +109,12 @@ Or:
 
 ```bash
 apsara chat --workspace . --model gpt-5.4-mini
+```
+
+Once a project has been initialized, you can usually just do:
+
+```bash
+apsara chat
 ```
 
 Run a one-shot prompt:

@@ -36,7 +36,13 @@ python3 -m app.cli doctor --workspace .
 ## 6. Start Apsara
 
 ```bash
-python3 -m app.cli chat --workspace . --model gpt-5.4-mini
+python3 -m app.cli init --workspace . --model gpt-5.4-mini
+```
+
+If the `apsara` command is installed, testers can also use:
+
+```bash
+apsara init
 ```
 
 ## 7. Try these prompts

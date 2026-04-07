@@ -9,6 +9,8 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10+
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".apsara" / "config.toml"
+LOCAL_CONFIG_DIRNAME = ".apsara"
+LOCAL_CONFIG_FILENAME = "config.toml"
 
 
 @dataclass
@@ -75,8 +77,60 @@ def _optional_string_list(value: Any, field_name: str) -> Optional[list[str]]:
     return value
 
 
-def load_cli_config(config_path: Optional[str] = None) -> CliConfig:
-    path = Path(config_path).expanduser().resolve() if config_path else DEFAULT_CONFIG_PATH
+def project_config_path(base_dir: Path) -> Path:
+    return base_dir / LOCAL_CONFIG_DIRNAME / LOCAL_CONFIG_FILENAME
+
+
+def find_project_config(start_dir: Path) -> Optional[Path]:
+    current = start_dir.resolve()
+    for candidate_dir in (current, *current.parents):
+        candidate = project_config_path(candidate_dir)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def resolve_cli_config_path(
+    config_path: Optional[str] = None,
+    workspace_hint: Optional[str] = None,
+) -> Path:
+    if config_path:
+        return Path(config_path).expanduser().resolve()
+
+    cwd = Path.cwd().resolve()
+    if workspace_hint:
+        workspace = Path(workspace_hint).expanduser()
+        if not workspace.is_absolute():
+            workspace = (cwd / workspace).resolve()
+        else:
+            workspace = workspace.resolve()
+        workspace_config = find_project_config(workspace)
+        if workspace_config is not None:
+            return workspace_config
+
+    cwd_config = find_project_config(cwd)
+    if cwd_config is not None:
+        return cwd_config
+
+    if DEFAULT_CONFIG_PATH.exists():
+        return DEFAULT_CONFIG_PATH
+
+    if workspace_hint:
+        workspace = Path(workspace_hint).expanduser()
+        if not workspace.is_absolute():
+            workspace = (cwd / workspace).resolve()
+        else:
+            workspace = workspace.resolve()
+        return project_config_path(workspace)
+
+    return project_config_path(cwd)
+
+
+def load_cli_config(
+    config_path: Optional[str] = None,
+    workspace_hint: Optional[str] = None,
+) -> CliConfig:
+    path = resolve_cli_config_path(config_path, workspace_hint)
     if not path.exists():
         return CliConfig(
             path=path,

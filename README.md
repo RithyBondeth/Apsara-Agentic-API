@@ -60,6 +60,19 @@ Protected agent routes require an `X-User-Id` header containing the UUID of an e
 
 The project includes a local CLI that runs the agent directly against a workspace on your machine.
 
+Project-first flow:
+
+```bash
+cd /path/to/your/project
+apsara init
+```
+
+That command initializes a local `.apsara/config.toml`, updates `.gitignore` with Apsara local artifacts, and opens chat in the current project by default. After that, you can usually just run:
+
+```bash
+apsara chat
+```
+
 Optional global config file:
 
 ```toml
@@ -95,6 +108,13 @@ Open an interactive session:
 apsara chat --workspace /path/to/project --session main
 ```
 
+Initialize the current project and open chat immediately:
+
+```bash
+cd /path/to/project
+apsara init
+```
+
 List saved sessions for a workspace:
 
 ```bash
@@ -120,7 +140,7 @@ Useful flags:
 - `--auto-approve` to skip confirmation prompts for writes and commands
 - `--no-color` to disable colored terminal output
 
-By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/details`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. Internal planning steps and tool chatter are hidden from the main conversation by default so the final response stays clean; use `/details` to inspect the latest hidden activity when you want it. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`; in the interactive approval flow, `Enter` approves, `n` rejects, and `a` approves the rest of the session. For code edits, Apsara shows a diff preview before approval, `v` opens a fuller patch preview in the terminal, and `e` opens the proposed patch in your `$EDITOR` or `$VISUAL`. The CLI also trims older conversation turns automatically when a request gets too large, while keeping the full session history on disk. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
+By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/details`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. Internal planning steps and tool chatter are hidden from the main conversation by default so the final response stays clean; use `/details` to inspect the latest hidden activity when you want it. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`; in the interactive approval flow, `Enter` approves, `n` rejects, and `a` approves the rest of the session. For code edits, Apsara shows a diff preview before approval, `v` opens a fuller patch preview in the terminal, and `e` opens the proposed patch in your `$EDITOR` or `$VISUAL`. The CLI also trims older conversation turns automatically when a request gets too large, while keeping the full session history on disk. `apsara init` creates a project-local `.apsara/config.toml` and opens chat in the current folder by default. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
 
 The CLI automatically loads `.env` files from the workspace root and the current working directory before it runs. Explicitly exported shell variables still take precedence.
 
