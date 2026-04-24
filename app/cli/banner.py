@@ -36,41 +36,12 @@ def render_block_word(word: str) -> list[str]:
         "C": ["  ____  ", " / ___| ", "| |     ", "| |___  ", " \\____| "],
         " ": ["   ", "   ", "   ", "   ", "   "],
     }
-
     rows = ["", "", "", "", ""]
     for letter in word.upper():
         glyph = glyphs.get(letter, glyphs[" "])
-        for index, segment in enumerate(glyph):
-            rows[index] += segment + "  "
+        for i, segment in enumerate(glyph):
+            rows[i] += segment + "  "
     return [row.rstrip() for row in rows]
-
-
-def build_big_title_rows(terminal: int) -> list[tuple[str, tuple[str, ...]]]:
-    if terminal < 84:
-        return [(track_title("Apsara Agentic"), ("1", "38;2;249;193;103"))]
-
-    apsara_colors = [
-        ("1", "38;2;111;154;255"),
-        ("1", "38;2;121;184;255"),
-        ("1", "38;2;122;210;222"),
-        ("1", "38;2;166;216;168"),
-        ("1", "38;2;238;206;124"),
-    ]
-    agentic_colors = [
-        ("1", "38;2;255;196;108"),
-        ("1", "38;2;255;171;112"),
-        ("1", "38;2;239;150;155"),
-        ("1", "38;2;197;154;244"),
-        ("1", "38;2;132;182;255"),
-    ]
-
-    rows: list[tuple[str, tuple[str, ...]]] = []
-    for line, codes in zip(render_block_word("APSARA"), apsara_colors):
-        rows.append((line, codes))
-    rows.append(("", ()))
-    for line, codes in zip(render_block_word("AGENTIC"), agentic_colors):
-        rows.append((line, codes))
-    return rows
 
 
 def should_animate_welcome(config: "CliConfig") -> bool:
@@ -82,98 +53,116 @@ def should_animate_welcome(config: "CliConfig") -> bool:
 
 
 def welcome_frame_delay_seconds(config: "CliConfig") -> float:
-    frame_delay_ms = config.ui.welcome_frame_delay_ms
-    if frame_delay_ms is None:
-        frame_delay_ms = 22
-    return max(0, min(frame_delay_ms, 250)) / 1000.0
+    ms = config.ui.welcome_frame_delay_ms
+    if ms is None:
+        ms = 18
+    return max(0, min(ms, 250)) / 1000.0
 
 
 def wrap_banner_text(text: str, width: int) -> list[str]:
-    wrapped_lines: list[str] = []
+    wrapped: list[str] = []
     for raw_line in text.splitlines() or [""]:
         line = raw_line.strip()
         if not line:
-            wrapped_lines.append("")
+            wrapped.append("")
             continue
-        wrapped_lines.extend(
-            textwrap.wrap(line, width=width, break_long_words=False, break_on_hyphens=False) or [""]
-        )
-    return wrapped_lines
+        wrapped.extend(textwrap.wrap(line, width=width, break_long_words=False, break_on_hyphens=False) or [""])
+    return wrapped
 
 
-def build_welcome_lines(config: "CliConfig") -> list[tuple[str, tuple[str, ...]]]:
+def _build_big_title_rows(terminal: int) -> list[tuple[str, tuple[str, ...]]]:
+    if terminal < 84:
+        return [(track_title("Apsara Agentic"), ("1", "38;2;249;193;103"))]
+
+    # Per-row gradient: APSARA fades blue→cyan, AGENTIC fades gold→purple
+    apsara_colors = [
+        ("1", "38;2;132;182;255"),
+        ("1", "38;2;122;200;240"),
+        ("1", "38;2;138;214;210"),
+        ("1", "38;2;158;220;180"),
+        ("1", "38;2;200;214;148"),
+    ]
+    agentic_colors = [
+        ("1", "38;2;255;210;100"),
+        ("1", "38;2;255;185;108"),
+        ("1", "38;2;245;158;148"),
+        ("1", "38;2;210;148;240"),
+        ("1", "38;2;150;168;255"),
+    ]
+
+    rows: list[tuple[str, tuple[str, ...]]] = []
+    for line, codes in zip(render_block_word("APSARA"), apsara_colors):
+        rows.append((line, codes))
+    rows.append(("", ()))
+    for line, codes in zip(render_block_word("AGENTIC"), agentic_colors):
+        rows.append((line, codes))
+    return rows
+
+
+def _build_welcome_content(config: "CliConfig") -> list[tuple[str, tuple[str, ...]]]:
     from app.cli.ui import terminal_width
 
     terminal = max(72, min(terminal_width(), 112))
-    title = config.ui.welcome_title or "Welcome to Apsara Agentic"
-    subtitle = config.ui.welcome_subtitle or "Elegant local coding assistance for your workspace"
-    powered_by = config.ui.powered_by or "Powered by Bondeth"
-    eyebrow = "BONDETH EDITION"
-    badges = "workspace-aware  |  session memory  |  safe tools"
+    title     = config.ui.welcome_title    or "Welcome to Apsara Agentic"
+    subtitle  = config.ui.welcome_subtitle or "Elegant local coding assistance for your workspace"
+    powered   = config.ui.powered_by       or "Powered by Bondeth"
+    wrap_w    = max(36, min(68, terminal - 24))
 
-    wrap_width = max(36, min(68, terminal - 24))
     rows: list[tuple[str, tuple[str, ...]]] = [
-        (eyebrow, ("1", "38;2;104;170;255")),
+        ("BONDETH EDITION · ALPHA", ("1", "38;2;104;170;255")),
         ("", ()),
     ]
-
-    rows.extend(build_big_title_rows(terminal))
+    rows.extend(_build_big_title_rows(terminal))
     rows.extend([
         ("", ()),
-        ("A premium Apsara experience for local flow", ("38;2;211;202;191",)),
+        ("project-first  ·  workspace-aware  ·  human-approved", ("38;2;190;196;214",)),
         ("", ()),
     ])
-
-    for line in wrap_banner_text(title, wrap_width):
+    for line in wrap_banner_text(title, wrap_w):
         rows.append((line, ("1", "38;2;246;239;230")))
-    for line in wrap_banner_text(subtitle, wrap_width):
-        rows.append((line, ("38;2;211;202;191",)))
-
+    for line in wrap_banner_text(subtitle, wrap_w):
+        rows.append((line, ("38;2;200;192;182",)))
     rows.append(("", ()))
-    for line in wrap_banner_text(badges, wrap_width):
-        rows.append((line, ("38;2;121;210;184",)))
-
-    rows.append(("", ()))
-    for line in wrap_banner_text(powered_by, wrap_width):
-        rows.append((line, ("38;2;219;171;116",)))
-
+    for line in wrap_banner_text(powered, wrap_w):
+        rows.append((line, ("38;2;200;166;110",)))
     return rows
 
 
 def render_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> list[str]:
     from app.cli.ui import terminal_width
 
-    border_codes = ("2", "38;2;119;103;88")
+    border_color = ("2", "38;2;105;92;78")
     terminal = max(72, min(terminal_width(), 112))
-    rows = build_welcome_lines(config)
-    content_width = max(44, min(max(len(text) for text, _codes in rows), terminal - 10))
-    banner_width = content_width + 8
-    left_padding = " " * max((terminal - banner_width) // 2, 0)
+    rows = _build_welcome_content(config)
+    content_w = max(48, min(max(len(text) for text, _ in rows if text), terminal - 10))
+    banner_w = content_w + 8
+    left_pad = " " * max((terminal - banner_w) // 2, 0)
 
-    rendered_lines = [
-        left_padding + ui.style("." + "-" * (banner_width - 2) + ".", *border_codes),
-        left_padding + ui.style("|" + " " * (banner_width - 2) + "|", *border_codes),
+    def bline(inner: str) -> str:
+        return left_pad + ui.style("│" + inner + "│", *border_color)
+
+    rendered: list[str] = [
+        left_pad + ui.style("╭" + "─" * (banner_w - 2) + "╮", *border_color),
+        bline(" " * (banner_w - 2)),
     ]
 
     for text, codes in rows:
         if text:
-            content = center_text(text, content_width)
-            rendered_lines.append(
-                left_padding
-                + ui.style("|   ", *border_codes)
+            content = center_text(text, content_w)
+            rendered.append(
+                left_pad
+                + ui.style("│   ", *border_color)
                 + ui.style(content, *codes)
-                + ui.style("   |", *border_codes)
+                + ui.style("   │", *border_color)
             )
         else:
-            rendered_lines.append(
-                left_padding + ui.style("|" + " " * (banner_width - 2) + "|", *border_codes)
-            )
+            rendered.append(bline(" " * (banner_w - 2)))
 
-    rendered_lines.extend([
-        left_padding + ui.style("|" + " " * (banner_width - 2) + "|", *border_codes),
-        left_padding + ui.style("'" + "-" * (banner_width - 2) + "'", *border_codes),
+    rendered.extend([
+        bline(" " * (banner_w - 2)),
+        left_pad + ui.style("╰" + "─" * (banner_w - 2) + "╯", *border_color),
     ])
-    return rendered_lines
+    return rendered
 
 
 def print_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> None:
@@ -182,13 +171,18 @@ def print_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> None:
         return
 
     animate = should_animate_welcome(config)
-    frame_delay = welcome_frame_delay_seconds(config)
-
-    for index, line in enumerate(lines):
-        ui.print_line(line)
-        if animate and index < len(lines) - 1:
-            time.sleep(frame_delay)
+    delay = welcome_frame_delay_seconds(config)
 
     if animate:
-        time.sleep(frame_delay * 1.5)
-    ui.print_line()
+        # Reveal the border first, then sweep content lines in
+        for i, line in enumerate(lines):
+            print(line)
+            # Faster for border rows, slightly slower for content rows
+            row_delay = delay * 0.4 if i in (0, 1, len(lines) - 2, len(lines) - 1) else delay
+            time.sleep(row_delay)
+        time.sleep(delay * 3)
+    else:
+        for line in lines:
+            print(line)
+
+    print()

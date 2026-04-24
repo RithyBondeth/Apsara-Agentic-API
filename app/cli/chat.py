@@ -201,18 +201,30 @@ async def chat_loop(args: object, config: object) -> int:
     ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve)
     history: list[dict[str, Any]] = []
     current_model = options.model
+    turn_count = 0
 
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
 
     print_welcome_banner(ui, config)
-    ui.info(f"Workspace: {options.workspace_root}")
-    if options.stateless:
-        ui.info("Session mode: stateless")
-    else:
-        ui.info(f"Session: {sanitize_session_name(options.session)}")
-    ui.info(f"Model: {current_model}")
-    ui.info("Type /help for chat commands.")
+
+    # Session status line
+    session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
+    ui.print_line(
+        f"  {ui.dim(f'  workspace  {options.workspace_root}')}"
+    )
+    ui.print_line(
+        f"  {ui.dim(f'  session    {session_label}  ·  model  {current_model}')}"
+    )
+    if history:
+        prior_turns = sum(1 for m in history if m.get("role") == "user")
+        ui.print_line(
+            f"  {ui.dim(f'  resumed    {prior_turns} prior turn{\"s\" if prior_turns != 1 else \"\"}')}"
+        )
+        turn_count = prior_turns
+    ui.print_line(
+        f"  {ui.dim('  /help for commands  ·  /exit to quit')}"
+    )
 
     while True:
         try:
@@ -230,6 +242,9 @@ async def chat_loop(args: object, config: object) -> int:
             if not should_continue:
                 break
             continue
+
+        turn_count += 1
+        ui.print_turn_separator(turn_count)
 
         history, latest_usage = await execute_instruction(
             instruction=instruction,
