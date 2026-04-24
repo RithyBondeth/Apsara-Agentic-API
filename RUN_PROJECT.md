@@ -189,6 +189,6 @@ Use this order if you want the smoothest setup:
 ## 10. Files you may want to check
 
 - Project guide: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
-- CLI entrypoint: [app/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/app/cli.py)
-- App config: [app/core/config.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/app/core/config.py)
+- CLI entrypoint: [src/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/cli.py)
+- App config: [src/core/config.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/core/config.py)
 - Development runner: [run-dev.sh](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/run-dev.sh)

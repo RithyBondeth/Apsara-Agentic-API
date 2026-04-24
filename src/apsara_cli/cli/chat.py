@@ -3,16 +3,16 @@ from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from apsara_cli.cli.types import ResolvedOptions
-    from apsara_cli.cli.ui import ConsoleUI
+    from apsara_cli.shared.types import ResolvedOptions
+    from apsara_cli.shared.ui import ConsoleUI
 
-from apsara_cli.cli.events import print_event
+from apsara_cli.shared.events import print_event
 from apsara_cli.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.session import load_session_messages, sanitize_session_name, save_session_messages
-from apsara_cli.cli.text import summarize_history
-from apsara_cli.cli.ui import ConsoleUI
-from apsara_cli.services.agent.tools import agent_runtime_context, get_agent_tools
+from apsara_cli.shared.text import summarize_history
+from apsara_cli.shared.ui import ConsoleUI
+from apsara_cli.engine.tools import agent_runtime_context, get_agent_tools
 
 
 def print_chat_help(ui: "ConsoleUI") -> None:
@@ -114,8 +114,8 @@ async def execute_instruction(
     options: "ResolvedOptions",
     ui: "ConsoleUI",
 ) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
-    from apsara_cli.services.agent.executor import run_agent_stream
-    from apsara_cli.services.agent.llm import DEFAULT_MAX_COMPLETION_TOKENS
+    from apsara_cli.engine.executor import run_agent_stream
+    from apsara_cli.engine.llm import DEFAULT_MAX_COMPLETION_TOKENS
 
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
@@ -218,8 +218,9 @@ async def chat_loop(args: object, config: object) -> int:
     )
     if history:
         prior_turns = sum(1 for m in history if m.get("role") == "user")
+        plural = "s" if prior_turns != 1 else ""
         ui.print_line(
-            f"  {ui.dim(f'  resumed    {prior_turns} prior turn{\"s\" if prior_turns != 1 else \"\"}')}"
+            f"  {ui.dim(f'  resumed    {prior_turns} prior turn{plural}')}"
         )
         turn_count = prior_turns
     ui.print_line(

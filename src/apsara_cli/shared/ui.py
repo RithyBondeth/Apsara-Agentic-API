@@ -25,7 +25,7 @@ try:
 except ImportError:
     msvcrt = None
 
-from apsara_cli.cli.text import format_rich_text_lines, truncate_text
+from apsara_cli.shared.text import format_rich_text_lines, truncate_text
 
 
 # ── Terminal helpers ──────────────────────────────────────────────────────────
@@ -447,7 +447,7 @@ class ConsoleUI:
             )
 
     def hide_event(self, kind: str, title: str, detail: str = "") -> None:
-        from apsara_cli.cli.types import HiddenCliEvent
+        from apsara_cli.shared.types import HiddenCliEvent
         event = HiddenCliEvent(kind=kind, title=title, detail=detail)
         self.current_turn_hidden_events.append(event)
         self.hidden_events.append(event)

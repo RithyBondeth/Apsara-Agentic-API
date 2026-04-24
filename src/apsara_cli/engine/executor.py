@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Any, AsyncGenerator
-from apsara_cli.services.agent.llm import call_llm
-from apsara_cli.services.agent.tools import execute_tool
+from apsara_cli.engine.llm import call_llm
+from apsara_cli.engine.tools import execute_tool
 
 SYSTEM_PROMPT = """You are an expert autonomous software engineer named Apsara Agent.
 You are equipped with workspace-scoped tools to read files, write files, search the codebase, inspect project structure, and replace file lines. If a command tool is available, use only simple non-interactive commands that respect the workspace boundary.

@@ -155,7 +155,7 @@ The chat welcome banner is customizable through the `[ui]` section of the config
 ## Project Structure
 
 ```text
-app/
+src/
 ├── api/
 │   └── v1/
 │       ├── api.py

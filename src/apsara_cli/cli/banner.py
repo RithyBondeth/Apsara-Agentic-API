@@ -5,8 +5,8 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from apsara_cli.cli.ui import ConsoleUI
-    from apsara_cli.config.settings import CliConfig
+    from apsara_cli.shared.ui import ConsoleUI
+    from apsara_cli.config.cli_config import CliConfig
 
 
 def center_text(text: str, width: int) -> str:
@@ -100,7 +100,7 @@ def _build_big_title_rows(terminal: int) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def _build_welcome_content(config: "CliConfig") -> list[tuple[str, tuple[str, ...]]]:
-    from apsara_cli.cli.ui import terminal_width
+    from apsara_cli.shared.ui import terminal_width
 
     terminal = max(72, min(terminal_width(), 112))
     title     = config.ui.welcome_title    or "Welcome to Apsara Agentic"
@@ -129,7 +129,7 @@ def _build_welcome_content(config: "CliConfig") -> list[tuple[str, tuple[str, ..
 
 
 def render_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> list[str]:
-    from apsara_cli.cli.ui import terminal_width
+    from apsara_cli.shared.ui import terminal_width
 
     border_color = ("2", "38;2;105;92;78")
     terminal = max(72, min(terminal_width(), 112))

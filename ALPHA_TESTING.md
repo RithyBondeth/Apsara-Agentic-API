@@ -3,6 +3,7 @@
 This guide is for early testers of the local CLI.
 
 Use this when you want someone to:
+
 - install the project locally
 - confirm the CLI works end to end
 - try real coding-assistant workflows
@@ -13,6 +14,7 @@ Use this when you want someone to:
 The goal of alpha testing is not to prove everything is perfect.
 
 The goal is to answer:
+
 - Can a new tester install it successfully?
 - Can they start a session without getting stuck?
 - Does Apsara feel useful for real coding tasks?
@@ -22,6 +24,7 @@ The goal is to answer:
 ## 2. Best Test Audience
 
 Start with 3 to 10 trusted testers who:
+
 - are comfortable using the terminal
 - can create an OpenAI API key with billing enabled
 - regularly work in local codebases
@@ -30,12 +33,14 @@ Start with 3 to 10 trusted testers who:
 ## 3. Prerequisites
 
 Each tester should have:
+
 - Python 3.9 or newer
 - a local terminal
 - an OpenAI API key with active billing
 - a repo or sample project they can safely test on
 
 Optional but recommended:
+
 - `rg` installed for better search tool behavior
 - a preferred editor set in `$EDITOR` or `$VISUAL`
 
@@ -47,20 +52,20 @@ Optional but recommended:
 cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-cli"
 ```
 
-2. Create and activate a virtual environment:
+1. Create and activate a virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-3. Install dependencies:
+1. Install dependencies:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-4. Optional: install the CLI command:
+1. Optional: install the CLI command:
 
 ```bash
 python3 -m pip install -e .
@@ -72,19 +77,19 @@ If that fails, testers can still use:
 python3 -m app.cli
 ```
 
-5. Add the API key to `.env`:
+1. Add the API key to `.env`:
 
 ```env
 OPENAI_API_KEY=your_openai_api_key
 ```
 
-6. Run the health check:
+1. Run the health check:
 
 ```bash
 python3 -m app.cli doctor --workspace .
 ```
 
-7. Initialize the project and start the CLI:
+1. Initialize the project and start the CLI:
 
 ```bash
 python3 -m app.cli init --workspace . --model gpt-5.4-mini
@@ -103,6 +108,7 @@ Describe this project.
 ```
 
 Expected result:
+
 - Apsara starts normally
 - the loading state appears
 - the final answer is readable and organized
@@ -116,6 +122,7 @@ Find the main CLI file and summarize what it does.
 ```
 
 Expected result:
+
 - Apsara searches the workspace
 - the answer mentions the correct file
 - the answer is clean without too much internal noise
@@ -129,6 +136,7 @@ Suggest one small improvement to the CLI UI and implement it.
 ```
 
 Expected result:
+
 - Apsara proposes a file change
 - a diff preview appears before approval
 - `v` shows a larger terminal diff
@@ -146,6 +154,7 @@ Run:
 Then ask a new prompt.
 
 Expected result:
+
 - the prior conversation is cleared for the active session
 - the new response does not depend on old chat context
 
@@ -158,12 +167,14 @@ Run:
 ```
 
 Expected result:
+
 - hidden tool or planning activity is visible on demand
 - the default chat remains cleaner than the detail view
 
 ## 6. What Testers Should Watch For
 
 Please ask testers to report:
+
 - setup friction
 - confusing output
 - poor formatting in long answers
@@ -178,6 +189,7 @@ Please ask testers to report:
 ## 7. Known Alpha Notes
 
 Testers should know:
+
 - this is an alpha CLI, not a final public release
 - the `apsara` command may fail on older packaging setups, but `python3 -m app.cli` should still work
 - live model access depends on the tester's own API billing and rate limits
@@ -204,6 +216,7 @@ Screenshot or terminal paste:
 ## 9. Alpha Release Checklist For Bondeth
 
 Before sharing with testers, confirm:
+
 - `.env` loading works
 - `python3 -m app.cli doctor --workspace .` works
 - `python3 -m app.cli chat --workspace . --model gpt-5.4-mini` works
@@ -231,4 +244,4 @@ I’m testing an early version of Apsara by Bondeth, a local coding assistant CL
 - Tester quickstart: [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/TESTER_QUICKSTART.md)
 - Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RUN_PROJECT.md)
 - Main project README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
-- CLI entrypoint: [app/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/app/cli.py)
+- CLI entrypoint: [src/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/cli.py)

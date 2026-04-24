@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Set
 
-from apsara_cli.core.config import settings
+from apsara_cli.config.defaults import settings
 
 
 class ToolSecurityError(Exception):

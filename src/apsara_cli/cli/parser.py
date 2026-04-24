@@ -1,7 +1,7 @@
 import argparse
 from typing import Optional, Sequence
 
-from apsara_cli.config.settings import DEFAULT_CONFIG_PATH
+from apsara_cli.config.cli_config import DEFAULT_CONFIG_PATH
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -87,7 +87,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import asyncio
     import sys
 
-    from apsara_cli.config.settings import load_cli_config
+    from apsara_cli.config.cli_config import load_cli_config
     from apsara_cli.cli.options import load_cli_environment
 
     parser = build_parser()
