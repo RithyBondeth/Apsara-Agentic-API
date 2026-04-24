@@ -197,34 +197,63 @@ class ConsoleUI:
     # ── Rich text renderer ────────────────────────────────────────────────────
 
     def render_rich_text(self, text: str, typing_delay: float = 0.0) -> None:
+        import re as _re
+        _ansi_re = _re.compile(r"\x1b\[[0-9;]*m")
+
+        def _visual_len(s: str) -> int:
+            return len(_ansi_re.sub("", s))
+
+        def _highlight_code(src: str, lang: str) -> list[str]:
+            if not lang or not self.use_color:
+                return src.splitlines()
+            try:
+                from pygments import highlight
+                from pygments.lexers import get_lexer_by_name
+                from pygments.formatters import Terminal256Formatter
+                lexer = get_lexer_by_name(lang, stripall=False)
+                formatted = highlight(src, lexer, Terminal256Formatter(style="monokai"))
+                return formatted.rstrip("\n").splitlines()
+            except Exception:
+                return src.splitlines()
+
         width = self.content_width()
         lines = format_rich_text_lines(text, width)
         in_code_block = False
         code_lines: list[str] = []
+        current_lang = ""
 
-        def flush_code(lines_buf: list[str]) -> None:
+        def flush_code(lines_buf: list[str], lang: str) -> None:
             if not lines_buf:
                 return
-            box_w = max((len(l) for l in lines_buf), default=0) + 4
+            highlighted = _highlight_code("\n".join(lines_buf), lang)
+            box_w = max((_visual_len(l) for l in highlighted), default=0) + 4
             border_color = "38;2;80;100;140"
             top    = self.style("╭" + "─" * box_w + "╮", border_color)
             bottom = self.style("╰" + "─" * box_w + "╯", border_color)
             self.print_line(f"  {top}")
-            for cl in lines_buf:
-                pad = " " * (box_w - len(cl) - 2)
+            for cl in highlighted:
+                pad = " " * max(box_w - _visual_len(cl) - 2, 0)
                 left  = self.style("│ ", border_color)
                 right = self.style(" │", border_color)
-                print(f"  {left}{self.style(cl, '38;2;173;203;255')}{pad}{right}")
+                fallback = self.style(cl, "38;2;173;203;255") if not lang else cl
+                print(f"  {left}{fallback}{pad}{right}")
             self.print_line(f"  {bottom}")
 
-        for line_type, line in lines:
-            if line_type == "code":
+        for item in lines:
+            line_type = item[0]
+            line = item[1] if len(item) > 1 else ""
+
+            if line_type == "code_start":
+                current_lang = line
                 in_code_block = True
+                continue
+            if line_type == "code":
                 code_lines.append(line)
                 continue
-            if in_code_block and line_type != "code":
-                flush_code(code_lines)
+            if in_code_block:
+                flush_code(code_lines, current_lang)
                 code_lines = []
+                current_lang = ""
                 in_code_block = False
 
             if line_type == "blank":
@@ -238,7 +267,7 @@ class ConsoleUI:
                 self._print_typed("  ", line, "38;2;240;236;231", typing_delay)
 
         if code_lines:
-            flush_code(code_lines)
+            flush_code(code_lines, current_lang)
 
     def render_diff_text(self, diff_text: str) -> None:
         for raw_line in diff_text.splitlines() or [""]:

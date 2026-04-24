@@ -39,9 +39,10 @@ def clean_inline_markdown(text: str) -> str:
     return cleaned.strip()
 
 
-def format_rich_text_lines(text: str, width: int) -> list[tuple[str, str]]:
-    lines: list[tuple[str, str]] = []
+def format_rich_text_lines(text: str, width: int) -> list[tuple]:
+    lines: list[tuple] = []
     code_block = False
+    code_lang = ""
     paragraph_parts: list[str] = []
 
     def flush_paragraph() -> None:
@@ -58,9 +59,13 @@ def format_rich_text_lines(text: str, width: int) -> list[tuple[str, str]]:
 
         if stripped.startswith("```"):
             flush_paragraph()
-            code_block = not code_block
             if not code_block:
+                code_lang = stripped[3:].strip().lower() or ""
+                lines.append(("code_start", code_lang))
+            else:
                 lines.append(("blank", ""))
+                code_lang = ""
+            code_block = not code_block
             continue
 
         if code_block:

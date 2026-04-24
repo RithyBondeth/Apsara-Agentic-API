@@ -72,6 +72,13 @@ def _tool_result_summary(tool_name: str, result: str) -> tuple[bool, str]:
 def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
     event_type = event.get("type")
 
+    if event_type == "retry_notice":
+        delay = event.get("delay", 5)
+        attempt = event.get("attempt", 1)
+        ui.stop_spinner()
+        ui.warning(f"Rate limited — retrying in {delay}s (attempt {attempt}/3)...")
+        return
+
     if event_type == "status":
         message = str(event.get("message", "")).strip() or "Apsara is thinking"
         normalized = "Apsara is thinking" if "thinking" in message.lower() else "Apsara is working"

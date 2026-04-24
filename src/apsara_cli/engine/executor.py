@@ -56,6 +56,10 @@ async def run_agent_stream(
         assistant_dict: Dict[str, Any] = {"role": "assistant", "content": full_content}
 
         if tool_calls:
+            # Close any streamed thinking text before processing tool calls
+            if streamed_text:
+                yield json.dumps({"type": "response_end", "content": full_content})
+
             assistant_dict["tool_calls"] = tool_calls
             messages.append(assistant_dict)
 
