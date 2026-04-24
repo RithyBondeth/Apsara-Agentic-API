@@ -6,15 +6,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-from apsara_cli.shared.types import ResolvedOptions
-    from apsara_cli.shared.ui import ConsoleUI
+    from apsara_cli.shared.types import ResolvedOptions
 
-    from apsara_cli.shared.types import DoctorCheckResult
 from apsara_cli.cli.options import detect_model_credentials
+from apsara_cli.cli.session import get_sessions_dir
 from apsara_cli.engine.tools import agent_runtime_context, execute_tool, get_agent_tools
+from apsara_cli.shared.types import DoctorCheckResult
 
-    from apsara_cli.engine.llm import call_llm
 
+def render_doctor_result(ui, result: "DoctorCheckResult") -> None:
+    if result.status == "pass":
+        ui.success(f"[{result.name}] {result.detail}")
+    elif result.status == "warn":
+        ui.warning(f"[{result.name}] {result.detail}")
+    else:
+        ui.error(f"[{result.name}] {result.detail}")
+
+
+def run_workspace_checks(options, config, args) -> list:
     results = []
 
     if sys.version_info >= (3, 9):

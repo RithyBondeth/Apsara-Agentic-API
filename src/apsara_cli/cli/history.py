@@ -2,7 +2,7 @@ from typing import Any
 
 from apsara_cli.shared.types import ContextTrimResult
 
-SAFE_INPUT_TOKEN_BUDGET = 24_000
+SAFE_INPUT_TOKEN_BUDGET = 9_000
 
 
 def group_conversation_turns(history: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
