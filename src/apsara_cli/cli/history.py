@@ -91,7 +91,7 @@ def update_history_from_event(history: list[dict[str, Any]], event: dict[str, An
             "tool_call_id": event.get("tool_call_id"),
             "name": event.get("name", ""),
         })
-    elif event_type == "final_answer":
+    elif event_type in {"final_answer", "response_end"}:
         history.append({
             "role": "assistant",
             "content": event.get("content"),

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, AsyncGenerator
 import litellm
 from apsara_cli.engine.tools import get_agent_tools
 
@@ -20,11 +20,8 @@ def estimate_request_tokens(messages: list[dict], model: str = "gpt-4o") -> int:
             sum(len(str(message.get("content", ""))) for message in messages) // 4,
         )
 
+
 async def call_llm(messages: list[dict], model: str = "gpt-4o") -> tuple[Any, Any]:
-    """
-    Sends the conversation to OpenAI with our configured tools via LiteLLM router.
-    Returns (Response Message Object, Usage Dictionary Object)
-    """
     try:
         response = await litellm.acompletion(
             model=model,
@@ -36,3 +33,70 @@ async def call_llm(messages: list[dict], model: str = "gpt-4o") -> tuple[Any, An
         return response.choices[0].message, response.usage.model_dump() if response.usage else {}
     except Exception as e:
         return {"error": str(e)}, {}
+
+
+async def call_llm_stream(
+    messages: list[dict], model: str = "gpt-4o"
+) -> AsyncGenerator[dict, None]:
+    """
+    Streaming LLM call. Yields dicts:
+      {"type": "text_chunk", "content": str}   — zero or more text chunks
+      {"type": "stream_done", "content": str, "tool_calls": list|None, "usage": dict}
+      {"type": "stream_error", "error": str}
+    """
+    try:
+        response = await litellm.acompletion(
+            model=model,
+            messages=messages,
+            tools=get_agent_tools(),
+            tool_choice="auto",
+            max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+            stream=True,
+        )
+
+        content_parts: list[str] = []
+        tool_calls_acc: dict[int, dict] = {}
+        usage: dict = {}
+
+        async for chunk in response:
+            choice = chunk.choices[0] if chunk.choices else None
+            if not choice:
+                continue
+            delta = choice.delta
+
+            if delta.content:
+                content_parts.append(delta.content)
+                yield {"type": "text_chunk", "content": delta.content}
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
+                    if tc.id:
+                        tool_calls_acc[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_acc[idx]["function"]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+
+            if hasattr(chunk, "usage") and chunk.usage:
+                try:
+                    usage = chunk.usage.model_dump()
+                except Exception:
+                    pass
+
+        yield {
+            "type": "stream_done",
+            "content": "".join(content_parts),
+            "tool_calls": list(tool_calls_acc.values()) if tool_calls_acc else None,
+            "usage": usage,
+        }
+
+    except Exception as e:
+        yield {"type": "stream_error", "error": str(e)}

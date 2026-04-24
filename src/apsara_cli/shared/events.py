@@ -140,6 +140,18 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
         )
         return
 
+    if event_type == "response_start":
+        ui.stream_text_start()
+        return
+
+    if event_type == "text_chunk":
+        ui.stream_text_chunk(str(event.get("content", "")))
+        return
+
+    if event_type == "response_end":
+        ui.stream_text_end()
+        return
+
     if event_type == "final_answer":
         ui.stop_spinner()
         ui.assistant(str(event.get("content", "")))

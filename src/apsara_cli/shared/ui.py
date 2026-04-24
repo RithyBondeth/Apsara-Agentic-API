@@ -401,7 +401,6 @@ class ConsoleUI:
 
     def assistant(self, text: str) -> None:
         self.print_line()
-        # Header bar
         header_line = (
             f"  {self.badge('apsara', '15', '48;2;133;92;219')}  "
             f"{self.style('Apsara by Bondeth', '1', '38;2;215;200;255')}"
@@ -409,6 +408,29 @@ class ConsoleUI:
         self.print_line(header_line)
         self.print_line()
         self.render_rich_text(text, typing_delay=self.typing_delay)
+
+    def stream_text_start(self) -> None:
+        self.stop_spinner()
+        self.print_line()
+        header_line = (
+            f"  {self.badge('apsara', '15', '48;2;133;92;219')}  "
+            f"{self.style('Apsara by Bondeth', '1', '38;2;215;200;255')}"
+        )
+        self.print_line(header_line)
+        self.print_line()
+        sys.stdout.write("  ")
+        sys.stdout.flush()
+
+    def stream_text_chunk(self, chunk: str) -> None:
+        color = "38;2;240;236;231"
+        formatted = chunk.replace("\n", "\n  ")
+        styled = self.style(formatted, color) if self.use_color else formatted
+        sys.stdout.write(styled)
+        sys.stdout.flush()
+
+    def stream_text_end(self) -> None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
     # ── Tool activity (inline compact) ───────────────────────────────────────
 
