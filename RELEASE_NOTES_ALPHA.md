@@ -9,6 +9,7 @@ Date: `2026-04-07`
 This alpha release introduces the first polished local CLI experience for Apsara by Bondeth.
 
 The focus of this release is:
+
 - local coding assistant workflows
 - safer code-edit review
 - better terminal presentation
@@ -54,6 +55,7 @@ The focus of this release is:
 ## Recommended Test Areas
 
 Please focus alpha feedback on:
+
 - first-run setup
 - CLI readability and overall UX
 - response organization

@@ -1,7 +1,7 @@
 import argparse
 from typing import Optional, Sequence
 
-from app.cli_config import DEFAULT_CONFIG_PATH
+from apsara_cli.config.settings import DEFAULT_CONFIG_PATH
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -66,19 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "run":
-        from app.cli.chat import run_once
+        from apsara_cli.cli.chat import run_once
         return await run_once(args, config)
     if args.command == "chat":
-        from app.cli.chat import chat_loop
+        from apsara_cli.cli.chat import chat_loop
         return await chat_loop(args, config)
     if args.command == "init":
-        from app.cli.workspace import init_workspace
+        from apsara_cli.cli.workspace import init_workspace
         return await init_workspace(args, config)
     if args.command == "sessions":
-        from app.cli.workspace import print_sessions
+        from apsara_cli.cli.workspace import print_sessions
         return print_sessions(args, config)
     if args.command == "doctor":
-        from app.cli.doctor import doctor
+        from apsara_cli.cli.doctor import doctor
         return await doctor(args, config)
     raise ValueError(f"Unknown command: {args.command}")
 
@@ -87,8 +87,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import asyncio
     import sys
 
-    from app.cli_config import load_cli_config
-    from app.cli.options import load_cli_environment
+    from apsara_cli.config.settings import load_cli_config
+    from apsara_cli.cli.options import load_cli_environment
 
     parser = build_parser()
     args = parser.parse_args(argv)

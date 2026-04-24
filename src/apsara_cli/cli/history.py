@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.cli.types import ContextTrimResult
+from apsara_cli.cli.types import ContextTrimResult
 
 SAFE_INPUT_TOKEN_BUDGET = 24_000
 
@@ -30,8 +30,8 @@ def flatten_conversation_turns(turns: list[list[dict[str, Any]]]) -> list[dict[s
 
 
 def trim_history_for_request(history: list[dict[str, Any]], model: str) -> ContextTrimResult:
-    from app.services.agent.executor import SYSTEM_PROMPT
-    from app.services.agent.llm import estimate_request_tokens
+    from apsara_cli.services.agent.executor import SYSTEM_PROMPT
+    from apsara_cli.services.agent.llm import estimate_request_tokens
 
     base_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     original_tokens = estimate_request_tokens(base_messages + history, model=model)

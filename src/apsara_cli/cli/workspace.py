@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from app.cli.options import resolve_value, resolve_workspace
-from app.cli.session import get_sessions_dir, list_sessions, sanitize_session_name
-from app.cli.ui import ConsoleUI, default_use_color
+from apsara_cli.cli.options import resolve_value, resolve_workspace
+from apsara_cli.cli.session import get_sessions_dir, list_sessions, sanitize_session_name
+from apsara_cli.cli.ui import ConsoleUI, default_use_color
 
 
 def render_project_config_toml(
@@ -61,7 +61,7 @@ def ensure_gitignore_entries(workspace_root: Path, entries: Sequence[str]) -> li
 
 
 async def init_workspace(args: argparse.Namespace, config: object) -> int:
-    from app.cli_config import load_cli_config, project_config_path
+    from apsara_cli.config.settings import load_cli_config, project_config_path
 
     use_color = bool(resolve_value(args.color, config.defaults.color, default_use_color()))
     ui = ConsoleUI(use_color=use_color)
@@ -100,7 +100,7 @@ async def init_workspace(args: argparse.Namespace, config: object) -> int:
     init_args.workspace = str(workspace_root)
     initialized_config = load_cli_config(str(config_path), str(workspace_root))
 
-    from app.cli.chat import chat_loop
+    from apsara_cli.cli.chat import chat_loop
     return await chat_loop(init_args, initialized_config)
 
 

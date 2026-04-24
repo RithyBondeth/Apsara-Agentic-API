@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.scripts]
-apsara = "app.cli:main"
+apsara = "apsara_cli.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+where = ["src"]
+include = ["apsara_cli*"]

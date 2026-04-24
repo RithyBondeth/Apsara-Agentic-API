@@ -5,8 +5,8 @@ from typing import Any, Optional, Set
 
 from dotenv import dotenv_values
 
-from app.cli.types import ResolvedOptions
-from app.cli.ui import default_use_color
+from apsara_cli.cli.types import ResolvedOptions
+from apsara_cli.cli.ui import default_use_color
 
 
 def resolve_workspace(path_str: str) -> Path:

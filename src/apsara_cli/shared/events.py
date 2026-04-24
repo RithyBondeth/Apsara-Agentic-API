@@ -2,9 +2,9 @@ import json
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.cli.ui import ConsoleUI
+    from apsara_cli.shared.ui import ConsoleUI
 
-from app.cli.text import truncate_text
+from apsara_cli.shared.text import truncate_text
 
 
 def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:

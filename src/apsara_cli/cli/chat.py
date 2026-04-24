@@ -3,16 +3,16 @@ from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.cli.types import ResolvedOptions
-    from app.cli.ui import ConsoleUI
+    from apsara_cli.cli.types import ResolvedOptions
+    from apsara_cli.cli.ui import ConsoleUI
 
-from app.cli.events import print_event
-from app.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
-from app.cli.options import resolve_runtime_options
-from app.cli.session import load_session_messages, sanitize_session_name, save_session_messages
-from app.cli.text import summarize_history
-from app.cli.ui import ConsoleUI
-from app.services.agent.tools import agent_runtime_context, get_agent_tools
+from apsara_cli.cli.events import print_event
+from apsara_cli.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
+from apsara_cli.cli.options import resolve_runtime_options
+from apsara_cli.cli.session import load_session_messages, sanitize_session_name, save_session_messages
+from apsara_cli.cli.text import summarize_history
+from apsara_cli.cli.ui import ConsoleUI
+from apsara_cli.services.agent.tools import agent_runtime_context, get_agent_tools
 
 
 def print_chat_help(ui: "ConsoleUI") -> None:
@@ -114,8 +114,8 @@ async def execute_instruction(
     options: "ResolvedOptions",
     ui: "ConsoleUI",
 ) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
-    from app.services.agent.executor import run_agent_stream
-    from app.services.agent.llm import DEFAULT_MAX_COMPLETION_TOKENS
+    from apsara_cli.services.agent.executor import run_agent_stream
+    from apsara_cli.services.agent.llm import DEFAULT_MAX_COMPLETION_TOKENS
 
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
@@ -195,7 +195,7 @@ async def run_once(args: object, config: object) -> int:
 
 
 async def chat_loop(args: object, config: object) -> int:
-    from app.cli.banner import print_welcome_banner
+    from apsara_cli.cli.banner import print_welcome_banner
 
     options = resolve_runtime_options(args, config.defaults)
     ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve)

@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.cli.types import ResolvedOptions
-    from app.cli.ui import ConsoleUI
+    from apsara_cli.cli.types import ResolvedOptions
+    from apsara_cli.cli.ui import ConsoleUI
 
-from app.cli.types import DoctorCheckResult
-from app.cli.options import detect_model_credentials
-from app.services.agent.tools import agent_runtime_context, execute_tool, get_agent_tools
+from apsara_cli.cli.types import DoctorCheckResult
+from apsara_cli.cli.options import detect_model_credentials
+from apsara_cli.services.agent.tools import agent_runtime_context, execute_tool, get_agent_tools
 
 
 def render_doctor_result(ui: "ConsoleUI", result: DoctorCheckResult) -> None:
@@ -29,7 +29,7 @@ def run_workspace_checks(
     config: object,
     args: object,
 ) -> list[DoctorCheckResult]:
-    from app.cli.session import get_sessions_dir
+    from apsara_cli.cli.session import get_sessions_dir
 
     results = []
 
@@ -123,7 +123,7 @@ def run_workspace_checks(
 
 
 async def run_live_probe(options: "ResolvedOptions") -> DoctorCheckResult:
-    from app.services.agent.llm import call_llm
+    from apsara_cli.services.agent.llm import call_llm
 
     probe_messages = [{"role": "user", "content": "Reply with the single word READY."}]
 
@@ -149,8 +149,8 @@ async def run_live_probe(options: "ResolvedOptions") -> DoctorCheckResult:
 
 
 async def doctor(args: object, config: object) -> int:
-    from app.cli.options import resolve_runtime_options
-    from app.cli.ui import ConsoleUI
+    from apsara_cli.cli.options import resolve_runtime_options
+    from apsara_cli.cli.ui import ConsoleUI
 
     options = resolve_runtime_options(args, config.defaults)
     ui = ConsoleUI(use_color=options.use_color, auto_approve=True)

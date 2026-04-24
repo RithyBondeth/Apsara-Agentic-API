@@ -1,6 +1,6 @@
 from typing import Any
 import litellm
-from app.services.agent.tools import get_agent_tools
+from apsara_cli.services.agent.tools import get_agent_tools
 
 litellm.suppress_debug_info = True
 DEFAULT_MAX_COMPLETION_TOKENS = 1200

@@ -68,6 +68,7 @@ Suggest one small improvement to the CLI UI and implement it.
 ## 8. Test the edit review flow
 
 When Apsara proposes a code change:
+
 - `Enter` approves
 - `n` rejects
 - `a` approves the rest of the session
@@ -84,6 +85,7 @@ When Apsara proposes a code change:
 ## 10. If something goes wrong
 
 Please send:
+
 - the command you ran
 - the prompt you asked
 - the full error message

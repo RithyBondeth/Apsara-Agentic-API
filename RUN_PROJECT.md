@@ -64,6 +64,7 @@ AGENT_MAX_FILE_SIZE_BYTES=1000000
 ```
 
 Important:
+
 - `OPENAI_API_KEY` is required for the CLI and agent model calls.
 - The CLI now auto-loads `.env`, so you do not need to export the key manually.
 - `SQLALCHEMY_DATABASE_URI` is required for the API server and database-backed routes.
