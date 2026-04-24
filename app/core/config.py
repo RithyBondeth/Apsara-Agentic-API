@@ -7,10 +7,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_ignore_empty=True, extra="ignore"
     )
-    API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "FastAPI Project"
+    PROJECT_NAME: str = "Apsara Agentic CLI"
     DEBUG: bool = False
-    SQLALCHEMY_DATABASE_URI: str = "postgresql://user:password@localhost:5432/dbname"
     AGENT_WORKSPACE_ROOT: str = "."
     AGENT_ENABLE_BASH_TOOL: bool = False
     AGENT_ALLOWED_COMMANDS: str = "pwd,ls,find,rg,cat,sed,head,tail,wc"
