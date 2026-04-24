@@ -95,55 +95,58 @@ async def execute_agent_for_conversation(
 
     # 4. Stream generation via Server-Sent Events natively to UI
     async def event_generator():
-        async for chunk_str in run_agent_stream(history, model=request.model):
-            # Send immediate feed down to client UI
-            yield f"data: {chunk_str}\n\n"
+        try:
+            async for chunk_str in run_agent_stream(history, model=request.model):
+                # Send immediate feed down to client UI
+                yield f"data: {chunk_str}\n\n"
 
-            # Inline extraction of token analytics strictly recording billing to PostgreSQL
-            try:
-                chunk = json.loads(chunk_str)
-                chunk_type = chunk.get("type")
+                # Inline extraction of token analytics strictly recording billing to PostgreSQL
+                try:
+                    chunk = json.loads(chunk_str)
+                    chunk_type = chunk.get("type")
 
-                if chunk_type == "assistant_dispatch":
-                    persist_message(
-                        db=db,
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=chunk.get("content"),
-                        tool_data={"tool_calls": chunk.get("tool_calls", [])},
-                    )
-                elif chunk_type == "tool_result":
-                    persist_message(
-                        db=db,
-                        conversation_id=conversation_id,
-                        role="tool",
-                        content=chunk.get("result"),
-                        tool_data={
-                            "tool_call_id": chunk.get("tool_call_id"),
-                            "name": chunk.get("name", ""),
-                        },
-                    )
-                elif chunk_type == "final_answer":
-                    persist_message(
-                        db=db,
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=chunk.get("content"),
-                    )
-                elif chunk_type == "usage":
-                    usage_data = chunk.get("data", {})
-                    if "total_tokens" in usage_data:
-                        usage_row = UsageModel(
-                            user_id=user_id,
-                            project_id=project_id,
+                    if chunk_type == "assistant_dispatch":
+                        persist_message(
+                            db=db,
                             conversation_id=conversation_id,
-                            tokens_used=usage_data["total_tokens"],
-                            model=request.model,
+                            role="assistant",
+                            content=chunk.get("content"),
+                            tool_data={"tool_calls": chunk.get("tool_calls", [])},
                         )
-                        db.add(usage_row)
-                        db.commit()
-            except Exception:
-                db.rollback()
-                pass
+                    elif chunk_type == "tool_result":
+                        persist_message(
+                            db=db,
+                            conversation_id=conversation_id,
+                            role="tool",
+                            content=chunk.get("result"),
+                            tool_data={
+                                "tool_call_id": chunk.get("tool_call_id"),
+                                "name": chunk.get("name", ""),
+                            },
+                        )
+                    elif chunk_type == "final_answer":
+                        persist_message(
+                            db=db,
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content=chunk.get("content"),
+                        )
+                    elif chunk_type == "usage":
+                        usage_data = chunk.get("data", {})
+                        if "total_tokens" in usage_data:
+                            usage_row = UsageModel(
+                                user_id=user_id,
+                                project_id=project_id,
+                                conversation_id=conversation_id,
+                                tokens_used=usage_data["total_tokens"],
+                                model=request.model,
+                            )
+                            db.add(usage_row)
+                            db.commit()
+                except Exception:
+                    db.rollback()
+        except Exception as exc:
+            error_event = json.dumps({"type": "error", "message": f"Stream failed: {exc}"})
+            yield f"data: {error_event}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
