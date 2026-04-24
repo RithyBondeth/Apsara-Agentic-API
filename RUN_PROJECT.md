@@ -5,7 +5,7 @@ This guide shows how to run the project step by step.
 ## 1. Go to the project folder
 
 ```bash
-cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-api"
+cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-cli"
 ```
 
 ## 2. Create and activate a virtual environment
@@ -187,7 +187,7 @@ Use this order if you want the smoothest setup:
 
 ## 10. Files you may want to check
 
-- Project guide: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/README.md)
-- CLI entrypoint: [app/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/app/cli.py)
-- App config: [app/core/config.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/app/core/config.py)
-- Development runner: [run-dev.sh](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/run-dev.sh)
+- Project guide: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
+- CLI entrypoint: [app/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/app/cli.py)
+- App config: [app/core/config.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/app/core/config.py)
+- Development runner: [run-dev.sh](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/run-dev.sh)
