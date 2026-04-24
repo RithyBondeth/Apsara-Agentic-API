@@ -38,7 +38,7 @@ def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
 
 def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> ResolvedOptions:
     workspace = resolve_value(args.workspace, config_defaults.workspace, ".")
-    model = resolve_value(args.model, config_defaults.model, "gpt-4o")
+    model = resolve_value(args.model, config_defaults.model, "groq/llama3-70b-8192")
     session = resolve_value(args.session, config_defaults.session, "default")
     stateless = bool(resolve_value(args.stateless, config_defaults.stateless, False))
     allow_bash = bool(resolve_value(args.allow_bash, config_defaults.allow_bash, False))
