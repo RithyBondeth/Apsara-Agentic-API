@@ -15,7 +15,9 @@ except ImportError:
 
 SLASH_COMMANDS = [
     "/help", "/details", "/clear", "/history", "/tools",
-    "/model", "/session", "/save", "/exit", "/quit",
+    "/status", "/model", "/session", "/save",
+    "/sessions", "/sessions clear",
+    "/exit", "/quit",
 ]
 
 _session: Optional[object] = None

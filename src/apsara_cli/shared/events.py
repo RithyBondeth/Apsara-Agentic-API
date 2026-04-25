@@ -1,10 +1,26 @@
 import json
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from apsara_cli.shared.ui import ConsoleUI
 
 from apsara_cli.shared.text import truncate_text
+
+
+def _error_suggestion(message: str) -> Optional[str]:
+    """Return a short actionable hint for a known error pattern, or None."""
+    m = message.lower()
+    if "rate limit" in m or "429" in m or "too many requests" in m or "ratelimit" in m:
+        return "Tip: wait a moment and retry, or switch models with /model <name>."
+    if ("context" in m or "token" in m) and ("length" in m or "too long" in m or "maximum" in m or "exceed" in m):
+        return "Tip: use /clear to reset history, or /status to check context size."
+    if "connection" in m or "timeout" in m or "timed out" in m or "network" in m or "resolve" in m:
+        return "Tip: check your internet connection and try again."
+    if "not found" in m or "404" in m or ("model" in m and ("exist" in m or "invalid" in m or "unknown" in m)):
+        return "Tip: verify the model name with /model, or run `apsara doctor --live`."
+    if "permission" in m or "403" in m or "forbidden" in m:
+        return "Tip: your API key may lack access to this model. Run `apsara doctor --live`."
+    return "Tip: run `apsara doctor --live` for full diagnostics."
 
 
 def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -182,12 +198,23 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
 
     if event_type == "blocked":
         ui.blocked(str(event.get("message", "")))
+        ui.set_turn_outcome("blocked")
         return
 
     if event_type == "error":
         if event.get("auth_error"):
             ui.error("Authentication failed — your API key may be missing or invalid.")
-            ui.info("Run 'apsara doctor --live' to diagnose, or check your .env file.")
+            ui.info("Run `apsara doctor --live` to diagnose, or check your .env file.")
         else:
-            ui.error(str(event.get("message", "")))
+            error_msg = str(event.get("message", ""))
+            # Trim raw LiteLLM noise: take only the first meaningful line
+            first_line = next(
+                (ln.strip() for ln in error_msg.splitlines() if ln.strip()),
+                error_msg,
+            )
+            ui.error(first_line)
+            suggestion = _error_suggestion(error_msg)
+            if suggestion:
+                ui.info(suggestion)
+        ui.set_turn_outcome("error")
         return

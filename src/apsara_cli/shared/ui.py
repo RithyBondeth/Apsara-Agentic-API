@@ -145,6 +145,14 @@ class ConsoleUI:
         self.current_turn_hidden_events: list[Any] = []
         self.work_notice_shown = False
 
+        # Turn outcome tracking ("ok" | "error" | "blocked" | "")
+        self._turn_outcome: str = ""
+
+        # Cumulative session token counters
+        self._session_prompt_tokens: int = 0
+        self._session_completion_tokens: int = 0
+        self._session_total_tokens: int = 0
+
         self.spinner_message = "Apsara is working"
         self.spinner_stop_event = threading.Event()
         self.spinner_thread: Optional[threading.Thread] = None
@@ -435,11 +443,21 @@ class ConsoleUI:
         self.print_line(f"  {self.dim(f'  ↳ saved to {session_path}')}")
 
     def usage(self, usage_data: dict[str, Any]) -> None:
-        p = usage_data.get("prompt_tokens", "?")
-        c = usage_data.get("completion_tokens", "?")
-        t = usage_data.get("total_tokens", "?")
+        p = usage_data.get("prompt_tokens") or 0
+        c = usage_data.get("completion_tokens") or 0
+        t = usage_data.get("total_tokens") or 0
+        self._session_prompt_tokens     += p
+        self._session_completion_tokens += c
+        self._session_total_tokens      += t
+
         self.print_line(
-            f"  {self.dim(f'  tokens  {p} in · {c} out · {t} total')}"
+            f"  {self.dim(f'  turn     {p} in · {c} out · {t} total')}"
+        )
+        sp = self._session_prompt_tokens
+        sc = self._session_completion_tokens
+        st = self._session_total_tokens
+        self.print_line(
+            f"  {self.dim(f'  session  {sp:,} in · {sc:,} out · {st:,} total')}"
         )
 
     # ── Assistant message ─────────────────────────────────────────────────────
@@ -476,6 +494,9 @@ class ConsoleUI:
     def stream_text_end(self) -> None:
         sys.stdout.write("\n")
         sys.stdout.flush()
+        # Subtle visual close — signals the stream is complete and input is ready
+        w = min(36, max(16, terminal_width() // 3))
+        self.print_line(f"  {self.style('─' * w, '2', '38;2;110;100;88')}")
 
     # ── Tool activity (inline compact) ───────────────────────────────────────
 
@@ -498,20 +519,41 @@ class ConsoleUI:
 
     # ── Hidden events log ─────────────────────────────────────────────────────
 
+    def set_turn_outcome(self, outcome: str) -> None:
+        """Record the outcome of the current turn: 'ok', 'error', or 'blocked'."""
+        self._turn_outcome = outcome
+
     def begin_turn(self) -> None:
         self.stop_spinner()
         self.current_turn_hidden_events = []
         self.work_notice_shown = False
+        self._turn_outcome = ""
 
     def finish_turn(self) -> None:
         self.stop_spinner()
         self.latest_hidden_events = list(self.current_turn_hidden_events)
         count = len(self.latest_hidden_events)
+
+        outcome = self._turn_outcome or "ok"
+        if outcome == "error":
+            outcome_icon  = self.style("✗", "38;2;220;100;100")
+            outcome_label = self.style("turn ended with error", "38;2;255;168;168")
+        elif outcome == "blocked":
+            outcome_icon  = self.style("⊘", "38;2;247;200;100")
+            outcome_label = self.style("action was blocked", "38;2;247;223;181")
+        else:
+            outcome_icon  = self.style("✓", "38;2;100;190;140")
+            outcome_label = self.style("turn complete", "38;2;150;215;175")
+
         if count:
             plural = "s" if count != 1 else ""
-            self.print_line(
-                f"  {self.dim(f'  /details to inspect {count} internal step{plural}')}"
+            details_hint = self.style(
+                f"  ·  /details → {count} internal step{plural}",
+                "38;2;140;160;200",
             )
+            self.print_line(f"  {outcome_icon} {outcome_label}{details_hint}")
+        else:
+            self.print_line(f"  {outcome_icon} {outcome_label}")
 
     def hide_event(self, kind: str, title: str, detail: str = "") -> None:
         from apsara_cli.shared.types import HiddenCliEvent

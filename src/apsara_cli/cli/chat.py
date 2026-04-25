@@ -10,8 +10,14 @@ from apsara_cli.shared.events import print_event
 from apsara_cli.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
 from apsara_cli.cli.input import get_input_async
 from apsara_cli.cli.options import resolve_runtime_options
-from apsara_cli.cli.session import load_session_messages, sanitize_session_name, save_session_messages
-from apsara_cli.shared.text import summarize_history
+from apsara_cli.cli.session import (
+    get_session_path,
+    list_sessions,
+    load_session_messages,
+    sanitize_session_name,
+    save_session_messages,
+)
+from apsara_cli.shared.text import summarize_history  # noqa: F401 (kept for potential external use)
 from apsara_cli.shared.ui import ConsoleUI
 from apsara_cli.engine.tools import agent_runtime_context, get_agent_tools
 
@@ -26,9 +32,14 @@ def print_chat_help(ui: "ConsoleUI") -> None:
     ui.print_line("/model     Show the current model")
     ui.print_line("/model X   Switch to a different model for later turns")
     ui.print_line("/session   Show session and workspace details")
-    ui.print_line("/save      Save the current session now")
-    ui.print_line("/clear     Clear in-memory conversation history")
-    ui.print_line("/exit      Quit the chat session")
+    ui.print_line("/save              Save the current session now")
+    ui.print_line("/sessions          List all saved sessions")
+    ui.print_line("/sessions clear    Delete all saved sessions")
+    ui.print_line("/sessions clear X  Delete session named X")
+    ui.print_line("/clear             Clear in-memory conversation history")
+    ui.print_line("/exit              Quit the chat session")
+    ui.print_line("")
+    ui.print_line("Tips: Esc+Enter inserts a newline · ↑/↓ navigates input history · Tab completes /commands")
 
 
 def handle_chat_command(
@@ -68,12 +79,65 @@ def handle_chat_command(
         return True, current_model
 
     if command_text == "/history":
-        summaries = summarize_history(history)
-        if not summaries:
+        if not history:
             ui.info("No conversation history yet.")
-        else:
-            for line in summaries:
-                ui.print_line(line)
+            return True, current_model
+
+        total_msgs = len(history)
+        user_turns = sum(1 for m in history if m.get("role") == "user")
+        turn_plural = "s" if user_turns != 1 else ""
+        ui.print_line()
+        ui.print_line(
+            f"  {ui.badge('history', '15', '48;2;70;85;115')}  "
+            f"{ui.style(f'{user_turns} turn{turn_plural}  ·  {total_msgs} messages', '38;2;200;210;230')}"
+        )
+        ui.print_line()
+
+        turn_num = 0
+        i = 0
+        while i < len(history):
+            msg = history[i]
+            role = msg.get("role", "")
+
+            if role == "user":
+                turn_num += 1
+                content = str(msg.get("content") or "").strip().replace("\n", " ")
+                if len(content) > 74:
+                    content = content[:71] + "…"
+                ui.print_line(
+                    f"  {ui.style(f'#{turn_num}', '1', '38;2;180;210;255')}"
+                    f"  {ui.style('you', '2', '38;2;130;140;160')}"
+                    f"  {ui.style(content, '38;2;230;228;224')}"
+                )
+                i += 1
+
+                # Collect assistant messages and tool calls for this turn
+                tool_call_count = 0
+                while i < len(history) and history[i].get("role") != "user":
+                    inner = history[i]
+                    inner_role = inner.get("role", "")
+                    if inner_role == "assistant":
+                        tool_calls = inner.get("tool_calls") or []
+                        tool_call_count += len(tool_calls)
+                        reply = str(inner.get("content") or "").strip().replace("\n", " ")
+                        if reply:
+                            if len(reply) > 74:
+                                reply = reply[:71] + "…"
+                            ui.print_line(
+                                f"    {ui.style('apsara', '2', '38;2;130;140;160')}"
+                                f"  {ui.style(reply, '38;2;210;208;204')}"
+                            )
+                    i += 1
+
+                if tool_call_count:
+                    plural = "s" if tool_call_count != 1 else ""
+                    ui.print_line(
+                        f"    {ui.dim(f'↳ {tool_call_count} tool call{plural}')}"
+                    )
+            else:
+                i += 1
+
+        ui.print_line()
         return True, current_model
 
     if command_text == "/tools":
@@ -129,6 +193,110 @@ def handle_chat_command(
 
     if command_text == "/save":
         save_if_needed(history, current_model, options, ui)
+        return True, current_model
+
+    if command_text == "/sessions" or command_text.startswith("/sessions "):
+        sub = command_text[len("/sessions"):].strip()  # "", "clear", or "clear <name>"
+
+        if not sub:
+            # ── List all sessions ──────────────────────────────────────────
+            sessions = list_sessions(options.workspace_root)
+            if not sessions:
+                ui.info("No saved sessions found.")
+                return True, current_model
+
+            current_name = (
+                sanitize_session_name(options.session) if not options.stateless else None
+            )
+            ui.print_line()
+            ui.print_line(
+                f"  {ui.badge('sessions', '15', '48;2;70;85;115')}  "
+                f"{ui.style(f'{len(sessions)} saved', '38;2;200;210;230')}"
+            )
+            ui.print_line()
+            for path in sessions:
+                name = path.stem
+                is_current = name == current_name
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    msg_count = len(payload.get("messages", []))
+                    updated_at = payload.get("updated_at", "")[:19].replace("T", " ")
+                    model_name = payload.get("model", "?")
+                except Exception:
+                    msg_count, updated_at, model_name = 0, "?", "?"
+                size_kb = path.stat().st_size / 1024
+                current_marker = ui.style("  ← active", "38;2;120;200;150") if is_current else ""
+                ui.print_line(
+                    f"  {ui.style('◆', '38;2;100;150;220')} "
+                    f"{ui.style(name, '1', '38;2;180;210;255')}"
+                    f"{current_marker}"
+                )
+                ui.print_line(
+                    f"    {ui.dim(f'{msg_count} messages  ·  {updated_at}  ·  {size_kb:.1f} kb  ·  {model_name}')}"
+                )
+            ui.print_line()
+            ui.print_line(f"  {ui.dim('  /sessions clear         delete all sessions')}")
+            ui.print_line(f"  {ui.dim('  /sessions clear <name>  delete a specific session')}")
+            ui.print_line()
+            return True, current_model
+
+        if sub == "clear":
+            # ── Delete all sessions ────────────────────────────────────────
+            sessions = list_sessions(options.workspace_root)
+            if not sessions:
+                ui.info("No saved sessions to clear.")
+                return True, current_model
+
+            ui.warning(f"This will permanently delete {len(sessions)} session file(s).")
+            ui.print_line(
+                f"  {ui.badge('↵  confirm', '17', '48;2;80;170;140')}  "
+                f"{ui.badge('n  cancel', '17', '48;2;200;100;80')}"
+            )
+            key = ui.read_single_key()
+            if key not in {"y", "Y", "\r", "\n", ""}:
+                ui.info("Cancelled.")
+                return True, current_model
+
+            deleted = 0
+            for path in sessions:
+                try:
+                    path.unlink()
+                    deleted += 1
+                except Exception as exc:
+                    ui.error(f"Could not delete {path.name}: {exc}")
+            ui.success(f"Deleted {deleted} session file(s).")
+            return True, current_model
+
+        if sub.startswith("clear "):
+            # ── Delete one session by name ─────────────────────────────────
+            target_name = sub[len("clear "):].strip()
+            if not target_name:
+                ui.error("Usage: /sessions clear <name>")
+                return True, current_model
+
+            target_path = get_session_path(options.workspace_root, target_name)
+            if not target_path.exists():
+                ui.error(f"Session '{target_name}' not found.")
+                return True, current_model
+
+            ui.warning(f"Delete session '{target_name}'?")
+            ui.print_line(
+                f"  {ui.badge('↵  confirm', '17', '48;2;80;170;140')}  "
+                f"{ui.badge('n  cancel', '17', '48;2;200;100;80')}"
+            )
+            key = ui.read_single_key()
+            if key not in {"y", "Y", "\r", "\n", ""}:
+                ui.info("Cancelled.")
+                return True, current_model
+
+            try:
+                target_path.unlink()
+                ui.success(f"Session '{target_name}' deleted.")
+            except Exception as exc:
+                ui.error(f"Could not delete session: {exc}")
+            return True, current_model
+
+        ui.error("Usage: /sessions  |  /sessions clear  |  /sessions clear <name>")
         return True, current_model
 
     if command_text == "/status":
@@ -293,7 +461,7 @@ async def chat_loop(args: object, config: object) -> int:
         )
         turn_count = prior_turns
     ui.print_line(
-        f"  {ui.dim('  /help for commands  ·  /exit to quit')}"
+        f"  {ui.dim('  /help for commands  ·  /exit to quit  ·  Esc+Enter for newline')}"
     )
 
     while True:
