@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 from apsara_cli.shared.events import print_event
 from apsara_cli.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
-from apsara_cli.cli.input import get_input
+from apsara_cli.cli.input import get_input_async
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.session import load_session_messages, sanitize_session_name, save_session_messages
 from apsara_cli.shared.text import summarize_history
@@ -230,7 +230,7 @@ async def chat_loop(args: object, config: object) -> int:
 
     while True:
         try:
-            instruction = get_input(ui.prompt("you"), options.workspace_root).strip()
+            instruction = (await get_input_async(ui.prompt("you"), options.workspace_root)).strip()
         except KeyboardInterrupt:
             ui.print_line()
             ui.info("Ctrl+C pressed. Type /exit to quit.")

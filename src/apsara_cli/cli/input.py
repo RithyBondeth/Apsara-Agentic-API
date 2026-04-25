@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -47,16 +48,19 @@ def _build_session(workspace_root: Path) -> object:
     )
 
 
-def get_input(prompt_text: str, workspace_root: Path) -> str:
+async def get_input_async(prompt_text: str, workspace_root: Path) -> str:
     """
-    Read a line of input using prompt_toolkit if available, else plain input().
+    Async input using prompt_toolkit's prompt_async() so it doesn't conflict
+    with the outer asyncio event loop started by asyncio.run() in parser.py.
+    Falls back to a thread-safe stdin read when prompt_toolkit is unavailable.
     Raises KeyboardInterrupt or EOFError as normal.
     """
     if not HAS_PROMPT_TOOLKIT:
-        return input(prompt_text)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: input(prompt_text))
 
     global _session
     if _session is None:
         _session = _build_session(workspace_root)
 
-    return _session.prompt(ANSI(prompt_text))
+    return await _session.prompt_async(ANSI(prompt_text))
