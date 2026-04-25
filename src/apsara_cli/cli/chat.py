@@ -21,7 +21,8 @@ def print_chat_help(ui: "ConsoleUI") -> None:
     ui.print_line("/help      Show available chat commands")
     ui.print_line("/details   Show hidden internal activity from the latest turn")
     ui.print_line("/history   Show recent conversation turns")
-    ui.print_line("/tools     Show enabled tools for this session")
+    ui.print_line("/tools     Show enabled tools with descriptions")
+    ui.print_line("/status    Show token usage, turns, and context health")
     ui.print_line("/model     Show the current model")
     ui.print_line("/model X   Switch to a different model for later turns")
     ui.print_line("/session   Show session and workspace details")
@@ -39,6 +40,17 @@ def handle_chat_command(
     ui: "ConsoleUI",
 ) -> tuple[bool, str]:
     if command_text in {"/exit", "/quit"}:
+        turns = sum(1 for m in history if m.get("role") == "user")
+        if turns > 0 and options.stateless:
+            ui.warning(f"Stateless session — {turns} turn(s) will not be saved.")
+            ui.print_line(
+                f"  {ui.badge('↵  exit', '17', '48;2;80;170;140')}  "
+                f"{ui.badge('n  stay', '17', '48;2;200;100;80')}"
+            )
+            key = ui.read_single_key()
+            if key not in {"y", "Y", "\r", "\n", ""}:
+                ui.info("Staying in session.")
+                return True, current_model
         return False, current_model
 
     if command_text == "/help":
@@ -71,10 +83,25 @@ def handle_chat_command(
             allowed_commands=options.allowed_commands,
             max_file_size_bytes=options.max_file_size,
         ):
-            tools = [tool["function"]["name"] for tool in get_agent_tools()]
-        ui.info("Enabled tools:")
-        for tool_name in tools:
-            ui.print_line(f"- {tool_name}")
+            tools = get_agent_tools()
+        ui.print_line()
+        ui.print_line(
+            f"  {ui.badge('tools', '15', '48;2;70;85;115')}  "
+            f"{ui.style(f'{len(tools)} enabled', '1', '38;2;200;210;230')}"
+        )
+        ui.print_line()
+        for tool in tools:
+            fn = tool.get("function", {})
+            name = fn.get("name", "unknown")
+            desc = fn.get("description", "")
+            ui.print_line(
+                f"  {ui.style('◆', '38;2;100;150;220')} "
+                f"{ui.style(name, '1', '38;2;180;210;255')}"
+            )
+            if desc:
+                short_desc = desc[:86] + "…" if len(desc) > 86 else desc
+                ui.print_line(f"    {ui.dim(short_desc)}")
+        ui.print_line()
         return True, current_model
 
     if command_text == "/model":
@@ -102,6 +129,47 @@ def handle_chat_command(
 
     if command_text == "/save":
         save_if_needed(history, current_model, options, ui)
+        return True, current_model
+
+    if command_text == "/status":
+        from apsara_cli.engine.executor import SYSTEM_PROMPT
+        from apsara_cli.engine.llm import estimate_request_tokens
+
+        base = [{"role": "system", "content": SYSTEM_PROMPT}]
+        tokens = estimate_request_tokens(base + history, model=current_model)
+        pct = int(tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
+        turns = sum(1 for m in history if m.get("role") == "user")
+        msgs = len(history)
+        session_label = (
+            sanitize_session_name(options.session) if not options.stateless else "stateless"
+        )
+
+        if pct < 70:
+            health_color = "38;2;120;200;150"
+            health_label = "good"
+        elif pct < 90:
+            health_color = "38;2;247;223;181"
+            health_label = "warn"
+        else:
+            health_color = "38;2;255;168;168"
+            health_label = "critical"
+
+        ui.print_line()
+        ui.print_line(
+            f"  {ui.badge('status', '15', '48;2;70;85;115')}  "
+            f"{ui.style('Session Context', '1', '38;2;200;210;230')}"
+        )
+        ui.print_line()
+        ui.print_line(f"  {ui.dim('  model    ')} {ui.style(current_model, '38;2;188;218;255')}")
+        ui.print_line(f"  {ui.dim('  session  ')} {ui.style(session_label, '38;2;220;216;210')}")
+        ui.print_line(f"  {ui.dim('  turns    ')} {ui.style(str(turns), '38;2;220;216;210')}")
+        ui.print_line(f"  {ui.dim('  messages ')} {ui.style(str(msgs), '38;2;220;216;210')}")
+        ui.print_line(
+            f"  {ui.dim('  tokens   ')} "
+            f"{ui.style(f'{tokens:,}', health_color)} "
+            f"{ui.dim(f'/ {SAFE_INPUT_TOKEN_BUDGET:,} budget  ({pct}%  {health_label})')}"
+        )
+        ui.print_line()
         return True, current_model
 
     ui.error("Unknown slash command. Type /help for a list of commands.")
@@ -250,6 +318,23 @@ async def chat_loop(args: object, config: object) -> int:
             continue
 
         turn_count += 1
+
+        # Proactive token budget warning before executing
+        try:
+            from apsara_cli.engine.executor import SYSTEM_PROMPT
+            from apsara_cli.engine.llm import estimate_request_tokens
+            _base = [{"role": "system", "content": SYSTEM_PROMPT}]
+            _curr_tokens = estimate_request_tokens(_base + history, model=current_model)
+            _warn_threshold = int(SAFE_INPUT_TOKEN_BUDGET * 0.75)
+            if _curr_tokens >= _warn_threshold:
+                _pct = int(_curr_tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
+                ui.warning(
+                    f"Context at {_pct}% capacity ({_curr_tokens:,} / {SAFE_INPUT_TOKEN_BUDGET:,} tokens). "
+                    "Oldest turns may be trimmed — use /clear to reset."
+                )
+        except Exception:
+            pass
+
         ui.print_turn_separator(turn_count)
 
         history, latest_usage = await execute_instruction(

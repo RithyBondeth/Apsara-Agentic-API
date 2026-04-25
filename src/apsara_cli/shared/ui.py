@@ -582,14 +582,14 @@ class ConsoleUI:
 
     def prompt_confirmation_choice(self, *, allow_view: bool = False, allow_editor: bool = False) -> str:
         options = [
-            f"{self.badge('↵', '17', '48;2;80;170;140')} approve",
-            f"{self.badge('n', '17', '48;2;200;100;80')} reject",
-            f"{self.badge('a', '17', '48;2;80;120;200')} always",
+            f"{self.badge('↵  approve', '17', '48;2;80;170;140')}",
+            f"{self.badge('n  reject', '17', '48;2;200;100;80')}",
+            f"{self.badge('a  always', '17', '48;2;80;120;200')}",
         ]
         if allow_view:
-            options.append(f"{self.badge('v', '17', '48;2;80;95;125')} full diff")
+            options.append(f"{self.badge('v  full diff', '17', '48;2;80;95;125')}")
         if allow_editor:
-            options.append(f"{self.badge('e', '15', '48;2;110;80;180')} $EDITOR")
+            options.append(f"{self.badge('e  editor', '15', '48;2;110;80;180')}")
         self.print_line(f"  {'  '.join(options)}")
 
         while True:
@@ -621,16 +621,22 @@ class ConsoleUI:
 
         title, preview, diff_preview, diff_full, diff_editor, path_hint = describe_action(action, payload)
         self.print_line()
-        border = "38;2;180;140;60"
-        self.print_line(
-            f"  {self.badge('approve', '17', '48;2;180;130;40')}  "
-            f"{self.style(title, '1', '38;2;247;230;190')}"
-        )
+        border_color = "38;2;180;140;60"
+        box_w = min(self.content_width() - 4, 70)
+        label = self.badge("approve?", "17", "48;2;180;130;40")
+        title_styled = self.style(title, "1", "38;2;247;230;190")
+        self.print_line(f"  {self.style('╭' + '─' * box_w + '╮', border_color)}")
+        self.print_line(f"  {self.style('│', border_color)}  {label}  {title_styled}")
+        self.print_line(f"  {self.style('╰' + '─' * box_w + '╯', border_color)}")
+
         if diff_preview:
+            self.print_line()
             self.render_diff_text(diff_preview)
         elif preview:
+            self.print_line()
             self.print_block(truncate_text(preview, max_lines=12, max_chars=900), "38;2;205;211;222")
 
+        self.print_line()
         while True:
             choice = self.prompt_confirmation_choice(
                 allow_view=bool(diff_full and diff_full != diff_preview),
