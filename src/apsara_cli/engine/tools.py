@@ -1,6 +1,8 @@
 import difflib
+import glob as _glob
 import os
 import shlex
+import shutil
 import subprocess
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -205,6 +207,143 @@ def read_file(path: str) -> str:
             return file_handle.read()
     except Exception as exc:
         return _format_exception("Error reading file", exc)
+
+
+def read_file_lines(path: str, start_line: int, end_line: int) -> str:
+    """Read a specific line range from a file (1-indexed, inclusive).
+    Returns lines prefixed with their line number so the model can use
+    replace_file_lines accurately."""
+    try:
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error: '{path}' is not a file."
+
+        if start_line < 1:
+            return "Error: start_line must be >= 1."
+        if end_line < start_line:
+            return "Error: end_line must be >= start_line."
+
+        with resolved_path.open("r", encoding="utf-8") as fh:
+            all_lines = fh.readlines()
+
+        total = len(all_lines)
+        if start_line > total:
+            return f"Error: start_line {start_line} exceeds file length ({total} lines)."
+
+        actual_end = min(end_line, total)
+        selected = all_lines[start_line - 1 : actual_end]
+
+        numbered = "".join(
+            f"{start_line + i:4d}: {line}" for i, line in enumerate(selected)
+        )
+        header = f"# {_display_path(resolved_path)}  (lines {start_line}–{actual_end} of {total})\n"
+        return header + numbered
+    except Exception as exc:
+        return _format_exception("Error reading file lines", exc)
+
+
+def create_directory(path: str) -> str:
+    """Create a directory (and any missing parents) inside the workspace."""
+    try:
+        resolved_path = _resolve_path(path)
+        if resolved_path.exists() and resolved_path.is_dir():
+            return f"Directory already exists: {_display_path(resolved_path)}"
+        resolved_path.mkdir(parents=True, exist_ok=True)
+        return f"Created directory: {_display_path(resolved_path)}"
+    except Exception as exc:
+        return _format_exception("Error creating directory", exc)
+
+
+def delete_file(path: str) -> str:
+    """Delete a file inside the workspace (requires confirmation)."""
+    try:
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error: '{path}' is not a file. Use the bash tool to remove directories."
+
+        display = _display_path(resolved_path)
+        preview = _read_confirmation_text(resolved_path)
+
+        if not _confirm_action(
+            "delete_file",
+            {
+                "path": str(resolved_path),
+                "display_path": display,
+                "content_preview": preview[:800] if preview else "(binary or unreadable)",
+            },
+        ):
+            return f"Error: deletion of '{display}' was not approved."
+
+        resolved_path.unlink()
+        return f"Deleted: {display}"
+    except Exception as exc:
+        return _format_exception("Error deleting file", exc)
+
+
+def move_file(src: str, dest: str) -> str:
+    """Move or rename a file within the workspace (requires confirmation)."""
+    try:
+        resolved_src = _resolve_path(src, must_exist=True)
+        resolved_dest = _resolve_path(dest)
+
+        if not resolved_src.is_file():
+            return f"Error: '{src}' is not a file."
+        if resolved_dest.is_dir():
+            resolved_dest = resolved_dest / resolved_src.name
+
+        display_src = _display_path(resolved_src)
+        display_dest = _display_path(resolved_dest)
+
+        if not _confirm_action(
+            "move_file",
+            {
+                "path": str(resolved_src),
+                "display_path": display_src,
+                "dest_path": str(resolved_dest),
+                "display_dest": display_dest,
+                "overwrites": resolved_dest.exists(),
+            },
+        ):
+            return f"Error: move '{display_src}' → '{display_dest}' was not approved."
+
+        resolved_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(resolved_src), str(resolved_dest))
+        return f"Moved: {display_src} → {display_dest}"
+    except Exception as exc:
+        return _format_exception("Error moving file", exc)
+
+
+def glob_search(pattern: str, root_dir: str = ".") -> str:
+    """Find files matching a glob pattern (e.g. **/*.py, src/**/*.ts).
+    Returns paths relative to the workspace root, capped at 200 results."""
+    try:
+        resolved_root = _resolve_path(root_dir, must_exist=True)
+        if not resolved_root.is_dir():
+            return f"Error: '{root_dir}' is not a directory."
+
+        matches = _glob.glob(
+            str(resolved_root / pattern), recursive=True
+        )
+        # Filter to files only and enforce workspace boundary
+        results: list[str] = []
+        for m in sorted(matches):
+            mp = Path(m)
+            try:
+                mp.relative_to(_workspace_root())
+            except ValueError:
+                continue
+            if mp.is_file() or mp.is_dir():
+                results.append(_display_path(mp))
+            if len(results) >= 200:
+                break
+
+        if not results:
+            return f"No matches for pattern '{pattern}' in '{root_dir}'."
+
+        suffix = f"\n... (capped at 200)" if len(results) == 200 else ""
+        return "\n".join(results) + suffix
+    except Exception as exc:
+        return _format_exception("Error in glob search", exc)
 
 
 def write_to_file(path: str, content: str) -> str:
@@ -495,7 +634,7 @@ def get_agent_tools() -> list[Dict[str, Any]]:
     tools = [
         _tool_definition(
             "read_file",
-            "Read the text contents of a file at a specific path inside the configured workspace.",
+            "Read the complete text contents of a file inside the workspace.",
             {
                 "path": {
                     "type": "string",
@@ -503,6 +642,80 @@ def get_agent_tools() -> list[Dict[str, Any]]:
                 }
             },
             ["path"],
+        ),
+        _tool_definition(
+            "read_file_lines",
+            "Read a specific range of lines from a file (1-indexed, inclusive). "
+            "Use this instead of read_file when you only need part of a large file. "
+            "Returns lines prefixed with their line numbers.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": "The file path to read.",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to read (1-indexed).",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Last line to read (1-indexed, inclusive).",
+                },
+            },
+            ["path", "start_line", "end_line"],
+        ),
+        _tool_definition(
+            "glob_search",
+            "Find files or directories matching a glob pattern inside the workspace "
+            "(e.g. '**/*.py', 'src/**/*.ts', 'tests/test_*.py'). Returns up to 200 matches.",
+            {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern. Use ** for recursive matching.",
+                },
+                "root_dir": {
+                    "type": "string",
+                    "description": "Directory to search from. Defaults to workspace root.",
+                },
+            },
+            ["pattern"],
+        ),
+        _tool_definition(
+            "create_directory",
+            "Create a directory (and any missing parent directories) inside the workspace.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path to create. Relative paths resolve from the workspace root.",
+                }
+            },
+            ["path"],
+        ),
+        _tool_definition(
+            "delete_file",
+            "Delete a file inside the workspace. Requires user confirmation.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": "Path of the file to delete.",
+                }
+            },
+            ["path"],
+        ),
+        _tool_definition(
+            "move_file",
+            "Move or rename a file within the workspace. Requires user confirmation.",
+            {
+                "src": {
+                    "type": "string",
+                    "description": "Current path of the file.",
+                },
+                "dest": {
+                    "type": "string",
+                    "description": "Destination path or directory.",
+                },
+            },
+            ["src", "dest"],
         ),
         _tool_definition(
             "write_to_file",
@@ -590,10 +803,15 @@ def get_agent_tools() -> list[Dict[str, Any]]:
 def get_tool_registry() -> Dict[str, Callable[..., str]]:
     registry: Dict[str, Callable[..., str]] = {
         "read_file": read_file,
+        "read_file_lines": read_file_lines,
         "write_to_file": write_to_file,
         "search_files": search_files,
+        "glob_search": glob_search,
         "list_project_structure": list_project_structure,
         "replace_file_lines": replace_file_lines,
+        "create_directory": create_directory,
+        "delete_file": delete_file,
+        "move_file": move_file,
     }
     if _bash_enabled():
         registry["run_bash_command"] = run_bash_command

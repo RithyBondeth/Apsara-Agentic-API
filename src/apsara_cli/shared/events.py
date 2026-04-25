@@ -21,6 +21,14 @@ def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:
 
     if n in {"read_file", "read_file_lines"}:
         return f"reading {_first('path', 'file_path')}"
+    if n == "glob_search":
+        return f"searching {_first('pattern')}"
+    if n == "create_directory":
+        return f"creating dir {_first('path', 'directory')}"
+    if n == "delete_file":
+        return f"deleting {_first('path')}"
+    if n == "move_file":
+        return f"moving {_first('src')} → {_first('dest')}"
     if n == "write_to_file":
         return f"writing {_first('path', 'file_path')}"
     if n == "replace_file_lines":
@@ -56,6 +64,14 @@ def _tool_result_summary(tool_name: str, result: str) -> tuple[bool, str]:
     n = tool_name.lower()
     if n in {"read_file", "read_file_lines"}:
         return True, f"{line_count} line{'s' if line_count != 1 else ''} read"
+    if n == "glob_search":
+        return True, f"{line_count} match{'es' if line_count != 1 else ''}"
+    if n == "create_directory":
+        return True, "directory created"
+    if n == "delete_file":
+        return True, "file deleted"
+    if n == "move_file":
+        return True, "file moved"
     if n == "write_to_file":
         return True, f"written  ({char_count} chars)"
     if n == "replace_file_lines":

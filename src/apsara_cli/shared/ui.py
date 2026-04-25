@@ -102,6 +102,22 @@ def describe_action(
             path,
         )
 
+    if action == "delete_file":
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
+        preview = payload.get("content_preview")
+        return (
+            f"Delete file {path}",
+            preview if isinstance(preview, str) else None,
+            None, None, None, path,
+        )
+
+    if action == "move_file":
+        src = payload.get("display_path") or payload.get("path", "<unknown>")
+        dest = payload.get("display_dest") or payload.get("dest_path", "<unknown>")
+        overwrites = payload.get("overwrites", False)
+        title = f"Move {src} → {dest}" + (" (overwrites existing)" if overwrites else "")
+        return (title, None, None, None, None, src)
+
     if action == "run_bash_command":
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
