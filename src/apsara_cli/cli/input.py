@@ -15,7 +15,10 @@ except ImportError:
 
 SLASH_COMMANDS = [
     "/help", "/details", "/clear", "/history", "/tools",
-    "/status", "/model", "/session", "/save",
+    "/status", "/model", "/models",
+    "/models openai", "/models anthropic", "/models groq",
+    "/models google", "/models mistral", "/models deepseek", "/models ollama",
+    "/session", "/save",
     "/sessions", "/sessions clear",
     "/exit", "/quit",
 ]

@@ -20,6 +20,14 @@ from apsara_cli.cli.session import (
 from apsara_cli.shared.text import summarize_history  # noqa: F401 (kept for potential external use)
 from apsara_cli.shared.ui import ConsoleUI
 from apsara_cli.engine.tools import agent_runtime_context, get_agent_tools
+from apsara_cli.engine.models import (
+    MODELS,
+    format_context_window,
+    is_key_available,
+    lookup_model,
+    providers_in_order,
+    resolve_model_id,
+)
 
 
 def print_chat_help(ui: "ConsoleUI") -> None:
@@ -29,8 +37,9 @@ def print_chat_help(ui: "ConsoleUI") -> None:
     ui.print_line("/history   Show recent conversation turns")
     ui.print_line("/tools     Show enabled tools with descriptions")
     ui.print_line("/status    Show token usage, turns, and context health")
+    ui.print_line("/models    Browse all supported models with key status")
     ui.print_line("/model     Show the current model")
-    ui.print_line("/model X   Switch to a different model for later turns")
+    ui.print_line("/model X   Switch model (accepts full ID or short alias)")
     ui.print_line("/session   Show session and workspace details")
     ui.print_line("/save              Save the current session now")
     ui.print_line("/sessions          List all saved sessions")
@@ -168,17 +177,142 @@ def handle_chat_command(
         ui.print_line()
         return True, current_model
 
+    if command_text == "/models" or command_text.startswith("/models "):
+        # ── /models [provider-filter] ──────────────────────────────────────
+        filt = command_text[len("/models"):].strip().lower()
+        providers = providers_in_order()
+
+        _TIER_COLOR = {
+            "free":  ("38;2;120;200;150", "free"),
+            "paid":  ("38;2;247;200;100", "paid"),
+            "local": ("38;2;160;180;220", "local"),
+        }
+
+        ui.print_line()
+        header_parts = [ui.badge("models", "15", "48;2;70;85;115")]
+        if filt:
+            header_parts.append(ui.style(f"filtered: {filt}", "38;2;200;210;230"))
+        else:
+            total = len(MODELS)
+            free_count  = sum(1 for m in MODELS if m.tier in {"free", "local"})
+            paid_count  = sum(1 for m in MODELS if m.tier == "paid")
+            header_parts.append(
+                ui.style(f"{total} models  ·  {free_count} free/local  ·  {paid_count} paid", "38;2;200;210;230")
+            )
+        ui.print_line(f"  {'  '.join(header_parts)}")
+        ui.print_line()
+
+        shown_any = False
+        for provider in providers:
+            entries = [m for m in MODELS if m.provider == provider]
+            if filt and not any(
+                filt in m.model_id.lower() or filt in m.display_name.lower() or filt == m.provider
+                for m in entries
+            ):
+                continue
+
+            provider_label = ui.style(provider.upper(), "1", "38;2;190;200;220")
+            ui.print_line(f"  {provider_label}")
+
+            for entry in entries:
+                if filt and filt not in entry.model_id.lower() and filt not in entry.display_name.lower() and filt != provider:
+                    continue
+                shown_any = True
+
+                is_current = entry.model_id == current_model
+                has_key    = is_key_available(entry)
+                ctx        = format_context_window(entry.context_window)
+                tier_color, tier_label = _TIER_COLOR.get(entry.tier, ("38;2;200;200;200", entry.tier))
+
+                # Status icon
+                if is_current:
+                    status_icon = ui.style("●", "38;2;120;200;150")
+                elif has_key or entry.tier == "local":
+                    status_icon = ui.style("○", "38;2;140;170;200")
+                else:
+                    status_icon = ui.style("○", "38;2;120;100;90")
+
+                name_style = ("1", "38;2;220;225;240") if is_current else ("38;2;190;200;220",)
+                name_text  = ui.style(entry.display_name, *name_style)
+                tier_badge = ui.style(f"[{tier_label}]", tier_color)
+                ctx_text   = ui.dim(f"{ctx} ctx")
+
+                if has_key or entry.tier == "local":
+                    key_text = ui.style("✓ key set", "38;2;120;200;150")
+                else:
+                    key_text = ui.style(f"✗ needs {entry.env_var}", "38;2;220;120;100")
+
+                ui.print_line(
+                    f"    {status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}"
+                )
+                # model_id + aliases hint
+                aliases_hint = ""
+                if entry.aliases:
+                    aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
+                ui.print_line(
+                    f"       {ui.dim(entry.model_id)}{aliases_hint}"
+                )
+
+            ui.print_line()
+
+        if not shown_any:
+            ui.warning(f"No models match '{filt}'. Try a provider name like 'openai', 'groq', 'anthropic'.")
+            ui.print_line()
+
+        ui.print_line(f"  {ui.dim('Switch with /model <id-or-alias>  ·  /models <provider> to filter')}")
+        ui.print_line()
+        return True, current_model
+
     if command_text == "/model":
-        ui.info(f"Current model: {current_model}")
+        entry = lookup_model(current_model)
+        if entry:
+            ctx   = format_context_window(entry.context_window)
+            has_k = is_key_available(entry)
+            key_s = ui.style("✓ key set", "38;2;120;200;150") if (has_k or entry.tier == "local") else ui.style(f"✗ needs {entry.env_var}", "38;2;220;120;100")
+            ui.info(
+                f"Current model: {ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
+                f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}  {key_s}"
+            )
+        else:
+            ui.info(f"Current model: {current_model}")
         return True, current_model
 
     if command_text.startswith("/model "):
-        next_model = command_text[len("/model "):].strip()
-        if not next_model:
-            ui.error("Usage: /model <model-name>")
+        raw_name  = command_text[len("/model "):].strip()
+        if not raw_name:
+            ui.error("Usage: /model <model-id-or-alias>")
             return True, current_model
-        ui.info(f"Model changed to {next_model}")
-        return True, next_model
+
+        # Resolve alias → canonical model_id
+        resolved  = resolve_model_id(raw_name)
+        entry     = lookup_model(raw_name)
+
+        if entry:
+            ctx     = format_context_window(entry.context_window)
+            has_key = is_key_available(entry)
+            ui.print_line()
+            ui.print_line(
+                f"  {ui.style('◆', '38;2;100;150;220')} "
+                f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
+                f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
+            )
+            if entry.tier == "local":
+                ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
+            elif has_key:
+                ui.print_line(f"  {ui.style(f'✓ {entry.env_var} is set', '38;2;120;200;150')}")
+            else:
+                ui.print_line(
+                    f"  {ui.style(f'✗ {entry.env_var} is not set', '38;2;220;120;100')}  "
+                    f"{ui.dim('— add it to your .env file')}"
+                )
+            ui.print_line()
+        else:
+            # Unknown model — allow it but warn
+            ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+
+        if resolved != current_model:
+            ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+        return True, resolved
 
     if command_text == "/session":
         ui.info(f"Workspace: {options.workspace_root}")
@@ -450,8 +584,23 @@ async def chat_loop(args: object, config: object) -> int:
     ui.print_line(
         f"  {ui.dim(f'  workspace  {options.workspace_root}')}"
     )
+    # Model key status
+    _model_entry = lookup_model(current_model)
+    if _model_entry:
+        _key_ok = is_key_available(_model_entry)
+        _key_hint = (
+            ui.style("✓", "38;2;100;190;140")
+            if (_key_ok or _model_entry.tier == "local")
+            else ui.style(f"✗ needs {_model_entry.env_var}", "38;2;220;120;100")
+        )
+        _ctx_hint = ui.dim(f"  {format_context_window(_model_entry.context_window)} ctx")
+        ui.print_line(
+            f"  {ui.dim(f'  model      {current_model}')}{_ctx_hint}  {_key_hint}"
+        )
+    else:
+        ui.print_line(f"  {ui.dim(f'  model      {current_model}')}")
     ui.print_line(
-        f"  {ui.dim(f'  session    {session_label}  ·  model  {current_model}')}"
+        f"  {ui.dim(f'  session    {session_label}')}"
     )
     if history:
         prior_turns = sum(1 for m in history if m.get("role") == "user")
