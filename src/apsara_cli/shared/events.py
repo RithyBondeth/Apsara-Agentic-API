@@ -169,5 +169,9 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
         return
 
     if event_type == "error":
-        ui.error(str(event.get("message", "")))
+        if event.get("auth_error"):
+            ui.error("Authentication failed — your API key may be missing or invalid.")
+            ui.info("Run 'apsara doctor --live' to diagnose, or check your .env file.")
+        else:
+            ui.error(str(event.get("message", "")))
         return

@@ -58,8 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor", help="Validate config, workspace access, tool readiness, and likely model credentials."
     )
     _add_shared_options(doctor_parser)
-    doctor_parser.add_argument("--live", action="store_true",
-                               help="Attempt a short live model probe after offline checks pass.")
+    doctor_parser.add_argument("--live", action="store_true", default=True,
+                               help="Attempt a live model probe after offline checks (default: on).")
+    doctor_parser.add_argument("--no-live", dest="live", action="store_false",
+                               help="Skip the live model probe.")
 
     return parser
 

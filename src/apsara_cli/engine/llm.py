@@ -114,6 +114,14 @@ async def call_llm_stream(
                 yield {"type": "stream_error", "error": str(e)}
                 return
 
+        except litellm.AuthenticationError as e:
+            yield {
+                "type": "stream_error",
+                "error": str(e),
+                "auth_error": True,
+            }
+            return
+
         except Exception as e:
             yield {"type": "stream_error", "error": str(e)}
             return

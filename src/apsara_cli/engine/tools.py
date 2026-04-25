@@ -240,6 +240,24 @@ def write_to_file(path: str, content: str) -> str:
         return _format_exception("Error writing file", exc)
 
 
+def _extract_command_names(command: str) -> list[str]:
+    """Return all command names used in a pipeline/chain (split on |, ||, &&, ;)."""
+    import re
+    segments = re.split(r"\|\|?|&&|;", command)
+    names: list[str] = []
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            tokens = seg.split()
+        if tokens:
+            names.append(tokens[0])
+    return names
+
+
 def run_bash_command(command: str) -> str:
     if not _bash_enabled():
         return "Error: The bash tool is disabled by configuration."
@@ -248,34 +266,35 @@ def run_bash_command(command: str) -> str:
         if not command.strip():
             return "Error: Command cannot be empty."
 
-        blocked_tokens = ["|", "&", ";", "`", "$(", ">", "<", "\n"]
-        if any(token in command for token in blocked_tokens):
-            return "Error: Shell control operators are not allowed."
+        # Block only command-substitution patterns that can escape the allowlist
+        if "`" in command or "$(" in command or "\n" in command:
+            return "Error: Command substitution (backtick / $()) is not allowed."
 
-        args = shlex.split(command)
-        if not args:
+        command_names = _extract_command_names(command)
+        if not command_names:
             return "Error: Command cannot be empty."
 
-        command_name = args[0]
-        if command_name not in _allowed_commands():
+        disallowed = [n for n in command_names if n not in _allowed_commands()]
+        if disallowed:
             allowed = ", ".join(sorted(_allowed_commands()))
             return (
-                f"Error: Command '{command_name}' is not allowed. "
-                f"Allowed commands: {allowed}"
+                f"Error: Command(s) not allowed: {', '.join(disallowed)}. "
+                f"Allowed: {allowed}"
             )
 
         if not _confirm_action(
             "run_bash_command",
             {
                 "command": command,
-                "command_name": command_name,
+                "command_name": command_names[0],
                 "cwd": str(_workspace_root()),
             },
         ):
             return f"Error executing command: command '{command}' was not approved."
 
         result = subprocess.run(
-            args,
+            command,
+            shell=True,
             capture_output=True,
             text=True,
             timeout=30,
@@ -554,11 +573,11 @@ def get_agent_tools() -> list[Dict[str, Any]]:
         tools.append(
             _tool_definition(
                 "run_bash_command",
-                "Execute an allowlisted non-interactive command from the workspace root.",
+                "Execute an allowlisted shell command from the workspace root. Pipes (|), &&, ||, and ; are supported as long as every command name is in the allowlist. Command substitution ($() and backticks) is not allowed.",
                 {
                     "command": {
                         "type": "string",
-                        "description": "A simple command string with no shell control operators.",
+                        "description": "Shell command string. Pipes and &&/||/; chaining are allowed between allowlisted commands.",
                     }
                 },
                 ["command"],
