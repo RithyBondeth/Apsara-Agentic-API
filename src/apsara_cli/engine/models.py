@@ -344,6 +344,49 @@ def resolve_model_id(name: str) -> str:
     return entry.model_id if entry else name
 
 
+# ── Key hints ────────────────────────────────────────────────────────────────
+# (env_var → (expected_prefix_or_None, human_description))
+
+KEY_HINTS: dict[str, tuple[Optional[str], str]] = {
+    "OPENAI_API_KEY":     ("sk-",     "OpenAI keys start with  sk-"),
+    "ANTHROPIC_API_KEY":  ("sk-ant-", "Anthropic keys start with  sk-ant-"),
+    "GROQ_API_KEY":       ("gsk_",    "Groq keys start with  gsk_"),
+    "GEMINI_API_KEY":     ("AI",      "Google AI keys start with  AI"),
+    "MISTRAL_API_KEY":    (None,      "Mistral API key — no fixed prefix"),
+    "DEEPSEEK_API_KEY":   ("sk-",     "DeepSeek keys start with  sk-"),
+    "XAI_API_KEY":        ("xai-",    "xAI keys start with  xai-"),
+    "COHERE_API_KEY":     (None,      "Cohere API key — no fixed prefix"),
+    "TOGETHER_API_KEY":   (None,      "Together AI key — no fixed prefix"),
+    "OPENROUTER_API_KEY": ("sk-or-",  "OpenRouter keys start with  sk-or-"),
+}
+
+
+def validate_key_format(env_var: str, value: str) -> tuple[bool, str]:
+    """
+    Returns (looks_valid, hint_message).
+    Always True when no prefix pattern is known for this key.
+    """
+    hint = KEY_HINTS.get(env_var)
+    if not hint or not hint[0]:
+        return True, ""
+    prefix, description = hint
+    if not value.startswith(prefix):
+        return False, f"Expected format: {description}"
+    return True, description
+
+
+def env_vars_with_providers() -> list[tuple[str, list[str]]]:
+    """Return [(env_var, [provider, ...]), ...] for all unique env vars in MODELS."""
+    seen: dict[str, list[str]] = {}
+    for entry in MODELS:
+        if entry.env_var:
+            if entry.env_var not in seen:
+                seen[entry.env_var] = []
+            if entry.provider not in seen[entry.env_var]:
+                seen[entry.env_var].append(entry.provider)
+    return list(seen.items())
+
+
 def is_key_available(entry: ModelEntry) -> bool:
     """True if the model's required env var is set (or no key is needed)."""
     if entry.env_var is None:

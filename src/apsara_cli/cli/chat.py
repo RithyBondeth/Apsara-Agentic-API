@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -28,6 +29,23 @@ from apsara_cli.engine.models import (
     providers_in_order,
     resolve_model_id,
 )
+
+
+def _save_api_key_to_env(workspace_root: Path, key_name: str, key_value: str) -> Path:
+    """Write or update KEY=value in workspace_root/.env (creates the file if absent)."""
+    import re as _re
+    env_path = workspace_root / ".env"
+    if env_path.exists():
+        content = env_path.read_text(encoding="utf-8")
+        pattern = _re.compile(rf"^{_re.escape(key_name)}\s*=.*$", _re.MULTILINE)
+        if pattern.search(content):
+            new_content = pattern.sub(f"{key_name}={key_value}", content)
+        else:
+            new_content = content.rstrip("\n") + f"\n{key_name}={key_value}\n"
+    else:
+        new_content = f"{key_name}={key_value}\n"
+    env_path.write_text(new_content, encoding="utf-8")
+    return env_path
 
 
 def print_chat_help(ui: "ConsoleUI") -> None:
@@ -301,10 +319,48 @@ def handle_chat_command(
             elif has_key:
                 ui.print_line(f"  {ui.style(f'✓ {entry.env_var} is set', '38;2;120;200;150')}")
             else:
+                # ── Prompt for missing API key ─────────────────────────────
                 ui.print_line(
-                    f"  {ui.style(f'✗ {entry.env_var} is not set', '38;2;220;120;100')}  "
-                    f"{ui.dim('— add it to your .env file')}"
+                    f"  {ui.style('✗', '38;2;220;120;100')} "
+                    f"{ui.style(entry.env_var, '1', '38;2;255;220;140')} "
+                    f"{ui.style('is not set', '38;2;220;120;100')}"
                 )
+                ui.print_line()
+                ui.print_line(
+                    f"  {ui.style('?', '38;2;247;200;100')} "
+                    f"Enter your {ui.style(entry.env_var, '1', '38;2;255;220;140')} "
+                    f"{ui.dim('(hidden — press Enter to skip)')}"
+                )
+                try:
+                    raw_key = getpass.getpass("  → ")
+                except (EOFError, KeyboardInterrupt):
+                    raw_key = ""
+
+                if raw_key.strip():
+                    os.environ[entry.env_var] = raw_key.strip()
+                    ui.success(f"{entry.env_var} active for this session.")
+                    ui.print_line()
+                    ui.print_line(
+                        f"  Save to .env?  "
+                        f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
+                        f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
+                    )
+                    save_choice = ui.read_single_key()
+                    if save_choice in {"y", "Y", "\r", "\n", ""}:
+                        try:
+                            saved_path = _save_api_key_to_env(
+                                options.workspace_root, entry.env_var, raw_key.strip()
+                            )
+                            ui.success(f"Saved to {saved_path}")
+                        except Exception as exc:
+                            ui.error(f"Could not write .env: {exc}")
+                    else:
+                        ui.info("Key active for this session only — not saved to disk.")
+                else:
+                    ui.warning(
+                        f"No key entered — switching anyway. "
+                        f"Add {entry.env_var} to your .env to make it permanent."
+                    )
             ui.print_line()
         else:
             # Unknown model — allow it but warn

@@ -146,6 +146,9 @@ def detect_model_credentials(model: str) -> tuple[str, Optional[list[str]], str]
     if provider == "vertex_ai":
         return ("vertex_ai", ["GOOGLE_APPLICATION_CREDENTIALS"], "Vertex AI-style model detected.")
 
+    if provider == "nvidia":
+        return ("nvidia", ["NVIDIA_API_KEY"], "NVIDIA-style model detected.")
+
     if provider == "ollama":
         return ("ollama", None, "Ollama-style local model detected; no API key required.")
 
