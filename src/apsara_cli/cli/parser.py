@@ -67,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--no-live", dest="live", action="store_false",
                                help="Skip the live model probe.")
 
+    subparsers.add_parser("login", help="Authenticate with the Apsara platform.")
+    subparsers.add_parser("logout", help="Clear local authentication credentials.")
+
     return parser
 
 
@@ -86,6 +89,12 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "doctor":
         from apsara_cli.cli.doctor import doctor
         return await doctor(args, config)
+    if args.command == "login":
+        from apsara_cli.cli.auth_cli import login
+        return await login()
+    if args.command == "logout":
+        from apsara_cli.cli.auth_cli import logout
+        return logout()
     raise ValueError(f"Unknown command: {args.command}")
 
 

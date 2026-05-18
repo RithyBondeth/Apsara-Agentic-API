@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     AGENT_ENABLE_BASH_TOOL: bool = False
     AGENT_ALLOWED_COMMANDS: str = "pwd,ls,find,rg,cat,sed,head,tail,wc"
     AGENT_MAX_FILE_SIZE_BYTES: int = 1_000_000
+    APSARA_BASE_URL: str = "http://localhost:8000"
 
     @property
     def agent_workspace_root_path(self) -> Path:

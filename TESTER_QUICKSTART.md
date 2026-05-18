@@ -15,14 +15,19 @@ cd apsara-agentic/apsara-agentic-cli
 pip install -e .
 ```
 
-## 2. Configuration
+## 2. Authentication
 
-Apsara needs an API key to work. You can use Groq (recommended for speed), OpenAI, or Anthropic.
+Apsara requires a session token to access models.
 
 ```bash
-# Export your key (or add it to a .env file later)
-export GROQ_API_KEY="your_key_here"
+# Start the login flow
+apsara login
 ```
+Follow the prompts to enter your access token. Your credentials will be stored securely in `~/.apsara/credentials.json`.
+
+## 3. Configuration (Optional)
+
+If you are using your own API keys, you can also export them:
 
 ## 3. Initialize your Project
 

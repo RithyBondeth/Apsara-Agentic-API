@@ -1,3 +1,4 @@
+from asyncio import subprocess
 import asyncio
 import os
 import sys
@@ -44,6 +45,34 @@ def run_workspace_checks(options, config, args) -> list:
         results.append(DoctorCheckResult("ripgrep", "pass", f"Found {rg_ver}."))
     except (subprocess.CalledProcessError, FileNotFoundError):
         results.append(DoctorCheckResult("ripgrep", "warn", "ripgrep (rg) not found. search_files tool will fallback to slower 'grep'."))
+
+    # Check for authentication
+    from apsara_cli.cli.auth import get_auth_token, is_authenticated
+    token = get_auth_token()
+    if token:
+        results.append(DoctorCheckResult("auth", "pass", "Found local authentication token."))
+        
+        # Verify with backend
+        import httpx
+        from apsara_cli.config.defaults import settings
+        try:
+            with httpx.Client() as client:
+                response = client.get(
+                    f"{settings.APSARA_BASE_URL}/api/v1/auth/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    user_data = response.json()
+                    results.append(DoctorCheckResult("auth-server", "pass", f"Token verified with Apsara server (User: {user_data.get('full_name')})."))
+                else:
+                    results.append(DoctorCheckResult("auth-server", "fail", f"Server rejected the stored token: {response.json().get('detail')}"))
+        except httpx.ConnectError:
+            results.append(DoctorCheckResult("auth-server", "warn", f"Could not connect to server at {settings.APSARA_BASE_URL} to verify token."))
+        except Exception as e:
+            results.append(DoctorCheckResult("auth-server", "warn", f"Unexpected error during server verification: {e}"))
+    else:
+        results.append(DoctorCheckResult("auth", "fail", "No active session found. Run 'apsara login' to authenticate."))
 
     config_path = getattr(config, "path", None)
     config_exists = getattr(config, "exists", False)

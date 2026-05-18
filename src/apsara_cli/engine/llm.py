@@ -2,6 +2,7 @@
 LLM module using LiteLLM for provider abstraction.
 Supports 100+ LLM providers through a unified interface.
 """
+from fsspec import json
 import asyncio
 from typing import Any, AsyncGenerator
 import litellm
@@ -60,6 +61,10 @@ async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versat
     Send the conversation to LLM with configured tools via LiteLLM.
     Returns (Response Message Object, Usage Dictionary Object)
     """
+    from apsara_cli.cli.auth import is_authenticated
+    if not is_authenticated():
+        return {"error": "Authentication required. Please run 'apsara login' first."}, {}
+
     try:
         response = await litellm.acompletion(
             model=model,
@@ -84,6 +89,11 @@ async def call_llm_stream(
       {"type": "stream_done", "content": str, "tool_calls": list|None, "usage": dict}
       {"type": "stream_error", "error": str}
     """
+    from apsara_cli.cli.auth import is_authenticated
+    if not is_authenticated():
+        yield {"type": "stream_error", "error": "Authentication required. Please run 'apsara login' first."}
+        return
+
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
             response = await litellm.acompletion(

@@ -1,3 +1,4 @@
+from getpass import getpass
 import json
 import os
 import shutil
@@ -710,9 +711,15 @@ async def chat_loop(args: object, config: object) -> int:
     print_welcome_banner(ui, config)
 
     # Session status line
+    from apsara_cli.cli.auth import is_authenticated
+    auth_status = ui.style("authenticated ✓", "38;2;120;200;150") if is_authenticated() else ui.style("unauthenticated ✗", "38;2;220;120;100")
+    
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
     ui.print_line(
         f"  {ui.dim(f'  workspace  {options.workspace_root}')}"
+    )
+    ui.print_line(
+        f"  {ui.dim(f'  auth       {auth_status}')}"
     )
     # Model key status
     _model_entry = lookup_model(current_model)
