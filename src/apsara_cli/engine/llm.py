@@ -28,6 +28,33 @@ def estimate_request_tokens(messages: list[dict], model: str = "groq/llama-3.3-7
         )
 
 
+async def summarize_messages(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> str:
+    """
+    Summarize a list of messages into a concise paragraph.
+    """
+    summary_prompt = (
+        "You are an assistant helping to manage conversation history. "
+        "Summarize the following conversation turns into a single concise paragraph. "
+        "Focus on the technical problems discussed, the actions taken by the agent, and the current state of the task. "
+        "Do not include pleasantries. Be extremely concise."
+    )
+    
+    summary_messages = [
+        {"role": "system", "content": summary_prompt},
+        {"role": "user", "content": json.dumps(messages)}
+    ]
+    
+    try:
+        response = await litellm.acompletion(
+            model=model,
+            messages=summary_messages,
+            max_tokens=300,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[Summary failed: {e}]"
+
+
 async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> tuple[Any, Any]:
     """
     Send the conversation to LLM with configured tools via LiteLLM.

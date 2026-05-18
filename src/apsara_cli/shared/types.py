@@ -37,3 +37,4 @@ class ContextTrimResult:
     dropped_messages: int
     original_tokens: int
     trimmed_tokens: int
+    summary: Optional[str] = None

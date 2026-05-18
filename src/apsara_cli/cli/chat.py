@@ -53,6 +53,7 @@ def print_chat_help(ui: "ConsoleUI") -> None:
     ui.print_line("/help      Show available chat commands")
     ui.print_line("/details   Show hidden internal activity from the latest turn")
     ui.print_line("/history   Show recent conversation turns")
+    ui.print_line("/add <path> Add a file's content to the conversation context")
     ui.print_line("/tools     Show enabled tools with descriptions")
     ui.print_line("/status    Show token usage, turns, and context health")
     ui.print_line("/models    Browse all supported models with key status")
@@ -103,6 +104,32 @@ def handle_chat_command(
         history.clear()
         ui.latest_hidden_events = []
         ui.warning("Session cleared in memory")
+        return True, current_model
+
+    if command_text.startswith("/add "):
+        path_str = command_text[len("/add "):].strip()
+        if not path_str:
+            ui.error("Usage: /add <path>")
+            return True, current_model
+
+        from apsara_cli.engine.tools import read_file, _resolve_path, _display_path
+        with agent_runtime_context(workspace_root=options.workspace_root):
+            try:
+                # We use _resolve_path and read_file to respect workspace boundaries
+                resolved = _resolve_path(path_str, must_exist=True)
+                content = read_file(str(resolved))
+                
+                if content.startswith("Error"):
+                    ui.error(content)
+                else:
+                    display_p = _display_path(resolved)
+                    history.append({
+                        "role": "user",
+                        "content": f"Please focus on this file: {display_p}\n\nContents of {display_p}:\n```\n{content}\n```",
+                    })
+                    ui.success(f"Added {display_p} to conversation context.")
+            except Exception as e:
+                ui.error(f"Could not add file: {e}")
         return True, current_model
 
     if command_text == "/history":
@@ -556,20 +583,23 @@ async def execute_instruction(
         max_file_size_bytes=options.max_file_size,
         confirmation_callback=None if options.auto_approve else ui.confirm_action,
     ):
-        trim_result = trim_history_for_request(next_history, model=model)
+        trim_result = await trim_history_for_request(next_history, model=model)
         if trim_result.dropped_turns:
             ui.warning(
                 f"Trimmed {trim_result.dropped_turns} earlier turn(s) "
                 f"({trim_result.dropped_messages} messages) to stay within the request budget."
             )
+            if trim_result.summary:
+                ui.info(f"Generated summary of earlier conversation: {ui.dim(trim_result.summary[:100] + '...')}")
+            
             ui.info(
                 f"Estimated input tokens: {trim_result.original_tokens} -> {trim_result.trimmed_tokens}. "
                 f"Response budget capped at about {DEFAULT_MAX_COMPLETION_TOKENS} tokens."
             )
-        if trim_result.trimmed_tokens > SAFE_INPUT_TOKEN_BUDGET:
-            ui.warning("This prompt is still very large. If rate-limit errors continue, try /clear or --stateless.")
+            # Use the trimmed history (including summary) for the rest of this turn
+            next_history = list(trim_result.request_history)
 
-        async for chunk_str in run_agent_stream(trim_result.request_history, model=model):
+        async for chunk_str in run_agent_stream(next_history, model=model):
             event = json.loads(chunk_str)
             if event.get("type") == "usage":
                 latest_usage = event.get("data")
