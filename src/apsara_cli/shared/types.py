@@ -14,6 +14,8 @@ class ResolvedOptions:
     max_file_size: Optional[int]
     auto_approve: bool
     use_color: bool
+    dry_run: bool = False
+    read_only: bool = False
 
 
 @dataclass

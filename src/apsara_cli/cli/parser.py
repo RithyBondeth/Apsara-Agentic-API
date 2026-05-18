@@ -24,6 +24,10 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
                            help="Skip interactive confirmations for writes and local commands.")
     subparser.add_argument("--confirm", dest="auto_approve", action="store_false",
                            help="Require confirmations even if the config auto-approves actions.")
+    subparser.add_argument("--dry-run", action="store_true",
+                           help="Preview all tool calls and file changes without modifying the disk.")
+    subparser.add_argument("--read-only", action="store_true",
+                           help="Disable all destructive tools (write, delete, bash, etc.).")
     subparser.add_argument("--color", dest="color", action="store_true", default=None,
                            help="Force colored terminal output.")
     subparser.add_argument("--no-color", dest="color", action="store_false",

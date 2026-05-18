@@ -1,5 +1,6 @@
 import ast
 import difflib
+import importlib.util
 import glob as _glob
 import os
 import shlex
@@ -34,6 +35,12 @@ _max_file_size_override: ContextVar[Optional[int]] = ContextVar(
 _confirmation_callback_override: ContextVar[Optional[ConfirmationCallback]] = ContextVar(
     "confirmation_callback_override", default=None
 )
+_dry_run_override: ContextVar[Optional[bool]] = ContextVar(
+    "dry_run_override", default=None
+)
+_read_only_override: ContextVar[Optional[bool]] = ContextVar(
+    "read_only_override", default=None
+)
 MAX_CONFIRMATION_FILE_BYTES = 200_000
 MAX_CONFIRMATION_DIFF_PREVIEW_LINES = 80
 MAX_CONFIRMATION_DIFF_FULL_LINES = 240
@@ -46,12 +53,16 @@ def agent_runtime_context(
     allowed_commands: Optional[Set[str]] = None,
     max_file_size_bytes: Optional[int] = None,
     confirmation_callback: Optional[ConfirmationCallback] = None,
+    dry_run: Optional[bool] = None,
+    read_only: Optional[bool] = None,
 ) -> Iterator[None]:
     workspace_token = None
     bash_token = None
     commands_token = None
     file_size_token = None
     confirmation_token = None
+    dry_run_token = None
+    read_only_token = None
 
     try:
         if workspace_root is not None:
@@ -66,8 +77,16 @@ def agent_runtime_context(
             confirmation_token = _confirmation_callback_override.set(
                 confirmation_callback
             )
+        if dry_run is not None:
+            dry_run_token = _dry_run_override.set(dry_run)
+        if read_only is not None:
+            read_only_token = _read_only_override.set(read_only)
         yield
     finally:
+        if read_only_token is not None:
+            _read_only_override.reset(read_only_token)
+        if dry_run_token is not None:
+            _dry_run_override.reset(dry_run_token)
         if confirmation_token is not None:
             _confirmation_callback_override.reset(confirmation_token)
         if file_size_token is not None:
@@ -99,6 +118,66 @@ def _allowed_commands() -> Set[str]:
     if overridden_commands is not None:
         return overridden_commands
     return settings.agent_allowed_commands
+
+
+def _dry_run() -> bool:
+    overridden_dry = _dry_run_override.get()
+    if overridden_dry is not None:
+        return overridden_dry
+    return False
+
+
+def _read_only() -> bool:
+    overridden_ro = _read_only_override.get()
+    if overridden_ro is not None:
+        return overridden_ro
+    return False
+
+
+def _load_local_plugins() -> list[dict[str, Any]]:
+    """
+    Load custom tools from .apsara/tools/*.py in the workspace.
+    Returns a list of tuples (metadata_dict, execution_callable).
+    """
+    plugins = []
+    tools_dir = _workspace_root() / ".apsara" / "tools"
+    if not tools_dir.is_dir():
+        return plugins
+
+    for py_file in tools_dir.glob("*.py"):
+        if py_file.name.startswith("__"):
+            continue
+        
+        try:
+            module_name = f"apsara_plugin_{py_file.stem}"
+            spec = importlib.util.spec_from_file_location(module_name, py_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                
+                metadata = getattr(module, "METADATA", None)
+                run_func = getattr(module, "run", None)
+                
+                if metadata and callable(run_func):
+                    # Ensure name is set in metadata
+                    if "name" not in metadata:
+                        metadata["name"] = py_file.stem
+                    
+                    # Wrap in tool definition format if only function part provided
+                    if "type" not in metadata:
+                        tool_def = {
+                            "type": "function",
+                            "function": metadata
+                        }
+                    else:
+                        tool_def = metadata
+                        
+                    plugins.append((tool_def, run_func))
+        except Exception as exc:
+            # We don't want a single bad plugin to crash the whole agent
+            print(f"Warning: Failed to load local plugin {py_file.name}: {exc}")
+            
+    return plugins
 
 
 def _max_file_size_bytes() -> int:
@@ -246,9 +325,16 @@ def read_file_lines(path: str, start_line: int, end_line: int) -> str:
 def create_directory(path: str) -> str:
     """Create a directory (and any missing parents) inside the workspace."""
     try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
         resolved_path = _resolve_path(path)
         if resolved_path.exists() and resolved_path.is_dir():
             return f"Directory already exists: {_display_path(resolved_path)}"
+        
+        if _dry_run():
+            return f"[Dry Run] Successfully created directory: {_display_path(resolved_path)} (simulated)"
+
         resolved_path.mkdir(parents=True, exist_ok=True)
         return f"Created directory: {_display_path(resolved_path)}"
     except Exception as exc:
@@ -258,6 +344,9 @@ def create_directory(path: str) -> str:
 def delete_file(path: str) -> str:
     """Delete a file inside the workspace (requires confirmation)."""
     try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
         resolved_path = _resolve_path(path, must_exist=True)
         if not resolved_path.is_file():
             return f"Error: '{path}' is not a file. Use the bash tool to remove directories."
@@ -275,6 +364,9 @@ def delete_file(path: str) -> str:
         ):
             return f"Error: deletion of '{display}' was not approved."
 
+        if _dry_run():
+            return f"[Dry Run] Successfully deleted {display} (simulated)"
+
         resolved_path.unlink()
         return f"Deleted: {display}"
     except Exception as exc:
@@ -284,6 +376,9 @@ def delete_file(path: str) -> str:
 def move_file(src: str, dest: str) -> str:
     """Move or rename a file within the workspace (requires confirmation)."""
     try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
         resolved_src = _resolve_path(src, must_exist=True)
         resolved_dest = _resolve_path(dest)
 
@@ -306,6 +401,9 @@ def move_file(src: str, dest: str) -> str:
             },
         ):
             return f"Error: move '{display_src}' → '{display_dest}' was not approved."
+
+        if _dry_run():
+            return f"[Dry Run] Successfully moved {display_src} → {display_dest} (simulated)"
 
         resolved_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(resolved_src), str(resolved_dest))
@@ -349,6 +447,9 @@ def glob_search(pattern: str, root_dir: str = ".") -> str:
 
 def write_to_file(path: str, content: str) -> str:
     try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
         resolved_path = _resolve_path(path)
         existing_content = _read_confirmation_text(resolved_path)
         display_path = _display_path(resolved_path)
@@ -372,6 +473,10 @@ def write_to_file(path: str, content: str) -> str:
             },
         ):
             return f"Error writing file: write to '{resolved_path}' was not approved."
+        
+        if _dry_run():
+            return f"[Dry Run] Successfully wrote to {resolved_path} (simulated)"
+
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.write(content)
@@ -401,6 +506,9 @@ def _extract_command_names(command: str) -> list[str]:
 def run_bash_command(command: str) -> str:
     if not _bash_enabled():
         return "Error: The bash tool is disabled by configuration."
+    
+    if _read_only():
+        return "Error: Bash commands are disabled in read-only mode."
 
     try:
         if not command.strip():
@@ -431,6 +539,9 @@ def run_bash_command(command: str) -> str:
             },
         ):
             return f"Error executing command: command '{command}' was not approved."
+
+        if _dry_run():
+            return f"[Dry Run] Successfully executed command: {command} (simulated)"
 
         result = subprocess.run(
             command,
@@ -544,6 +655,9 @@ def replace_file_lines(
     replacement_content: str,
 ) -> str:
     try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
         resolved_path = _resolve_path(path, must_exist=True)
         if not resolved_path.is_file():
             return f"Error replacing lines: '{path}' is not a file."
@@ -591,6 +705,12 @@ def replace_file_lines(
             return (
                 "Error replacing lines: "
                 f"update to '{resolved_path}' was not approved."
+            )
+
+        if _dry_run():
+            return (
+                f"[Dry Run] Successfully replaced lines "
+                f"{start_line} to {end_line} in {resolved_path} (simulated)."
             )
 
         with resolved_path.open("w", encoding="utf-8") as file_handle:
@@ -883,6 +1003,11 @@ def get_agent_tools() -> list[Dict[str, Any]]:
         ),
     ]
 
+    # Load local workspace plugins
+    local_plugins = _load_local_plugins()
+    for tool_def, _ in local_plugins:
+        tools.append(tool_def)
+
     if _bash_enabled():
         tools.append(
             _tool_definition(
@@ -917,6 +1042,13 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "git_diff": git_diff,
         "list_symbols": list_symbols,
     }
+
+    # Register local workspace plugins
+    local_plugins = _load_local_plugins()
+    for tool_def, run_func in local_plugins:
+        name = tool_def["function"]["name"]
+        registry[name] = run_func
+
     if _bash_enabled():
         registry["run_bash_command"] = run_bash_command
     return registry

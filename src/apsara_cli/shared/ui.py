@@ -491,6 +491,10 @@ class ConsoleUI:
     def session_saved(self, session_path: Path) -> None:
         self.print_line(f"  {self.dim(f'  ↳ saved to {session_path}')}")
 
+    def calculate_session_cost(self) -> float:
+        """Estimate session cost in USD (blended rate $0.01 / 1K tokens)."""
+        return (self._session_total_tokens / 1000) * 0.01
+
     def usage(self, usage_data: dict[str, Any]) -> None:
         p = usage_data.get("prompt_tokens") or 0
         c = usage_data.get("completion_tokens") or 0
@@ -505,8 +509,9 @@ class ConsoleUI:
         sp = self._session_prompt_tokens
         sc = self._session_completion_tokens
         st = self._session_total_tokens
+        cost = self.calculate_session_cost()
         self.print_line(
-            f"  {self.dim(f'  session  {sp:,} in · {sc:,} out · {st:,} total')}"
+            f"  {self.dim(f'  session  {sp:,} in · {sc:,} out · {st:,} total · est. cost ${cost:.4f}')}"
         )
 
     # ── Assistant message ─────────────────────────────────────────────────────

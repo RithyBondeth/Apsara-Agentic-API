@@ -50,6 +50,8 @@ def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> R
     max_file_size = resolve_value(args.max_file_size, config_defaults.max_file_size, None)
     auto_approve = bool(resolve_value(args.auto_approve, config_defaults.auto_approve, False))
     use_color = bool(resolve_value(args.color, config_defaults.color, default_use_color()))
+    dry_run = bool(getattr(args, "dry_run", False))
+    read_only = bool(getattr(args, "read_only", False))
 
     return ResolvedOptions(
         workspace_root=resolve_workspace(str(workspace)),
@@ -61,6 +63,8 @@ def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> R
         max_file_size=max_file_size,
         auto_approve=auto_approve,
         use_color=use_color,
+        dry_run=dry_run,
+        read_only=read_only,
     )
 
 

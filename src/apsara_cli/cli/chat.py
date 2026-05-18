@@ -200,6 +200,8 @@ def handle_chat_command(
             enable_bash=options.allow_bash,
             allowed_commands=options.allowed_commands,
             max_file_size_bytes=options.max_file_size,
+            dry_run=options.dry_run,
+            read_only=options.read_only,
         ):
             tools = get_agent_tools()
         ui.print_line()
@@ -528,6 +530,7 @@ def handle_chat_command(
         session_label = (
             sanitize_session_name(options.session) if not options.stateless else "stateless"
         )
+        cost = ui.calculate_session_cost()
 
         if pct < 70:
             health_color = "38;2;120;200;150"
@@ -545,6 +548,14 @@ def handle_chat_command(
             f"{ui.style('Session Context', '1', '38;2;200;210;230')}"
         )
         ui.print_line()
+        
+        # Governance flags
+        if options.dry_run or options.read_only:
+            flags = []
+            if options.dry_run: flags.append(ui.style("DRY-RUN", "1", "38;2;247;200;100"))
+            if options.read_only: flags.append(ui.style("READ-ONLY", "1", "38;2;220;120;100"))
+            ui.print_line(f"  {ui.dim('  active   ')} {' '.join(flags)}")
+
         ui.print_line(f"  {ui.dim('  model    ')} {ui.style(current_model, '38;2;188;218;255')}")
         ui.print_line(f"  {ui.dim('  session  ')} {ui.style(session_label, '38;2;220;216;210')}")
         ui.print_line(f"  {ui.dim('  turns    ')} {ui.style(str(turns), '38;2;220;216;210')}")
@@ -554,6 +565,7 @@ def handle_chat_command(
             f"{ui.style(f'{tokens:,}', health_color)} "
             f"{ui.dim(f'/ {SAFE_INPUT_TOKEN_BUDGET:,} budget  ({pct}%  {health_label})')}"
         )
+        ui.print_line(f"  {ui.dim('  cost     ')} {ui.style(f'${cost:.4f}', '38;2;120;200;150')} {ui.dim('(est. session total)')}")
         ui.print_line()
         return True, current_model
 
@@ -582,6 +594,8 @@ async def execute_instruction(
         allowed_commands=options.allowed_commands,
         max_file_size_bytes=options.max_file_size,
         confirmation_callback=None if options.auto_approve else ui.confirm_action,
+        dry_run=options.dry_run,
+        read_only=options.read_only,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
         if trim_result.dropped_turns:
