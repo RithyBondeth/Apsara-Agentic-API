@@ -308,6 +308,55 @@ class ConsoleUI:
             else:
                 self.print_line(f"  {self.style(raw_line, '38;2;220;225;235')}")
 
+    def render_side_by_side_diff(self, old_text: str, new_text: str) -> None:
+        """Render a side-by-side comparison of two text blocks."""
+        import difflib
+        width = self.content_width(fallback=120)
+        half_w = (width // 2) - 4
+        
+        old_lines = old_text.splitlines()
+        new_lines = new_text.splitlines()
+        
+        # We use SequenceMatcher to align lines
+        sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+        
+        border_color = "38;2;80;100;140"
+        header_old = self.badge("original", "15", "48;2;120;100;90")
+        header_new = self.badge("proposed", "15", "48;2;100;150;110")
+        
+        sep = self.style(" │ ", border_color)
+        self.print_line(f"  {header_old}{' ' * (half_w - 6)}{sep}{header_new}")
+        self.print_line(f"  {self.style('─' * half_w + '─┼─' + '─' * half_w, border_color)}")
+
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == 'equal':
+                for i, j in zip(range(i1, i2), range(j1, j2)):
+                    left = old_lines[i][:half_w].ljust(half_w)
+                    right = new_lines[j][:half_w].ljust(half_w)
+                    print(f"  {self.dim(left)}{sep}{self.dim(right)}")
+            elif tag == 'replace':
+                # Show both, side by side
+                max_len = max(i2 - i1, j2 - j1)
+                for k in range(max_len):
+                    left_idx = i1 + k
+                    right_idx = j1 + k
+                    left_val = old_lines[left_idx] if left_idx < i2 else ""
+                    right_val = new_lines[right_idx] if right_idx < j2 else ""
+                    
+                    left_styled = self.style(left_val[:half_w].ljust(half_w), "38;2;255;168;168") if left_val else " " * half_w
+                    right_styled = self.style(right_val[:half_w].ljust(half_w), "38;2;152;224;171") if right_val else " " * half_w
+                    print(f"  {left_styled}{sep}{right_styled}")
+            elif tag == 'delete':
+                for i in range(i1, i2):
+                    left = self.style(old_lines[i][:half_w].ljust(half_w), "38;2;255;168;168")
+                    print(f"  {left}{sep}{' ' * half_w}")
+            elif tag == 'insert':
+                for j in range(j1, j2):
+                    right = self.style(new_lines[j][:half_w].ljust(half_w), "38;2;152;224;171")
+                    print(f"  {' ' * half_w}{sep}{right}")
+        
+        self.print_line(f"  {self.style('─' * half_w + '─┴─' + '─' * half_w, border_color)}")
+
     # ── Spinner ───────────────────────────────────────────────────────────────
 
     def spinner_enabled(self) -> bool:
@@ -673,7 +722,10 @@ class ConsoleUI:
 
         if diff_preview:
             self.print_line()
-            self.render_diff_text(diff_preview)
+            if action == "replace_file_lines" and "original_preview" in payload and "replacement_preview" in payload:
+                self.render_side_by_side_diff(payload["original_preview"], payload["replacement_preview"])
+            else:
+                self.render_diff_text(diff_preview)
         elif preview:
             self.print_line()
             self.print_block(truncate_text(preview, max_lines=12, max_chars=900), "38;2;205;211;222")
