@@ -1,3 +1,4 @@
+import ast
 import difflib
 import glob as _glob
 import os
@@ -608,6 +609,80 @@ def replace_file_lines(
         return _format_exception("Error replacing lines", exc)
 
 
+def git_status() -> str:
+    """Get the current git status of the workspace (short format)."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(_workspace_root()),
+        )
+        if result.returncode != 0:
+            return f"Error: Not a git repository or git not installed. {result.stderr}"
+        return result.stdout if result.stdout else "No changes (clean repository)."
+    except Exception as exc:
+        return _format_exception("Error getting git status", exc)
+
+
+def git_diff(staged: bool = False) -> str:
+    """Get the git diff of the workspace.
+    Set staged=True to see changes already added to the index."""
+    try:
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--cached")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=str(_workspace_root()),
+        )
+        if result.returncode != 0:
+            return f"Error running git diff: {result.stderr}"
+        return result.stdout if result.stdout else "No diff available."
+    except Exception as exc:
+        return _format_exception("Error getting git diff", exc)
+
+
+def list_symbols(path: str) -> str:
+    """List functions, classes, and important definitions in a source file.
+    Currently supports Python (.py) files."""
+    try:
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error: '{path}' is not a file."
+
+        if not str(resolved_path).endswith(".py"):
+            return "Error: Symbol listing is currently only supported for Python (.py) files."
+
+        content = resolved_path.read_text(encoding="utf-8")
+        tree = ast.parse(content)
+
+        symbols = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(node, ast.ClassDef):
+                    sym_type = "Class"
+                elif isinstance(node, ast.AsyncFunctionDef):
+                    sym_type = "Async Function"
+                else:
+                    sym_type = "Function"
+                symbols.append(f"{sym_type}: {node.name} (line {node.lineno})")
+
+        if not symbols:
+            return f"No symbols found in {path}."
+
+        return "\n".join(symbols)
+    except SyntaxError as exc:
+        return f"Error parsing Python file: {exc}"
+    except Exception as exc:
+        return _format_exception("Error listing symbols", exc)
+
+
 def _tool_definition(
     name: str,
     description: str,
@@ -780,6 +855,32 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             },
             ["path", "start_line", "end_line", "replacement_content"],
         ),
+        _tool_definition(
+            "git_status",
+            "Show the working tree status (short format). Use this to see which files are modified or untracked.",
+            {},
+        ),
+        _tool_definition(
+            "git_diff",
+            "Show changes between the working tree and the index. Useful for reviewing work.",
+            {
+                "staged": {
+                    "type": "boolean",
+                    "description": "If true, show diff for changes already added to git (staged).",
+                }
+            },
+        ),
+        _tool_definition(
+            "list_symbols",
+            "List classes and functions in a source file. Currently supports Python (.py) files.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to analyze.",
+                }
+            },
+            ["path"],
+        ),
     ]
 
     if _bash_enabled():
@@ -812,6 +913,9 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "create_directory": create_directory,
         "delete_file": delete_file,
         "move_file": move_file,
+        "git_status": git_status,
+        "git_diff": git_diff,
+        "list_symbols": list_symbols,
     }
     if _bash_enabled():
         registry["run_bash_command"] = run_bash_command
