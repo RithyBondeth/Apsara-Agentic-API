@@ -33,6 +33,28 @@ class ModelEntry:
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 MODELS: list[ModelEntry] = [
+    # ── NVIDIA (free tier via NVIDIA API) ───────────────────────────────
+    ModelEntry(
+        model_id="nvidia/deepseek-ai/deepseek-v4-pro",
+        display_name="DeepSeek V4 Pro (NVIDIA)",
+        provider="nvidia",
+        tier="free",
+        context_window=16_384,
+        env_var="NVIDIA_NIM_API_KEY",
+        notes="NVIDIA-hosted DeepSeek V4, free tier available",
+        aliases=["deepseek-v4", "nvidia-deepseek", "deepseek-nvidia"],
+    ),
+    ModelEntry(
+        model_id="nvidia/meta/llama-4-maverick-17b-128e-instruct",
+        display_name="Llama 4 Maverick 17B (NVIDIA)",
+        provider="nvidia",
+        tier="free",
+        context_window=128_000,
+        env_var="NVIDIA_NIM_API_KEY",
+        notes="NVIDIA-hosted Llama 4, free tier available",
+        aliases=["llama4", "maverick", "nvidia-llama4"],
+    ),
+
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
     ModelEntry(
         model_id="groq/llama-3.3-70b-versatile",

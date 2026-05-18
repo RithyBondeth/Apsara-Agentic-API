@@ -39,7 +39,7 @@ def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
 def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> ResolvedOptions:
     from apsara_cli.engine.models import resolve_model_id as _resolve_mid
     workspace = resolve_value(args.workspace, config_defaults.workspace, ".")
-    _raw_model = resolve_value(args.model, config_defaults.model, "groq/llama-3.3-70b-versatile")
+    _raw_model = resolve_value(args.model, config_defaults.model, "llama")
     model = _resolve_mid(str(_raw_model))  # expand short aliases at startup
     session = resolve_value(args.session, config_defaults.session, "default")
     stateless = bool(resolve_value(args.stateless, config_defaults.stateless, False))

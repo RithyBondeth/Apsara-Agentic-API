@@ -1,3 +1,7 @@
+"""
+LLM module using LiteLLM for provider abstraction.
+Supports 100+ LLM providers through a unified interface.
+"""
 import asyncio
 from typing import Any, AsyncGenerator
 import litellm
@@ -9,7 +13,7 @@ DEFAULT_MAX_COMPLETION_TOKENS = 1200
 _RETRY_DELAYS = [5, 15, 30]
 
 
-def estimate_request_tokens(messages: list[dict], model: str = "gpt-4o") -> int:
+def estimate_request_tokens(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> int:
     try:
         return litellm.token_counter(
             model=model,
@@ -24,7 +28,11 @@ def estimate_request_tokens(messages: list[dict], model: str = "gpt-4o") -> int:
         )
 
 
-async def call_llm(messages: list[dict], model: str = "gpt-4o") -> tuple[Any, Any]:
+async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> tuple[Any, Any]:
+    """
+    Send the conversation to LLM with configured tools via LiteLLM.
+    Returns (Response Message Object, Usage Dictionary Object)
+    """
     try:
         response = await litellm.acompletion(
             model=model,
@@ -39,7 +47,7 @@ async def call_llm(messages: list[dict], model: str = "gpt-4o") -> tuple[Any, An
 
 
 async def call_llm_stream(
-    messages: list[dict], model: str = "gpt-4o"
+    messages: list[dict], model: str = "groq/llama-3.3-70b-versatile"
 ) -> AsyncGenerator[dict, None]:
     """
     Streaming LLM call with automatic retry on rate-limit errors.

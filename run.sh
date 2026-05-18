@@ -1,7 +1,11 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONPATH="$SCRIPT_DIR/src"
-export NVIDIA_API_KEY="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"
+
+# Read API key from .env file
+if [ -f "$SCRIPT_DIR/.env" ]; then
+    export $(grep -v '^#' "$SCRIPT_DIR/.env" | grep NVIDIA_NIM_API_KEY | head -1 | xargs)
+fi
 
 cd "$SCRIPT_DIR"
 
