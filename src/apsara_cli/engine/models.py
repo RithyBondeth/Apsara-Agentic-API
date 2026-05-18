@@ -33,28 +33,6 @@ class ModelEntry:
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 MODELS: list[ModelEntry] = [
-    # ── NVIDIA (free tier via NVIDIA API) ───────────────────────────────
-    ModelEntry(
-        model_id="nvidia/deepseek-ai/deepseek-v4-pro",
-        display_name="DeepSeek V4 Pro (NVIDIA)",
-        provider="nvidia",
-        tier="free",
-        context_window=16_384,
-        env_var="NVIDIA_NIM_API_KEY",
-        notes="NVIDIA-hosted DeepSeek V4, free tier available",
-        aliases=["deepseek-v4", "nvidia-deepseek", "deepseek-nvidia"],
-    ),
-    ModelEntry(
-        model_id="nvidia/meta/llama-4-maverick-17b-128e-instruct",
-        display_name="Llama 4 Maverick 17B (NVIDIA)",
-        provider="nvidia",
-        tier="free",
-        context_window=128_000,
-        env_var="NVIDIA_NIM_API_KEY",
-        notes="NVIDIA-hosted Llama 4, free tier available",
-        aliases=["llama4", "maverick", "nvidia-llama4"],
-    ),
-
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
     ModelEntry(
         model_id="groq/llama-3.3-70b-versatile",
@@ -67,44 +45,14 @@ MODELS: list[ModelEntry] = [
         aliases=["llama", "llama70b", "llama-70b"],
     ),
     ModelEntry(
-        model_id="groq/llama-3.1-8b-instant",
-        display_name="Llama 3.1 8B Instant",
-        provider="groq",
-        tier="free",
-        context_window=128_000,
-        env_var="GROQ_API_KEY",
-        notes="Ultra-fast, lightweight tasks",
-        aliases=["llama8b", "llama-8b", "llama-instant"],
-    ),
-    ModelEntry(
         model_id="groq/deepseek-r1-distill-llama-70b",
         display_name="DeepSeek R1 Distill 70B",
         provider="groq",
         tier="free",
         context_window=128_000,
         env_var="GROQ_API_KEY",
-        notes="Reasoning model, free via Groq",
+        notes="Reasoning model, high speed via Groq",
         aliases=["r1-groq", "deepseek-r1-groq"],
-    ),
-    ModelEntry(
-        model_id="groq/gemma2-9b-it",
-        display_name="Gemma 2 9B",
-        provider="groq",
-        tier="free",
-        context_window=8_192,
-        env_var="GROQ_API_KEY",
-        notes="Google Gemma 2, fast and efficient",
-        aliases=["gemma", "gemma2"],
-    ),
-    ModelEntry(
-        model_id="groq/mixtral-8x7b-32768",
-        display_name="Mixtral 8x7B",
-        provider="groq",
-        tier="free",
-        context_window=32_768,
-        env_var="GROQ_API_KEY",
-        notes="Mixture-of-experts model via Groq",
-        aliases=["mixtral"],
     ),
 
     # ── OpenAI (paid) ─────────────────────────────────────────────────────────
@@ -129,26 +77,6 @@ MODELS: list[ModelEntry] = [
         aliases=["4o-mini", "gpt-mini"],
     ),
     ModelEntry(
-        model_id="gpt-4-turbo",
-        display_name="GPT-4 Turbo",
-        provider="openai",
-        tier="paid",
-        context_window=128_000,
-        env_var="OPENAI_API_KEY",
-        notes="GPT-4 Turbo with vision",
-        aliases=["gpt4", "gpt-4"],
-    ),
-    ModelEntry(
-        model_id="o1-mini",
-        display_name="o1-mini",
-        provider="openai",
-        tier="paid",
-        context_window=128_000,
-        env_var="OPENAI_API_KEY",
-        notes="OpenAI o1 reasoning model (fast)",
-        aliases=["o1mini"],
-    ),
-    ModelEntry(
         model_id="o3-mini",
         display_name="o3-mini",
         provider="openai",
@@ -167,7 +95,7 @@ MODELS: list[ModelEntry] = [
         tier="paid",
         context_window=200_000,
         env_var="ANTHROPIC_API_KEY",
-        notes="Anthropic's best balanced model",
+        notes="Anthropic's best balanced model for coding",
         aliases=["sonnet", "claude-sonnet", "claude"],
     ),
     ModelEntry(
@@ -180,16 +108,6 @@ MODELS: list[ModelEntry] = [
         notes="Fast and affordable Claude",
         aliases=["haiku", "claude-haiku"],
     ),
-    ModelEntry(
-        model_id="anthropic/claude-3-opus-20240229",
-        display_name="Claude 3 Opus",
-        provider="anthropic",
-        tier="paid",
-        context_window=200_000,
-        env_var="ANTHROPIC_API_KEY",
-        notes="Most powerful Claude model",
-        aliases=["opus", "claude-opus"],
-    ),
 
     # ── Google Gemini (free quota + paid) ─────────────────────────────────────
     ModelEntry(
@@ -199,7 +117,7 @@ MODELS: list[ModelEntry] = [
         tier="free",
         context_window=1_000_000,
         env_var="GEMINI_API_KEY",
-        notes="Latest Gemini Flash, free quota available",
+        notes="Latest Gemini Flash, 1M context, free quota",
         aliases=["gemini-flash", "flash", "gemini2"],
     ),
     ModelEntry(
@@ -209,31 +127,11 @@ MODELS: list[ModelEntry] = [
         tier="paid",
         context_window=2_000_000,
         env_var="GEMINI_API_KEY",
-        notes="2M context window, advanced reasoning",
+        notes="Massive 2M context window, advanced reasoning",
         aliases=["gemini-pro", "pro"],
-    ),
-    ModelEntry(
-        model_id="gemini/gemini-1.5-flash",
-        display_name="Gemini 1.5 Flash",
-        provider="google",
-        tier="paid",
-        context_window=1_000_000,
-        env_var="GEMINI_API_KEY",
-        notes="Fast Gemini model, 1M context",
-        aliases=["gemini1-flash"],
     ),
 
     # ── Mistral (paid but affordable) ─────────────────────────────────────────
-    ModelEntry(
-        model_id="mistral/mistral-large-latest",
-        display_name="Mistral Large",
-        provider="mistral",
-        tier="paid",
-        context_window=128_000,
-        env_var="MISTRAL_API_KEY",
-        notes="Mistral's flagship model",
-        aliases=["mistral-large", "mistral"],
-    ),
     ModelEntry(
         model_id="mistral/codestral-latest",
         display_name="Codestral",
@@ -244,16 +142,6 @@ MODELS: list[ModelEntry] = [
         notes="Mistral's code-specialist model",
         aliases=["codestral"],
     ),
-    ModelEntry(
-        model_id="mistral/mistral-small-latest",
-        display_name="Mistral Small",
-        provider="mistral",
-        tier="paid",
-        context_window=128_000,
-        env_var="MISTRAL_API_KEY",
-        notes="Fast and affordable Mistral",
-        aliases=["mistral-small"],
-    ),
 
     # ── DeepSeek (very affordable) ────────────────────────────────────────────
     ModelEntry(
@@ -263,7 +151,7 @@ MODELS: list[ModelEntry] = [
         tier="paid",
         context_window=64_000,
         env_var="DEEPSEEK_API_KEY",
-        notes="High quality, very low cost",
+        notes="High quality, extremely low cost",
         aliases=["deepseek", "deepseek-v3"],
     ),
     ModelEntry(
@@ -275,30 +163,6 @@ MODELS: list[ModelEntry] = [
         env_var="DEEPSEEK_API_KEY",
         notes="DeepSeek reasoning model",
         aliases=["r1", "deepseek-r1"],
-    ),
-
-    # ── xAI Grok (paid) ───────────────────────────────────────────────────────
-    ModelEntry(
-        model_id="xai/grok-beta",
-        display_name="Grok Beta",
-        provider="xai",
-        tier="paid",
-        context_window=131_072,
-        env_var="XAI_API_KEY",
-        notes="xAI Grok model",
-        aliases=["grok"],
-    ),
-
-    # ── Cohere (paid) ─────────────────────────────────────────────────────────
-    ModelEntry(
-        model_id="cohere/command-r-plus",
-        display_name="Command R+",
-        provider="cohere",
-        tier="paid",
-        context_window=128_000,
-        env_var="COHERE_API_KEY",
-        notes="Cohere's most capable model",
-        aliases=["command-r-plus", "cohere"],
     ),
 
     # ── Ollama (local — no key required) ─────────────────────────────────────
@@ -321,16 +185,6 @@ MODELS: list[ModelEntry] = [
         env_var=None,
         notes="Code-specialist model, runs locally",
         aliases=["qwen-coder", "local-coder"],
-    ),
-    ModelEntry(
-        model_id="ollama/deepseek-r1:7b",
-        display_name="DeepSeek R1 7B (local)",
-        provider="ollama",
-        tier="local",
-        context_window=64_000,
-        env_var=None,
-        notes="Local reasoning model via Ollama",
-        aliases=["local-r1"],
     ),
 ]
 
@@ -376,10 +230,6 @@ KEY_HINTS: dict[str, tuple[Optional[str], str]] = {
     "GEMINI_API_KEY":     ("AI",      "Google AI keys start with  AI"),
     "MISTRAL_API_KEY":    (None,      "Mistral API key — no fixed prefix"),
     "DEEPSEEK_API_KEY":   ("sk-",     "DeepSeek keys start with  sk-"),
-    "XAI_API_KEY":        ("xai-",    "xAI keys start with  xai-"),
-    "COHERE_API_KEY":     (None,      "Cohere API key — no fixed prefix"),
-    "TOGETHER_API_KEY":   (None,      "Together AI key — no fixed prefix"),
-    "OPENROUTER_API_KEY": ("sk-or-",  "OpenRouter keys start with  sk-or-"),
 }
 
 

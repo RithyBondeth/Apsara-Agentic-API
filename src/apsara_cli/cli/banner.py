@@ -177,11 +177,12 @@ def _build_big_title_rows(terminal: int) -> list[tuple[str, tuple[str, ...]]]:
 
 def _build_welcome_content(config: "CliConfig") -> list[tuple[str, tuple[str, ...]]]:
     from apsara_cli.shared.ui import terminal_width
+    from apsara_cli import __version__
 
     terminal = max(72, min(terminal_width(), 112))
     title     = config.ui.welcome_title    or "Welcome to Apsara Agentic"
     subtitle  = config.ui.welcome_subtitle or "Elegant local coding assistance for your workspace"
-    powered   = config.ui.powered_by       or "Powered by Bondeth"
+    powered   = config.ui.powered_by       or f"Powered by Bondeth · v{__version__}"
     wrap_w    = max(36, min(68, terminal - 24))
 
     rows: list[tuple[str, tuple[str, ...]]] = [

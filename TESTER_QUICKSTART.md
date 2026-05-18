@@ -1,99 +1,60 @@
-# Apsara by Bondeth Tester Quickstart
+# Apsara Agentic: Tester Quickstart 🚀
 
-This is the shortest path for an alpha tester to try Apsara locally.
+Welcome to the Apsara alpha test! Follow these steps to get the AI coding agent running in your local workspace.
 
-## 1. Open the project
+## 1. Installation
 
-```bash
-cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-cli"
-```
-
-## 2. Create and activate a virtual environment
+Ensure you have **Python 3.9+** and **Git** installed.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# Clone the repository (if you haven't)
+git clone https://github.com/your-repo/apsara-agentic.git
+cd apsara-agentic/apsara-agentic-cli
+
+# Install the package in editable mode
+pip install -e .
 ```
 
-## 3. Install dependencies
+## 2. Configuration
+
+Apsara needs an API key to work. You can use Groq (recommended for speed), OpenAI, or Anthropic.
 
 ```bash
-python3 -m pip install -r requirements.txt
+# Export your key (or add it to a .env file later)
+export GROQ_API_KEY="your_key_here"
 ```
 
-## 4. Add your OpenAI API key to `.env`
+## 3. Initialize your Project
 
-```env
-OPENAI_API_KEY=your_openai_api_key
-```
-
-## 5. Run the CLI health check
+Go to the project you want to work on and initialize Apsara.
 
 ```bash
-python3 -m app.cli doctor --workspace .
-```
-
-## 6. Start Apsara
-
-```bash
-python3 -m app.cli init --workspace . --model gpt-5.4-mini
-```
-
-If the `apsara` command is installed, testers can also use:
-
-```bash
+cd /path/to/your/work/project
 apsara init
 ```
 
-## 7. Try these prompts
+This will:
+- Create `.apsara/config.toml` for your local settings.
+- Create `.apsara/instructions.md` for **Team Standards** (edit this to tell the agent how you like your code formatted).
+- Update your `.gitignore` to keep Apsara logs and sessions private.
 
-Prompt 1:
+## 4. Start Chatting
 
-```text
-Describe this project.
+```bash
+apsara chat
 ```
 
-Prompt 2:
+### Useful Slash Commands:
+- `/help` - Show all commands.
+- `/add <path>` - Pin a file to the context.
+- `/status` - Check token usage and session cost.
+- `/bug` - If the agent gets stuck, run this to save diagnostic logs.
+- `/details` - See the agent's hidden thought process.
 
-```text
-Find the main CLI file and summarize what it does.
-```
+## 5. Safety Tips
+- Apsara will **always ask for confirmation** before writing files or running commands.
+- Use `apsara chat --dry-run` to see what it *would* do without touching your files.
+- Use `apsara chat --read-only` if you just want it to explain the code.
 
-Prompt 3:
-
-```text
-Suggest one small improvement to the CLI UI and implement it.
-```
-
-## 8. Test the edit review flow
-
-When Apsara proposes a code change:
-
-- `Enter` approves
-- `n` rejects
-- `a` approves the rest of the session
-- `v` shows a fuller diff in the terminal
-- `e` opens the patch in your editor
-
-## 9. Useful chat commands
-
-```text
-/details
-/clear
-```
-
-## 10. If something goes wrong
-
-Please send:
-
-- the command you ran
-- the prompt you asked
-- the full error message
-- a screenshot or terminal copy if possible
-
-## 11. More detailed docs
-
-- Alpha release notes: [RELEASE_NOTES_ALPHA.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RELEASE_NOTES_ALPHA.md)
-- Alpha testing guide: [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/ALPHA_TESTING.md)
-- Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RUN_PROJECT.md)
-- Main README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
+---
+**Happy Coding!** Please share your `.apsara/bugs/` folders if you encounter any weird behavior.

@@ -8,9 +8,12 @@ A FastAPI backend for running project-scoped agent conversations with PostgreSQL
 - Agent execution endpoint with Server-Sent Events streaming
 - Conversation and message persistence in PostgreSQL
 - Local CLI for workspace-scoped coding assistance and saved sessions
-- LiteLLM-based model selection with tool calling
-- Workspace-scoped file tools for reading, writing, searching, listing, and line replacement
-- Token usage logging for each model call
+- **Enhanced Tooling**: `git_status`, `git_diff`, and `list_symbols` (Python) for better situational awareness.
+- **Context Management**: `/add <path>` to pin files and **Automatic History Summarization** for long conversations.
+- **Advanced UX**: Syntax highlighting for code blocks and **Side-by-Side Diff Previews** for code edits.
+- **Safety & Governance**: `--dry-run` and `--read-only` modes, plus a session **Token/Cost Tracker**.
+- **Extensibility**: Support for **Local Tool Plugins** in `.apsara/tools/`.
+- **Production Readiness**: Session logging in `.apsara/logs/` and `/bug` command for diagnostics.
 
 ## Setup
 

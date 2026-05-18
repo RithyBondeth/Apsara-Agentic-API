@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -65,6 +67,7 @@ def print_chat_help(ui: "ConsoleUI") -> None:
     ui.print_line("/sessions clear    Delete all saved sessions")
     ui.print_line("/sessions clear X  Delete session named X")
     ui.print_line("/clear             Clear in-memory conversation history")
+    ui.print_line("/bug               Report a bug (saves logs and session state)")
     ui.print_line("/exit              Quit the chat session")
     ui.print_line("")
     ui.print_line("Tips: Esc+Enter inserts a newline · ↑/↓ navigates input history · Tab completes /commands")
@@ -104,6 +107,33 @@ def handle_chat_command(
         history.clear()
         ui.latest_hidden_events = []
         ui.warning("Session cleared in memory")
+        return True, current_model
+
+    if command_text == "/bug":
+        ui.info("Collecting diagnostic information for bug report...")
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            bug_dir = options.workspace_root / ".apsara" / "bugs" / f"bug_{timestamp}"
+            bug_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save current session
+            state_file = bug_dir / "session_state.json"
+            state = {
+                "model": current_model,
+                "history": history,
+                "options": {k: str(v) for k, v in vars(options).items()},
+            }
+            with state_file.open("w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            
+            # Copy logs
+            if ui.log_file and ui.log_file.exists():
+                shutil.copy2(ui.log_file, bug_dir / "session.log")
+            
+            ui.success(f"Bug report data collected in: {bug_dir}")
+            ui.info("Please share this directory with the development team.")
+        except Exception as e:
+            ui.error(f"Failed to collect bug report data: {e}")
         return True, current_model
 
     if command_text.startswith("/add "):

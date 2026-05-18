@@ -15,7 +15,21 @@ async def run_agent_stream(
     Core execution streaming loop for the agent.
     Yields JSON string events tracking the agent's progress and token usage.
     """
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + conversation_history
+    from apsara_cli.engine.tools import _workspace_root
+    from pathlib import Path
+    
+    full_system_prompt = SYSTEM_PROMPT
+    
+    # Load workspace-specific instructions
+    try:
+        inst_path = _workspace_root() / ".apsara" / "instructions.md"
+        if inst_path.exists():
+            custom_instructions = inst_path.read_text(encoding="utf-8")
+            full_system_prompt += f"\n\nFOLLOW THESE ADDITIONAL WORKSPACE-SPECIFIC RULES:\n{custom_instructions}"
+    except Exception:
+        pass
+
+    messages = [{"role": "system", "content": full_system_prompt}] + conversation_history
 
     max_steps = 15
     consecutive_errors = 0

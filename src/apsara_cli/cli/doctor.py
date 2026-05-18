@@ -31,6 +31,20 @@ def run_workspace_checks(options, config, args) -> list:
     else:
         results.append(DoctorCheckResult("python", "fail", f"Python {sys.version.split()[0]} is below the required 3.9+."))
 
+    # Check for git
+    try:
+        git_ver = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout.strip()
+        results.append(DoctorCheckResult("git", "pass", f"Found {git_ver}."))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        results.append(DoctorCheckResult("git", "fail", "Git is not installed or not in PATH. Required for git_status/git_diff tools."))
+
+    # Check for ripgrep
+    try:
+        rg_ver = subprocess.run(["rg", "--version"], capture_output=True, text=True, check=True).stdout.splitlines()[0]
+        results.append(DoctorCheckResult("ripgrep", "pass", f"Found {rg_ver}."))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        results.append(DoctorCheckResult("ripgrep", "warn", "ripgrep (rg) not found. search_files tool will fallback to slower 'grep'."))
+
     config_path = getattr(config, "path", None)
     config_exists = getattr(config, "exists", False)
     args_config = getattr(args, "config", None)
@@ -44,6 +58,13 @@ def run_workspace_checks(options, config, args) -> list:
 
     if options.workspace_root.exists() and options.workspace_root.is_dir():
         results.append(DoctorCheckResult("workspace", "pass", f"Workspace exists at {options.workspace_root}."))
+        
+        # Check for team instructions
+        inst_file = options.workspace_root / ".apsara" / "instructions.md"
+        if inst_file.exists():
+            results.append(DoctorCheckResult("instructions", "pass", "Found team-specific instructions file."))
+        else:
+            results.append(DoctorCheckResult("instructions", "warn", "No .apsara/instructions.md found. Using default system prompt."))
     elif options.workspace_root.exists():
         results.append(DoctorCheckResult("workspace", "fail", f"Workspace path exists but is not a directory: {options.workspace_root}."))
     else:

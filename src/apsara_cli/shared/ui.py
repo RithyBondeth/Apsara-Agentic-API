@@ -147,6 +147,39 @@ class ConsoleUI:
 
         # Turn outcome tracking ("ok" | "error" | "blocked" | "")
         self._turn_outcome: str = ""
+        
+        # Logging for production diagnostics
+        self.log_file: Optional[Path] = None
+        self._init_logging()
+
+    def _init_logging(self) -> None:
+        """Initialize session-based logging in .apsara/logs/."""
+        try:
+            # We don't have workspace root yet in __init__, 
+            # so we'll lazy-init log_file when workspace is known or use a default
+            log_dir = Path.cwd() / ".apsara" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.log_file = log_dir / f"session_{timestamp}.log"
+            with self.log_file.open("a", encoding="utf-8") as f:
+                f.write(f"--- Session started at {datetime.now()} ---\n")
+        except Exception:
+            self.log_file = None
+
+    def log_event(self, category: str, title: str, detail: str = "") -> None:
+        """Write an event to the session log file."""
+        if not self.log_file:
+            return
+        try:
+            with self.log_file.open("a", encoding="utf-8") as f:
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                f.write(f"[{timestamp}] [{category.upper()}] {title}\n")
+                if detail:
+                    # Indent detail for readability
+                    indented = "\n".join(f"  | {line}" for line in detail.splitlines())
+                    f.write(f"{indented}\n")
+        except Exception:
+            pass
 
         # Cumulative session token counters
         self._session_prompt_tokens: int = 0
@@ -801,6 +834,7 @@ class ConsoleUI:
 
     def tool_call(self, name: str, arguments: dict[str, Any]) -> None:
         arguments_text = json.dumps(arguments, ensure_ascii=True)
+        self.log_event("tool_call", name, arguments_text)
         self.print_line(
             f"  {self.badge('tool', '15', '48;2;50;100;170')} "
             f"{self.style(name, '38;2;180;210;255')}"
@@ -808,6 +842,7 @@ class ConsoleUI:
         self.print_block(arguments_text, "38;2;160;190;220")
 
     def tool_result(self, result: str) -> None:
+        self.log_event("tool_result", "Output received", result)
         self.print_line(
             f"  {self.badge('result', '15', '48;2;40;90;155')} "
             f"{self.style('Tool output', '38;2;180;210;255')}"
