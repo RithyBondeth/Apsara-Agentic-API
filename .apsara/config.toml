@@ -1,0 +1,8 @@
+# Apsara Project Configuration
+[defaults]
+# workspace = "."
+# model = "gpt-4o"
+# auto_approve = false
+
+[ui]
+# welcome_title = "Apsara Agentic"
