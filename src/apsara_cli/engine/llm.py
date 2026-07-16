@@ -2,14 +2,16 @@
 LLM module using LiteLLM for provider abstraction.
 Supports 100+ LLM providers through a unified interface.
 """
-from fsspec import json
+import json
 import asyncio
 from typing import Any, AsyncGenerator
 import litellm
 from apsara_cli.engine.tools import get_agent_tools
 
 litellm.suppress_debug_info = True
-DEFAULT_MAX_COMPLETION_TOKENS = 1200
+# Max tokens per completion. Kept generous enough to avoid truncating
+# multi-step tool calls and longer code responses; override per-call if needed.
+DEFAULT_MAX_COMPLETION_TOKENS = 4096
 
 _RETRY_DELAYS = [5, 15, 30]
 

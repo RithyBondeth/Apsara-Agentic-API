@@ -152,6 +152,20 @@ class ConsoleUI:
         self.log_file: Optional[Path] = None
         self._init_logging()
 
+        # Cumulative session token counters
+        self._session_prompt_tokens: int = 0
+        self._session_completion_tokens: int = 0
+        self._session_total_tokens: int = 0
+
+        # Spinner / status-line state
+        self.spinner_message = "Apsara is working"
+        self.spinner_stop_event = threading.Event()
+        self.spinner_thread: Optional[threading.Thread] = None
+        self.spinner_lock = threading.Lock()
+        self._spinner_start_time: float = 0.0
+        self._spinner_frame_index: int = 0
+        self._spinner_color_index: int = 0
+
     def _init_logging(self) -> None:
         """Initialize session-based logging in .apsara/logs/."""
         try:
@@ -180,19 +194,6 @@ class ConsoleUI:
                     f.write(f"{indented}\n")
         except Exception:
             pass
-
-        # Cumulative session token counters
-        self._session_prompt_tokens: int = 0
-        self._session_completion_tokens: int = 0
-        self._session_total_tokens: int = 0
-
-        self.spinner_message = "Apsara is working"
-        self.spinner_stop_event = threading.Event()
-        self.spinner_thread: Optional[threading.Thread] = None
-        self.spinner_lock = threading.Lock()
-        self._spinner_start_time: float = 0.0
-        self._spinner_frame_index: int = 0
-        self._spinner_color_index: int = 0
 
     # ── Low-level styling ─────────────────────────────────────────────────────
 

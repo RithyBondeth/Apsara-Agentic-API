@@ -1,6 +1,8 @@
 """Tests for context trimming and history event recording."""
+import asyncio
 import sys
 import os
+from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from apsara_cli.cli.history import (
@@ -41,17 +43,23 @@ def test_group_turns_multiple():
 
 def test_trim_short_history_unchanged():
     history = _make_history(2)
-    result = trim_history_for_request(history, model="gpt-3.5-turbo")
+    result = asyncio.run(trim_history_for_request(history, model="gpt-3.5-turbo"))
     assert result.dropped_turns == 0
     assert result.dropped_messages == 0
     assert result.request_history == history
+
+
+async def _fake_summarize(messages, model="gpt-3.5-turbo"):
+    return "earlier conversation summary"
 
 
 def test_trim_drops_oldest_turns():
     # Build a history large enough to exceed the budget
     # Each turn ~4000 chars → ~1000 tokens; 15 turns → ~15000 tokens > 9000 budget
     big_history = _make_history(15, chars_per_turn=4000)
-    result = trim_history_for_request(big_history, model="gpt-3.5-turbo")
+    # Patch the summarizer so trimming stays offline (no LLM/network call).
+    with patch("apsara_cli.engine.llm.summarize_messages", _fake_summarize):
+        result = asyncio.run(trim_history_for_request(big_history, model="gpt-3.5-turbo"))
     assert result.dropped_turns > 0
     assert result.trimmed_tokens <= SAFE_INPUT_TOKEN_BUDGET
     # The kept history should end with the most recent turn

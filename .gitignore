@@ -40,3 +40,6 @@ venv.bak/
 # Project
 *.log
 .apsara-cli/
+
+# Per-session diagnostic logs written by ConsoleUI (keep .apsara/tools and config tracked)
+.apsara/logs/
