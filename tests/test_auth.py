@@ -84,6 +84,24 @@ def test_set_active_provider_requires_stored(temp_creds):
     assert auth.set_active_provider("anthropic") is False
 
 
+def test_remove_provider_key(temp_creds):
+    auth.save_provider_key("openai", api_key="sk-a")
+    auth.save_provider_key("groq", api_key="gsk_b")
+    assert auth.get_active_provider() == "groq"
+
+    # Removing the active provider moves the pointer to a remaining one.
+    assert auth.remove_provider_key("groq") is True
+    assert auth.get_active_provider() == "openai"
+    assert auth.stored_providers() == ["openai"]
+
+    # Removing a provider that isn't stored reports False.
+    assert auth.remove_provider_key("groq") is False
+
+    # Removing the last provider clears the active pointer.
+    assert auth.remove_provider_key("openai") is True
+    assert auth.get_active_provider() is None
+
+
 def test_clear_credentials(temp_creds):
     auth.save_provider_key("openai", api_key="sk-a")
     auth.clear_credentials()

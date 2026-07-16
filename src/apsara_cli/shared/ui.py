@@ -527,8 +527,13 @@ class ConsoleUI:
         label = self.badge("blocked", "17", "48;2;200;120;40")
         self.print_line(f"  {label} {self.style(text, '38;2;247;223;181')}")
 
-    def prompt(self, label: str = "you") -> str:
-        return f"\n  {self.badge(label, '15', '48;2;49;104;194')} "
+    # ── Input bar (OpenCode-style accent bar) ─────────────────────────────────
+
+    _BAR_ACCENT = "38;2;96;150;250"
+
+    def prompt(self, label: str = "you", hint: str = "") -> str:
+        bar = self.style("▌", "1", self._BAR_ACCENT)
+        return f"\n{bar} "
 
     def session_saved(self, session_path: Path) -> None:
         self.print_line(f"  {self.dim(f'  ↳ saved to {session_path}')}")
@@ -545,54 +550,35 @@ class ConsoleUI:
         self._session_completion_tokens += c
         self._session_total_tokens      += t
 
-        self.print_line(
-            f"  {self.dim(f'  turn     {p} in · {c} out · {t} total')}"
-        )
-        sp = self._session_prompt_tokens
-        sc = self._session_completion_tokens
         st = self._session_total_tokens
+        session_short = f"{st / 1000:.1f}K" if st >= 1000 else str(st)
         cost = self.calculate_session_cost()
         self.print_line(
-            f"  {self.dim(f'  session  {sp:,} in · {sc:,} out · {st:,} total · est. cost ${cost:.4f}')}"
+            f"    {self.dim(f'{t:,} tok · session {session_short} · ${cost:.4f}')}"
         )
 
     # ── Assistant message ─────────────────────────────────────────────────────
 
     def assistant(self, text: str) -> None:
         self.print_line()
-        header_line = (
-            f"  {self.badge('apsara', '15', '48;2;133;92;219')}  "
-            f"{self.style('Apsara by Bondeth', '1', '38;2;215;200;255')}"
-        )
-        self.print_line(header_line)
-        self.print_line()
         self.render_rich_text(text, typing_delay=self.typing_delay)
 
     def stream_text_start(self) -> None:
         self.stop_spinner()
-        self.print_line()
-        header_line = (
-            f"  {self.badge('apsara', '15', '48;2;133;92;219')}  "
-            f"{self.style('Apsara by Bondeth', '1', '38;2;215;200;255')}"
-        )
-        self.print_line(header_line)
         self.print_line()
         sys.stdout.write("  ")
         sys.stdout.flush()
 
     def stream_text_chunk(self, chunk: str) -> None:
         color = "38;2;240;236;231"
-        formatted = chunk.replace("\n", "\n  ")
-        styled = self.style(formatted, color) if self.use_color else formatted
-        sys.stdout.write(styled)
+        segments = chunk.split("\n")
+        styled = [self.style(seg, color) if seg else "" for seg in segments]
+        sys.stdout.write("\n  ".join(styled))
         sys.stdout.flush()
 
     def stream_text_end(self) -> None:
         sys.stdout.write("\n")
         sys.stdout.flush()
-        # Subtle visual close — signals the stream is complete and input is ready
-        w = min(36, max(16, terminal_width() // 3))
-        self.print_line(f"  {self.style('─' * w, '2', '38;2;110;100;88')}")
 
     # ── Tool activity (inline compact) ───────────────────────────────────────
 
@@ -624,32 +610,30 @@ class ConsoleUI:
         self.current_turn_hidden_events = []
         self.work_notice_shown = False
         self._turn_outcome = ""
+        self._turn_started_at = time.monotonic()
 
     def finish_turn(self) -> None:
         self.stop_spinner()
         self.latest_hidden_events = list(self.current_turn_hidden_events)
         count = len(self.latest_hidden_events)
 
+        elapsed = time.monotonic() - getattr(self, "_turn_started_at", time.monotonic())
+        elapsed_text = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m{int(elapsed % 60):02d}s"
+
         outcome = self._turn_outcome or "ok"
         if outcome == "error":
-            outcome_icon  = self.style("✗", "38;2;220;100;100")
-            outcome_label = self.style("turn ended with error", "38;2;255;168;168")
+            square, label = self.style("■", "38;2;220;100;100"), "error"
         elif outcome == "blocked":
-            outcome_icon  = self.style("⊘", "38;2;247;200;100")
-            outcome_label = self.style("action was blocked", "38;2;247;223;181")
+            square, label = self.style("■", "38;2;247;200;100"), "blocked"
         else:
-            outcome_icon  = self.style("✓", "38;2;100;190;140")
-            outcome_label = self.style("turn complete", "38;2;150;215;175")
+            square, label = self.style("■", "38;2;100;190;140"), "done"
 
+        parts = [self.style(label, "38;2;190;196;208"), self.dim(elapsed_text)]
         if count:
             plural = "s" if count != 1 else ""
-            details_hint = self.style(
-                f"  ·  /details → {count} internal step{plural}",
-                "38;2;140;160;200",
-            )
-            self.print_line(f"  {outcome_icon} {outcome_label}{details_hint}")
-        else:
-            self.print_line(f"  {outcome_icon} {outcome_label}")
+            parts.append(self.dim(f"/details · {count} step{plural}"))
+        self.print_line()
+        self.print_line(f"  {square} {self.dim(' · ').join(parts)}")
 
     def hide_event(self, kind: str, title: str, detail: str = "") -> None:
         from apsara_cli.shared.types import HiddenCliEvent

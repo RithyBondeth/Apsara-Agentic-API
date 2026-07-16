@@ -51,27 +51,58 @@ def _save_api_key_to_env(workspace_root: Path, key_name: str, key_value: str) ->
     return env_path
 
 
+_HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
+    ("Conversation", [
+        ("/add", "<path>", "Pin a file's contents into the context"),
+        ("/history", "", "Show recent conversation turns"),
+        ("/details", "", "Reveal the agent's internal steps from the last turn"),
+        ("/clear", "", "Clear the in-memory conversation history"),
+    ]),
+    ("Models & keys", [
+        ("/model", "", "Show the current model"),
+        ("/model", "<name>", "Switch model (full id or short alias)"),
+        ("/models", "[provider]", "Browse all models with key status"),
+        ("/key", "list", "Show provider API keys and where they come from"),
+        ("/key", "set <provider>", "Add or update a provider API key (hidden input)"),
+        ("/key", "remove <provider>", "Delete a stored provider key"),
+    ]),
+    ("Session", [
+        ("/status", "", "Token usage, context health, session cost"),
+        ("/save", "", "Save the current session now"),
+        ("/session", "", "Show session and workspace details"),
+        ("/sessions", "", "List all saved sessions"),
+        ("/sessions", "clear [name]", "Delete all sessions, or one by name"),
+    ]),
+    ("Diagnostics", [
+        ("/tools", "", "Show enabled tools with descriptions"),
+        ("/bug", "", "Save logs + session state for a bug report"),
+        ("/exit", "", "Quit the chat session"),
+    ]),
+]
+
+
 def print_chat_help(ui: "ConsoleUI") -> None:
-    ui.info("Slash commands:")
-    ui.print_line("/help      Show available chat commands")
-    ui.print_line("/details   Show hidden internal activity from the latest turn")
-    ui.print_line("/history   Show recent conversation turns")
-    ui.print_line("/add <path> Add a file's content to the conversation context")
-    ui.print_line("/tools     Show enabled tools with descriptions")
-    ui.print_line("/status    Show token usage, turns, and context health")
-    ui.print_line("/models    Browse all supported models with key status")
-    ui.print_line("/model     Show the current model")
-    ui.print_line("/model X   Switch model (accepts full ID or short alias)")
-    ui.print_line("/session   Show session and workspace details")
-    ui.print_line("/save              Save the current session now")
-    ui.print_line("/sessions          List all saved sessions")
-    ui.print_line("/sessions clear    Delete all saved sessions")
-    ui.print_line("/sessions clear X  Delete session named X")
-    ui.print_line("/clear             Clear in-memory conversation history")
-    ui.print_line("/bug               Report a bug (saves logs and session state)")
-    ui.print_line("/exit              Quit the chat session")
-    ui.print_line("")
-    ui.print_line("Tips: Esc+Enter inserts a newline · ↑/↓ navigates input history · Tab completes /commands")
+    total = sum(len(cmds) for _, cmds in _HELP_SECTIONS)
+    # Column width from the widest "command args" pair, so descriptions align.
+    col_w = max(len(f"{c} {a}".strip()) for _, cmds in _HELP_SECTIONS for c, a, _ in cmds) + 3
+
+    ui.print_line()
+    ui.print_line(
+        f"  {ui.badge('help', '15', '48;2;70;85;115')}  "
+        f"{ui.style(f'{total} commands', '38;2;200;210;230')}"
+    )
+    for section, cmds in _HELP_SECTIONS:
+        ui.print_line()
+        ui.print_line(f"  {ui.style(section.upper(), '1', '38;2;190;200;220')}")
+        for cmd, args, desc in cmds:
+            plain = f"{cmd} {args}".strip()
+            pad = " " * (col_w - len(plain))
+            cmd_styled = ui.style(cmd, "1", "38;2;180;210;255")
+            args_styled = f" {ui.style(args, '38;2;247;220;150')}" if args else ""
+            ui.print_line(f"    {cmd_styled}{args_styled}{pad}{ui.dim(desc)}")
+    ui.print_line()
+    ui.print_line(f"  {ui.dim('Esc+Enter newline  ·  ↑/↓ input history  ·  Tab completes /commands')}")
+    ui.print_line()
 
 
 def handle_chat_command(
@@ -392,7 +423,7 @@ def handle_chat_command(
                     f"{ui.dim('(hidden — press Enter to skip)')}"
                 )
                 try:
-                    raw_key = getpass.getpass("  → ")
+                    raw_key = getpass("  → ")
                 except (EOFError, KeyboardInterrupt):
                     raw_key = ""
 
@@ -600,7 +631,119 @@ def handle_chat_command(
         ui.print_line()
         return True, current_model
 
-    ui.error("Unknown slash command. Type /help for a list of commands.")
+    if command_text == "/key" or command_text.startswith("/key "):
+        from apsara_cli.cli.auth import (
+            get_active_provider,
+            get_provider_key,
+            remove_provider_key,
+            save_provider_key,
+            stored_providers,
+        )
+        from apsara_cli.engine.models import (
+            KEY_HINTS,
+            default_model_for_provider,
+            provider_env_var,
+            validate_key_format,
+        )
+
+        sub = command_text[len("/key"):].strip()
+        keyed_providers = [p for p in providers_in_order() if provider_env_var(p)]
+
+        if sub in {"", "list"}:
+            active = get_active_provider()
+            ui.print_line()
+            ui.print_line(
+                f"  {ui.badge('keys', '15', '48;2;70;85;115')}  "
+                f"{ui.style('Provider API keys', '38;2;200;210;230')}"
+            )
+            ui.print_line()
+            for provider in keyed_providers:
+                env_var = provider_env_var(provider)
+                in_store = get_provider_key(provider) is not None
+                in_env = bool(os.environ.get(env_var))
+                if in_store:
+                    icon, source = ui.style("●", "38;2;120;200;150"), "stored in ~/.apsara"
+                elif in_env:
+                    icon, source = ui.style("●", "38;2;140;190;240"), f"from env {env_var}"
+                else:
+                    icon, source = ui.style("○", "38;2;120;100;90"), "not set"
+                active_marker = ui.style("  ← active", "38;2;120;200;150") if provider == active else ""
+                name = ui.style(provider.ljust(11), "1", "38;2;220;225;240")
+                ui.print_line(f"    {icon} {name}{ui.dim(source)}{active_marker}")
+            ui.print_line()
+            ui.print_line(f"  {ui.dim('/key set <provider> to add  ·  /key remove <provider> to delete')}")
+            ui.print_line()
+            return True, current_model
+
+        if sub.startswith("set"):
+            provider = sub[len("set"):].strip().lower()
+            if provider not in keyed_providers:
+                ui.error(f"Usage: /key set <provider>  —  one of: {', '.join(keyed_providers)}")
+                return True, current_model
+
+            env_var = provider_env_var(provider)
+            hint = KEY_HINTS.get(env_var)
+            ui.print_line()
+            ui.print_line(
+                f"  {ui.style('?', '38;2;247;200;100')} "
+                f"Enter your {ui.style(provider, '1', '38;2;220;225;240')} API key "
+                f"{ui.dim('(hidden — Enter to cancel)')}"
+            )
+            if hint and hint[1]:
+                ui.print_line(f"    {ui.dim(hint[1])}")
+            try:
+                raw_key = getpass("  → ").strip()
+            except (EOFError, KeyboardInterrupt):
+                raw_key = ""
+            if not raw_key:
+                ui.info("Cancelled — no key saved.")
+                return True, current_model
+
+            looks_valid, message = validate_key_format(env_var, raw_key)
+            if not looks_valid:
+                ui.warning(f"That doesn't match the usual format. {message}")
+                ui.print_line(
+                    f"  {ui.badge('↵  save anyway', '17', '48;2;80;170;140')}  "
+                    f"{ui.badge('n  cancel', '17', '48;2;200;100;80')}"
+                )
+                if ui.read_single_key() not in {"y", "Y", "\r", "\n", ""}:
+                    ui.info("Cancelled — no key saved.")
+                    return True, current_model
+
+            save_provider_key(provider, api_key=raw_key, default_model=default_model_for_provider(provider))
+            os.environ[env_var] = raw_key
+            ui.success(f"Saved {provider} key to ~/.apsara/credentials.json — active now.")
+            default_model = default_model_for_provider(provider)
+            if default_model and default_model != current_model:
+                ui.print_line(f"  {ui.dim(f'Try /model {default_model} to switch, or /models {provider} to browse.')}")
+            return True, current_model
+
+        if sub.startswith("remove"):
+            provider = sub[len("remove"):].strip().lower()
+            if not provider:
+                stored = stored_providers()
+                hint = f"stored: {', '.join(stored)}" if stored else "no keys stored"
+                ui.error(f"Usage: /key remove <provider>  —  {hint}")
+                return True, current_model
+            if remove_provider_key(provider):
+                env_var = provider_env_var(provider)
+                if env_var:
+                    os.environ.pop(env_var, None)
+                ui.success(f"Removed stored {provider} key.")
+            else:
+                ui.warning(f"No stored key for '{provider}'. /key list to see what's saved.")
+            return True, current_model
+
+        ui.error("Usage: /key list  |  /key set <provider>  |  /key remove <provider>")
+        return True, current_model
+
+    # Unknown command — suggest the closest match instead of a bare error.
+    import difflib
+    known = [c for c, _, _ in (cmd for _, cmds in _HELP_SECTIONS for cmd in cmds)]
+    word = command_text.split()[0]
+    matches = difflib.get_close_matches(word, set(known), n=1, cutoff=0.5)
+    suggestion = f" Did you mean {matches[0]}?" if matches else ""
+    ui.error(f"Unknown command '{word}'.{suggestion} Type /help for the full list.")
     return True, current_model
 
 
@@ -754,9 +897,49 @@ async def chat_loop(args: object, config: object) -> int:
         f"  {ui.dim('  /help for commands  ·  /exit to quit  ·  Esc+Enter for newline')}"
     )
 
+    # First-run guidance: no provider configured and the current model has no key.
+    _needs_setup = (
+        not _active_provider
+        and _model_entry is not None
+        and _model_entry.tier != "local"
+        and not is_key_available(_model_entry)
+    )
+    if _needs_setup:
+        _gs_border = "38;2;90;120;170"
+        _gs_w = min(ui.content_width() - 4, 64)
+        ui.print_line()
+        ui.print_line(f"  {ui.style('╭' + '─' * _gs_w + '╮', _gs_border)}")
+        ui.print_line(
+            f"  {ui.style('│', _gs_border)}  {ui.badge('get started', '15', '48;2;49;104;194')}  "
+            f"{ui.style('One step before your first prompt', '1', '38;2;210;222;245')}"
+        )
+        ui.print_line(f"  {ui.style('│', _gs_border)}")
+        _steps = [
+            ("1", f"/key set {_model_entry.provider}", "paste your API key (input stays hidden)"),
+            ("2", "/models", "or browse other providers — Groq and Gemini have free tiers"),
+            ("3", "", "then just type your first request below"),
+        ]
+        for num, cmd, desc in _steps:
+            n = ui.style(num + ".", "1", "38;2;140;180;240")
+            c = f"{ui.style(cmd, '1', '38;2;180;210;255')}  " if cmd else ""
+            ui.print_line(f"  {ui.style('│', _gs_border)}  {n} {c}{ui.dim(desc)}")
+        ui.print_line(f"  {ui.style('╰' + '─' * _gs_w + '╯', _gs_border)}")
+
     while True:
+        # OpenCode-style toolbar under the input: mode · model · session · hint.
+        _hint_entry = lookup_model(current_model)
+        _model_name = _hint_entry.display_name if _hint_entry else current_model.split("/")[-1]
+        if options.dry_run:
+            _mode = "dry-run"
+        elif options.read_only:
+            _mode = "read-only"
+        else:
+            _mode = "chat"
+        _toolbar = f"{_mode} · {_model_name} · {session_label}  —  /help commands · esc+enter newline"
         try:
-            instruction = (await get_input_async(ui.prompt("you"), options.workspace_root)).strip()
+            instruction = (
+                await get_input_async(ui.prompt(), options.workspace_root, toolbar=_toolbar)
+            ).strip()
         except KeyboardInterrupt:
             ui.print_line()
             ui.info("Ctrl+C pressed. Type /exit to quit.")

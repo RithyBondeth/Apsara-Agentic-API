@@ -92,6 +92,27 @@ def set_active_provider(provider: str) -> bool:
     return True
 
 
+def remove_provider_key(provider: str) -> bool:
+    """Remove one provider from the store. Returns False if it wasn't stored.
+
+    If the removed provider was active, the active pointer moves to another
+    stored provider (or clears when none remain).
+    """
+    data = load_credentials()
+    providers = data.get("providers", {})
+    if provider not in providers:
+        return False
+    del providers[provider]
+    if data.get("active_provider") == provider:
+        remaining = list(providers.keys())
+        if remaining:
+            data["active_provider"] = remaining[0]
+        else:
+            data.pop("active_provider", None)
+    _write_credentials(data)
+    return True
+
+
 def clear_credentials() -> None:
     """Remove all stored provider credentials."""
     if CREDENTIALS_PATH.exists():

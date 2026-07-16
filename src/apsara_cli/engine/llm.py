@@ -8,6 +8,10 @@ from typing import Any, AsyncGenerator
 import litellm
 from apsara_cli.engine.tools import get_agent_tools
 
+import os as _os
+# Silence huggingface_hub's unauthenticated-request warning triggered by
+# litellm's tokenizer downloads — it's noise in the chat UI.
+_os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 litellm.suppress_debug_info = True
 # Max tokens per completion. Kept generous enough to avoid truncating
 # multi-step tool calls and longer code responses; override per-call if needed.
