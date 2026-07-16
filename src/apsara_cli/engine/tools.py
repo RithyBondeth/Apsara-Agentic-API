@@ -486,9 +486,13 @@ def write_to_file(path: str, content: str) -> str:
 
 
 def _extract_command_names(command: str) -> list[str]:
-    """Return all command names used in a pipeline/chain (split on |, ||, &&, ;)."""
+    """Return every command name in a pipeline/chain.
+
+    Splits on |, ||, &&, ; and a single & (background) so that a second
+    command hidden behind a separator can't slip past the allowlist.
+    """
     import re
-    segments = re.split(r"\|\|?|&&|;", command)
+    segments = re.split(r"\|\|?|&&?|;", command)
     names: list[str] = []
     for seg in segments:
         seg = seg.strip()
@@ -503,6 +507,69 @@ def _extract_command_names(command: str) -> list[str]:
     return names
 
 
+# Substrings that let a command spawn another command outside the allowlist.
+_BASH_FORBIDDEN_SUBSTRINGS = ("`", "$(", "<(", ">(")
+# Flags that run an arbitrary command as an argument (e.g. `find . -exec rm {} \;`).
+_BASH_EXEC_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
+_BASH_REDIRECT_OPS = (">>", "&>", "<<<", "<<", ">", "<")
+
+
+def _redirection_target_escapes(tokens: list[str]) -> bool:
+    """True if a redirection (>, >>, <, ...) targets a path outside the workspace."""
+    for i, tok in enumerate(tokens):
+        target: Optional[str] = None
+        if tok in {">", ">>", "<", "<<", "<<<", "&>", ">&"}:
+            target = tokens[i + 1] if i + 1 < len(tokens) else None
+        else:
+            for op in _BASH_REDIRECT_OPS:
+                if tok.startswith(op) and len(tok) > len(op):
+                    target = tok[len(op):]
+                    break
+        if not target:
+            continue
+        # File-descriptor duplication like `2>&1` / `>&2` is not a path.
+        if target.isdigit() or target.startswith("&"):
+            continue
+        if os.path.isabs(target) or ".." in Path(target).parts:
+            return True
+    return False
+
+
+def _validate_bash_command(command: str) -> Optional[str]:
+    """Return an error string if *command* is unsafe under the allowlist, else None.
+
+    Defense-in-depth for the `shell=True` execution below: the shell is
+    Turing-complete, so this is a best-effort denylist layered on top of the
+    allowlist and the human confirmation gate — not a complete sandbox.
+    """
+    if not command.strip():
+        return "Command cannot be empty."
+    if "\n" in command:
+        return "Multi-line commands are not allowed."
+    for sub in _BASH_FORBIDDEN_SUBSTRINGS:
+        if sub in command:
+            return "Command/process substitution (`, $(), <(), >()) is not allowed."
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for tok in tokens:
+        if tok in _BASH_EXEC_FLAGS:
+            return f"The '{tok}' option is not allowed (it can execute arbitrary commands)."
+    if _redirection_target_escapes(tokens):
+        return "Redirecting to a path outside the workspace is not allowed."
+
+    command_names = _extract_command_names(command)
+    if not command_names:
+        return "Command cannot be empty."
+    disallowed = [n for n in command_names if n not in _allowed_commands()]
+    if disallowed:
+        allowed = ", ".join(sorted(_allowed_commands()))
+        return f"Command(s) not allowed: {', '.join(disallowed)}. Allowed: {allowed}"
+    return None
+
+
 def run_bash_command(command: str) -> str:
     if not _bash_enabled():
         return "Error: The bash tool is disabled by configuration."
@@ -511,24 +578,11 @@ def run_bash_command(command: str) -> str:
         return "Error: Bash commands are disabled in read-only mode."
 
     try:
-        if not command.strip():
-            return "Error: Command cannot be empty."
-
-        # Block only command-substitution patterns that can escape the allowlist
-        if "`" in command or "$(" in command or "\n" in command:
-            return "Error: Command substitution (backtick / $()) is not allowed."
+        validation_error = _validate_bash_command(command)
+        if validation_error:
+            return f"Error: {validation_error}"
 
         command_names = _extract_command_names(command)
-        if not command_names:
-            return "Error: Command cannot be empty."
-
-        disallowed = [n for n in command_names if n not in _allowed_commands()]
-        if disallowed:
-            allowed = ", ".join(sorted(_allowed_commands()))
-            return (
-                f"Error: Command(s) not allowed: {', '.join(disallowed)}. "
-                f"Allowed: {allowed}"
-            )
 
         if not _confirm_action(
             "run_bash_command",

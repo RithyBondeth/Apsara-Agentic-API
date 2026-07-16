@@ -62,10 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor", help="Validate config, workspace access, tool readiness, and likely model credentials."
     )
     _add_shared_options(doctor_parser)
-    doctor_parser.add_argument("--live", action="store_true", default=True,
-                               help="Attempt a live model probe after offline checks (default: on).")
+    doctor_parser.add_argument("--live", action="store_true", default=False,
+                               help="Also make a real model API call to verify credentials (uses tokens).")
     doctor_parser.add_argument("--no-live", dest="live", action="store_false",
-                               help="Skip the live model probe.")
+                               help="Skip the live model probe (this is the default).")
 
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")

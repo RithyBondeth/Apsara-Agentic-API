@@ -148,9 +148,11 @@ class ConsoleUI:
         # Turn outcome tracking ("ok" | "error" | "blocked" | "")
         self._turn_outcome: str = ""
         
-        # Logging for production diagnostics
+        # Logging for production diagnostics. Created lazily on the first
+        # log_event() call so no-op commands (--help, sessions, doctor) don't
+        # litter the working directory with empty .apsara/logs/ session files.
         self.log_file: Optional[Path] = None
-        self._init_logging()
+        self._logging_attempted: bool = False
 
         # Cumulative session token counters
         self._session_prompt_tokens: int = 0
@@ -166,11 +168,16 @@ class ConsoleUI:
         self._spinner_frame_index: int = 0
         self._spinner_color_index: int = 0
 
-    def _init_logging(self) -> None:
-        """Initialize session-based logging in .apsara/logs/."""
+    def _ensure_log_file(self) -> None:
+        """Create the session log file on first use, under ./.apsara/logs/.
+
+        Idempotent and best-effort: attempted at most once; on any failure
+        logging is silently disabled for this session.
+        """
+        if self._logging_attempted:
+            return
+        self._logging_attempted = True
         try:
-            # We don't have workspace root yet in __init__, 
-            # so we'll lazy-init log_file when workspace is known or use a default
             log_dir = Path.cwd() / ".apsara" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -181,7 +188,8 @@ class ConsoleUI:
             self.log_file = None
 
     def log_event(self, category: str, title: str, detail: str = "") -> None:
-        """Write an event to the session log file."""
+        """Write an event to the session log file (created lazily on first call)."""
+        self._ensure_log_file()
         if not self.log_file:
             return
         try:
