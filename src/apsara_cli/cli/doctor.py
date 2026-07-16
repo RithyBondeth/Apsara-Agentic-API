@@ -46,33 +46,20 @@ def run_workspace_checks(options, config, args) -> list:
     except (subprocess.CalledProcessError, FileNotFoundError):
         results.append(DoctorCheckResult("ripgrep", "warn", "ripgrep (rg) not found. search_files tool will fallback to slower 'grep'."))
 
-    # Check for authentication
-    from apsara_cli.cli.auth import get_auth_token, is_authenticated
-    token = get_auth_token()
-    if token:
-        results.append(DoctorCheckResult("auth", "pass", "Found local authentication token."))
-        
-        # Verify with backend
-        import httpx
-        from apsara_cli.config.defaults import settings
-        try:
-            with httpx.Client() as client:
-                response = client.get(
-                    f"{settings.APSARA_BASE_URL}/api/v1/auth/me",
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=5
-                )
-                if response.status_code == 200:
-                    user_data = response.json()
-                    results.append(DoctorCheckResult("auth-server", "pass", f"Token verified with Apsara server (User: {user_data.get('full_name')})."))
-                else:
-                    results.append(DoctorCheckResult("auth-server", "fail", f"Server rejected the stored token: {response.json().get('detail')}"))
-        except httpx.ConnectError:
-            results.append(DoctorCheckResult("auth-server", "warn", f"Could not connect to server at {settings.APSARA_BASE_URL} to verify token."))
-        except Exception as e:
-            results.append(DoctorCheckResult("auth-server", "warn", f"Unexpected error during server verification: {e}"))
+    # Check for a configured BYO-key provider
+    from apsara_cli.cli.auth import get_active_provider, stored_providers, apply_credentials_to_env
+    apply_credentials_to_env()
+    active_provider = get_active_provider()
+    stored = stored_providers()
+    if active_provider:
+        others = [p for p in stored if p != active_provider]
+        extra = f" (also stored: {', '.join(others)})" if others else ""
+        results.append(DoctorCheckResult("provider", "pass", f"Active provider: {active_provider}{extra}."))
     else:
-        results.append(DoctorCheckResult("auth", "fail", "No active session found. Run 'apsara login' to authenticate."))
+        results.append(DoctorCheckResult(
+            "provider", "warn",
+            "No provider configured. Run 'apsara login' to choose a provider and add your API key.",
+        ))
 
     config_path = getattr(config, "path", None)
     config_exists = getattr(config, "exists", False)

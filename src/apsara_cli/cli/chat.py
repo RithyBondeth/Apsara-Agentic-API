@@ -711,9 +711,13 @@ async def chat_loop(args: object, config: object) -> int:
     print_welcome_banner(ui, config)
 
     # Session status line
-    from apsara_cli.cli.auth import is_authenticated
-    auth_status = ui.style("authenticated ✓", "38;2;120;200;150") if is_authenticated() else ui.style("unauthenticated ✗", "38;2;220;120;100")
-    
+    from apsara_cli.cli.auth import get_active_provider
+    _active_provider = get_active_provider()
+    if _active_provider:
+        auth_status = ui.style(f"{_active_provider} ✓", "38;2;120;200;150")
+    else:
+        auth_status = ui.style("no provider — run 'apsara login' ✗", "38;2;220;120;100")
+
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
     ui.print_line(
         f"  {ui.dim(f'  workspace  {options.workspace_root}')}"

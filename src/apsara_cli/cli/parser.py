@@ -67,8 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--no-live", dest="live", action="store_false",
                                help="Skip the live model probe.")
 
-    subparsers.add_parser("login", help="Authenticate with the Apsara platform.")
-    subparsers.add_parser("logout", help="Clear local authentication credentials.")
+    subparsers.add_parser("login", help="Choose a model provider and save your API key.")
+    subparsers.add_parser("logout", help="Clear stored provider API keys.")
 
     return parser
 
@@ -104,6 +104,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     from apsara_cli.config.cli_config import load_cli_config
     from apsara_cli.cli.options import load_cli_environment
+    from apsara_cli.cli.auth import apply_credentials_to_env
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -111,6 +112,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         config = load_cli_config(args.config, getattr(args, "workspace", None))
         load_cli_environment(args, config)
+        # Make stored BYO-key provider keys visible to LiteLLM (env/.env keys win).
+        apply_credentials_to_env()
         return asyncio.run(dispatch_command(args, config))
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)

@@ -63,9 +63,9 @@ async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versat
     Send the conversation to LLM with configured tools via LiteLLM.
     Returns (Response Message Object, Usage Dictionary Object)
     """
-    from apsara_cli.cli.auth import is_authenticated
-    if not is_authenticated():
-        return {"error": "Authentication required. Please run 'apsara login' first."}, {}
+    from apsara_cli.cli.auth import credentials_present_for_model
+    if not credentials_present_for_model(model):
+        return {"error": f"No API key found for model '{model}'. Run 'apsara login' to add one."}, {}
 
     try:
         response = await litellm.acompletion(
@@ -91,9 +91,9 @@ async def call_llm_stream(
       {"type": "stream_done", "content": str, "tool_calls": list|None, "usage": dict}
       {"type": "stream_error", "error": str}
     """
-    from apsara_cli.cli.auth import is_authenticated
-    if not is_authenticated():
-        yield {"type": "stream_error", "error": "Authentication required. Please run 'apsara login' first."}
+    from apsara_cli.cli.auth import credentials_present_for_model
+    if not credentials_present_for_model(model):
+        yield {"type": "stream_error", "error": f"No API key found for model '{model}'. Run 'apsara login' to add one."}
         return
 
     for attempt in range(len(_RETRY_DELAYS) + 1):

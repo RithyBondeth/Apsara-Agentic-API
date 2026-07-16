@@ -15,19 +15,35 @@ cd apsara-agentic/apsara-agentic-cli
 pip install -e .
 ```
 
-## 2. Authentication
+## 2. Choose a Provider & Add Your API Key
 
-Apsara requires a session token to access models.
+Apsara is **bring-your-own-key**: you pick a model provider and use your own API
+key. Apsara never sends your key to any Apsara server — it's stored locally.
 
 ```bash
-# Start the login flow
+# Pick a provider and paste your key
 apsara login
 ```
-Follow the prompts to enter your access token. Your credentials will be stored securely in `~/.apsara/credentials.json`.
 
-## 3. Configuration (Optional)
+You'll get a menu of providers (OpenAI, Anthropic, Google, Groq, Mistral,
+DeepSeek, and local Ollama). Choose one, paste that provider's API key when
+prompted (input is hidden), and Apsara verifies it and stores it securely in
+`~/.apsara/credentials.json` (owner-only, `chmod 600`). Ollama is local and
+needs no key.
 
-If you are using your own API keys, you can also export them:
+Run `apsara logout` at any time to clear all stored keys.
+
+### Alternative: environment variables
+
+Instead of `apsara login`, you can export the provider's key yourself (or put it
+in a project `.env`). An explicitly-set environment variable always takes
+precedence over a stored key:
+
+```bash
+export OPENAI_API_KEY="sk-..."      # or ANTHROPIC_API_KEY, GROQ_API_KEY, etc.
+```
+
+Run `apsara doctor` to confirm your provider and key are detected.
 
 ## 3. Initialize your Project
 

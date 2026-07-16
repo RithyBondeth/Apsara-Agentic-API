@@ -281,3 +281,20 @@ def providers_in_order() -> list[str]:
         if e.provider not in seen:
             seen.append(e.provider)
     return seen
+
+
+def models_for_provider(provider: str) -> list[ModelEntry]:
+    """Return all registered models belonging to *provider* (in registry order)."""
+    return [e for e in MODELS if e.provider == provider]
+
+
+def provider_env_var(provider: str) -> Optional[str]:
+    """Primary API-key env var for *provider*, or None for local providers (e.g. ollama)."""
+    models = models_for_provider(provider)
+    return models[0].env_var if models else None
+
+
+def default_model_for_provider(provider: str) -> Optional[str]:
+    """The default (first-listed) model_id for *provider*, or None if unknown."""
+    models = models_for_provider(provider)
+    return models[0].model_id if models else None

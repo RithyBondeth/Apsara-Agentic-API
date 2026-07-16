@@ -1,7 +1,7 @@
 """Tests for the LLM layer (engine/llm.py).
 
 Auth gating and streaming-chunk aggregation are covered offline by patching
-`is_authenticated` and `litellm.acompletion`. No network calls are made.
+`credentials_present_for_model` and `litellm.acompletion`. No network calls are made.
 """
 import asyncio
 import os
@@ -35,7 +35,7 @@ def test_estimate_request_tokens_positive():
 
 
 def test_call_llm_requires_auth():
-    with patch("apsara_cli.cli.auth.is_authenticated", return_value=False):
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=False):
         message, usage = _run(llm.call_llm([{"role": "user", "content": "hi"}]))
     assert isinstance(message, dict)
     assert "error" in message
@@ -44,7 +44,7 @@ def test_call_llm_requires_auth():
 
 
 def test_call_llm_stream_requires_auth():
-    with patch("apsara_cli.cli.auth.is_authenticated", return_value=False):
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=False):
         events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))
     assert len(events) == 1
     assert events[0]["type"] == "stream_error"
@@ -80,7 +80,7 @@ def test_call_llm_stream_aggregates_text_and_tool_calls():
                 yield c
         return gen()
 
-    with patch("apsara_cli.cli.auth.is_authenticated", return_value=True), \
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=True), \
          patch.object(litellm, "acompletion", fake_acompletion):
         events = _drain(llm.call_llm_stream([{"role": "user", "content": "read a.txt"}]))
 
@@ -116,7 +116,7 @@ def test_call_llm_stream_retries_on_rate_limit():
     async def no_sleep(_seconds):
         return None
 
-    with patch("apsara_cli.cli.auth.is_authenticated", return_value=True), \
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=True), \
          patch.object(litellm, "acompletion", flaky_acompletion), \
          patch("apsara_cli.engine.llm.asyncio.sleep", no_sleep):
         events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))
