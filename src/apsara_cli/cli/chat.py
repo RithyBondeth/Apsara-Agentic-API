@@ -130,6 +130,44 @@ def build_status_line(options: "ResolvedOptions", current_model: str, session_la
     return f"{mode} · {model_name} · {session_label}  —  /help commands · esc+enter newline"
 
 
+def turn_mode_word(options: "ResolvedOptions") -> str:
+    """The bold mode word shown in mode lines and turn footers."""
+    if options.dry_run:
+        return "Dry-run"
+    if options.read_only:
+        return "Read-only"
+    return "Build"
+
+
+def mode_line_parts(options: "ResolvedOptions", current_model: str) -> tuple[str, str, str]:
+    """(mode, model display name, provider) for the input-box mode line."""
+    entry = lookup_model(current_model)
+    model_name = entry.display_name if entry else current_model.split("/")[-1]
+    provider = entry.provider.capitalize() if entry else ""
+    return turn_mode_word(options), model_name, provider
+
+
+def build_mode_line(ui: "ConsoleUI", options: "ResolvedOptions", current_model: str) -> str:
+    """
+    OpenCode-style mode line rendered under the input:
+    'Build · Big Pickle Zhipu' — mode accent-colored, model bold, provider dim.
+    """
+    mode, model_name, provider = mode_line_parts(options, current_model)
+    mode_color = {
+        "Dry-run": "38;2;247;200;100",
+        "Read-only": "38;2;240;170;90",
+    }.get(mode, "38;2;96;150;250")
+
+    parts = [
+        ui.style(mode, "1", mode_color),
+        ui.dim("·"),
+        ui.style(model_name, "1", "38;2;225;230;242"),
+    ]
+    if provider:
+        parts.append(ui.dim(provider))
+    return " ".join(parts)
+
+
 def _load_stored_keys() -> None:
     """Load stored API keys from ~/.apsara/credentials.json into os.environ."""
     import os
@@ -872,7 +910,11 @@ async def execute_instruction(
                 print_event(event, ui)
                 update_history_from_event(next_history, event)
 
-    ui.finish_turn()
+    entry = lookup_model(model)
+    ui.finish_turn(
+        model_label=entry.display_name if entry else model.split("/")[-1],
+        mode=turn_mode_word(options),
+    )
     return next_history, latest_usage
 
 
@@ -950,84 +992,124 @@ async def chat_loop(args: object, config: object) -> int:
 
     print_welcome_banner(ui, config)
 
-    # Session status line
+    # ── OpenCode-style welcome chrome: hints, tip, footer ─────────────────
     from apsara_cli.cli.auth import get_active_provider
-    _active_provider = get_active_provider()
-    if _active_provider:
-        auth_status = ui.style(f"{_active_provider} ✓", "38;2;120;200;150")
-    else:
-        auth_status = ui.style("no provider — run 'apsara login' ✗", "38;2;220;120;100")
+    from apsara_cli.shared.ui import terminal_width
+    from apsara_cli import __version__
+
+    _terminal = max(48, min(terminal_width(), 112))
+
+    def _center_pad(plain_len: int) -> str:
+        return " " * max((_terminal - plain_len) // 2, 2)
 
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
-    ui.print_line(
-        f"  {ui.dim(f'  workspace  {options.workspace_root}')}"
-    )
-    ui.print_line(
-        f"  {ui.dim(f'  auth       {auth_status}')}"
-    )
-    # Model key status
+    _active_provider = get_active_provider()
     _model_entry = lookup_model(current_model)
-    if _model_entry:
-        _key_ok = is_key_available(_model_entry)
-        _key_hint = (
-            ui.style("✓", "38;2;100;190;140")
-            if (_key_ok or _model_entry.tier == "local")
-            else ui.style(f"✗ needs {_model_entry.env_var}", "38;2;220;120;100")
-        )
-        _ctx_hint = ui.dim(f"  {format_context_window(_model_entry.context_window)} ctx")
-        ui.print_line(
-            f"  {ui.dim(f'  model      {current_model}')}{_ctx_hint}  {_key_hint}"
-        )
-    else:
-        ui.print_line(f"  {ui.dim(f'  model      {current_model}')}")
-    ui.print_line(
-        f"  {ui.dim(f'  session    {session_label}')}"
+    _key_ok = _model_entry is not None and (
+        is_key_available(_model_entry) or _model_entry.tier == "local"
     )
+
+    # Keyboard hints, 'tab agents  ctrl+p commands' style.
+    _hints = [("/", "commands"), ("esc+enter", "newline"), ("↑↓", "history")]
+    _hints_plain = "   ".join(f"{key} {label}" for key, label in _hints)
+    _hints_styled = "   ".join(
+        f"{ui.style(key, '1', '38;2;140;180;255')} {ui.dim(label)}" for key, label in _hints
+    )
+    ui.print_line(_center_pad(len(_hints_plain)) + _hints_styled)
+
     if history:
         prior_turns = sum(1 for m in history if m.get("role") == "user")
         plural = "s" if prior_turns != 1 else ""
-        ui.print_line(
-            f"  {ui.dim(f'  resumed    {prior_turns} prior turn{plural}')}"
-        )
-        turn_count = prior_turns
-    ui.print_line(
-        f"  {ui.dim('  /help for commands  ·  /exit to quit  ·  Esc+Enter for newline')}"
-    )
-
-    # First-run guidance: no provider configured and the current model has no key.
-    _needs_setup = (
-        not _active_provider
-        and _model_entry is not None
-        and _model_entry.tier != "local"
-        and not is_key_available(_model_entry)
-    )
-    if _needs_setup:
-        _gs_border = "38;2;90;120;170"
-        _gs_w = min(ui.content_width() - 4, 64)
+        _resumed = f"resumed {prior_turns} prior turn{plural}"
         ui.print_line()
-        ui.print_line(f"  {ui.style('╭' + '─' * _gs_w + '╮', _gs_border)}")
-        ui.print_line(
-            f"  {ui.style('│', _gs_border)}  {ui.badge('get started', '15', '48;2;49;104;194')}  "
-            f"{ui.style('One step before your first prompt', '1', '38;2;210;222;245')}"
+        ui.print_line(_center_pad(len(_resumed)) + ui.dim(_resumed))
+        turn_count = prior_turns
+
+    # Tip line: '● Tip Run /key set … to add an AI provider and start coding'.
+    _needs_setup = not _active_provider and _model_entry is not None and not _key_ok
+    if _needs_setup:
+        _tip_cmd = f"/key set {_model_entry.provider}"
+        _tip_rest = "to add an AI provider and start coding"
+        _tip_plain = f"● Tip Run {_tip_cmd} {_tip_rest}"
+        _tip_styled = (
+            f"{ui.style('●', '38;2;240;170;90')} {ui.style('Tip', '1', '38;2;240;170;90')} "
+            f"{ui.style('Run', '38;2;200;205;215')} {ui.style(_tip_cmd, '1', '38;2;225;230;242')} "
+            f"{ui.style(_tip_rest, '38;2;200;205;215')}"
         )
-        ui.print_line(f"  {ui.style('│', _gs_border)}")
-        _steps = [
-            ("1", f"/key set {_model_entry.provider}", "paste your API key (input stays hidden)"),
-            ("2", "/models", "or browse other providers — Groq and Gemini have free tiers"),
-            ("3", "", "then just type your first request below"),
-        ]
-        for num, cmd, desc in _steps:
-            n = ui.style(num + ".", "1", "38;2;140;180;240")
-            c = f"{ui.style(cmd, '1', '38;2;180;210;255')}  " if cmd else ""
-            ui.print_line(f"  {ui.style('│', _gs_border)}  {n} {c}{ui.dim(desc)}")
-        ui.print_line(f"  {ui.style('╰' + '─' * _gs_w + '╯', _gs_border)}")
+    else:
+        _tip_rest = 'Ask anything — e.g. "What is the tech stack of this project?"'
+        _tip_plain = f"● Tip {_tip_rest}"
+        _tip_styled = (
+            f"{ui.style('●', '38;2;240;170;90')} {ui.style('Tip', '1', '38;2;240;170;90')} "
+            f"{ui.style(_tip_rest, '38;2;200;205;215')}"
+        )
+    ui.print_line()
+    ui.print_line(_center_pad(len(_tip_plain)) + _tip_styled)
+
+    # First-run guidance, styled like OpenCode's 'Getting started' card.
+    if _needs_setup:
+        _gs_w = min(_terminal - 8, 56)
+        ui.print_line()
+        ui.print_line(f"  {ui.style('◇ Getting started', '1', '38;2;130;170;250')}")
+        ui.print_line()
+        _gs_body = (
+            "Apsara includes free-tier and local models so you can start "
+            "quickly. Connect a provider to use other models, including "
+            "Claude, GPT, Gemini etc."
+        )
+        import textwrap as _tw
+        for _line in _tw.wrap(_gs_body, width=_gs_w):
+            ui.print_line(f"    {ui.dim(_line)}")
+        ui.print_line()
+        _gs_cmd = f"/key set {_model_entry.provider}"
+        _gs_gap = " " * max(_gs_w - len("Connect provider") - len(_gs_cmd), 2)
+        ui.print_line(
+            f"    {ui.style('Connect provider', '1', '38;2;225;230;242')}"
+            f"{_gs_gap}{ui.style(_gs_cmd, '1', '38;2;180;210;255')}"
+        )
+
+    # Bottom footer: workspace path left, session · version right, with
+    # colored accents (⌂ gold, session green, version violet).
+    _left_plain = f"⌂ {options.workspace_root}"
+    _right_plain = f"{session_label} · v{__version__}"
+    _gap = max(_terminal - len(_left_plain) - len(_right_plain) - 4, 2)
+    _left_styled = f"{ui.style('⌂', '38;2;240;190;110')} {ui.dim(str(options.workspace_root))}"
+    _right_styled = (
+        f"{ui.style(session_label, '38;2;130;210;160')}{ui.dim(' · ')}"
+        f"{ui.style('v' + __version__, '38;2;190;150;250')}"
+    )
+    ui.print_line()
+    ui.print_line(f"  {_left_styled}{' ' * _gap}{_right_styled}")
+
+    _BOX_BORDER = "38;2;90;108;180"  # soft indigo, matches the TUI input box
 
     while True:
-        # OpenCode-style toolbar under the input: mode · model · session · hint.
-        _toolbar = build_status_line(options, current_model, session_label)
+        # OpenCode-style typing box: a rounded top border, a padding row, and
+        # a '│▌' gutter are part of the prompt itself; the bottom toolbar
+        # draws the box's lower edge carrying the 'Build · Model' mode line.
+        _w = max(40, min(terminal_width() - 2, 110))
+        _mode, _model_name, _provider = mode_line_parts(options, current_model)
+        _mode_plain = f"{_mode} · {_model_name}" + (f" {_provider}" if _provider else "")
+        _fill = max(_w - len(_mode_plain) - 6, 1)
+        _toolbar = (
+            ui.style("╰─ ", _BOX_BORDER)
+            + build_mode_line(ui, options, current_model)
+            + " "
+            + ui.style("─" * _fill + "╯", _BOX_BORDER)
+        )
+        _prompt = (
+            "\n"
+            + ui.style("╭" + "─" * (_w - 2) + "╮", _BOX_BORDER)
+            + "\n"
+            + ui.style("│", _BOX_BORDER)
+            + "\n"
+            + ui.style("│", _BOX_BORDER)
+            + ui.style("▌", ui.theme.accent)
+            + " "
+        )
         try:
             instruction = (
-                await get_input_async(ui.prompt(), options.workspace_root, toolbar=_toolbar)
+                await get_input_async(_prompt, options.workspace_root, toolbar=_toolbar)
             ).strip()
         except KeyboardInterrupt:
             ui.print_line()

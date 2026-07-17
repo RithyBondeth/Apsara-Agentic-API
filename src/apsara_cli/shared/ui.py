@@ -106,6 +106,18 @@ DEFAULT_THEME = Theme()
 
 _BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+# OpenCode-style accents shared across the renderer.
+_THOUGHT = "38;2;240;170;90"     # orange "+ Thought:" marker / Tip dot
+_BRIGHT = "38;2;225;230;242"     # near-white emphasis text
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    if seconds < 1:
+        return f"{int(seconds * 1000)}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
+
 
 # ── Action description helpers ────────────────────────────────────────────────
 
@@ -183,6 +195,8 @@ class ConsoleUI:
         self.work_notice_shown = False
 
         self._turn_outcome: str = ""
+        self._thought_pending: bool = False
+        self._turn_started_at: float = time.monotonic()
 
         self.log_file: Optional[Path] = None
         self._logging_attempted: bool = False
@@ -312,21 +326,16 @@ class ConsoleUI:
         current_lang = ""
 
         def flush_code(lines_buf: list[str], lang: str) -> None:
+            # OpenCode-style flat block: a dim left bar, no surrounding box.
             if not lines_buf:
                 return
             highlighted = _highlight_code("\n".join(lines_buf), lang)
-            box_w = max((_visual_len(l) for l in highlighted), default=0) + 4
             bc = self.theme.border
-            top    = self.style("╭" + "─" * box_w + "╮", bc)
-            bottom = self.style("╰" + "─" * box_w + "╯", bc)
-            self.print_line(f"  {top}")
+            bar = self.style("│", bc)
+            self.print_line(f"  {bar} {self.dim(lang)}" if lang else f"  {bar}")
             for cl in highlighted:
-                pad = " " * max(box_w - _visual_len(cl) - 2, 0)
-                left  = self.style("│ ", bc)
-                right = self.style(" │", bc)
                 fallback = self.style(cl, "38;2;173;203;255") if not lang else cl
-                print(f"  {left}{fallback}{pad}{right}")
-            self.print_line(f"  {bottom}")
+                print(f"  {bar} {fallback}")
 
         for item in lines:
             line_type = item[0]
@@ -424,43 +433,50 @@ class ConsoleUI:
     def spinner_enabled(self) -> bool:
         return sys.stdout.isatty() and os.environ.get("CI") is None
 
-    def _spinner_worker(self) -> None:
-        palette = self.theme.spinner_palette(self.spinner_message)
-        frame_idx = 0
-        color_idx = 0
-        start = time.monotonic()
-
-        while not self.spinner_stop_event.is_set():
-            palette = self.theme.spinner_palette(self.spinner_message)
-
-            frame = _BRAILLE[frame_idx % len(_BRAILLE)]
-            color = palette[color_idx % len(palette)]
-            elapsed = time.monotonic() - start
-            elapsed_str = self.style(f"  {elapsed:.0f}s", "38;2;130;120;110") if elapsed >= 2 else ""
-
-            msg_color = "38;2;228;218;205"
-            dot_color = "38;2;150;140;130"
-
-            if self.use_color:
-                spinner_char = f"\033[{color}m{frame}\033[0m"
+    def _shimmer(self, text: str, frame_idx: int, bright: str) -> str:
+        """A highlight window sweeping across ``text`` in the palette's hue."""
+        if not self.use_color:
+            return text
+        base = "38;2;150;155;170"
+        window = 5
+        span = len(text) + window * 2
+        pos = frame_idx % span
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            if pos - window <= i <= pos:
+                out.append(self.style(ch, "1", bright))
             else:
-                spinner_char = frame
+                out.append(self.style(ch, base))
+        return "".join(out)
 
+    def compose_spinner_line(self, frame_idx: int) -> str:
+        """One frame of the thinking animation: colored spinner + shimmering
+        message + pulsing dots + elapsed. Shared by the classic REPL (which
+        \\r-redraws it) and the TUI (which paints it into the chat pane)."""
+        palette = self.theme.spinner_palette(self.spinner_message)
+        frame = _BRAILLE[frame_idx % len(_BRAILLE)]
+        color = palette[frame_idx % len(palette)]
+        spin = self.style(frame, "1", color) if self.use_color else frame
+
+        msg = self._shimmer(self.spinner_message, frame_idx, bright=color)
+        dots = "·" * (1 + (frame_idx // 4) % 3)
+        dots_styled = self.style(dots.ljust(3), "38;2;150;140;130")
+
+        elapsed_str = ""
+        if self._spinner_start_time:
+            elapsed = time.monotonic() - self._spinner_start_time
+            if elapsed >= 2:
+                elapsed_str = self.style(f" {elapsed:.0f}s", "38;2;130;125;140")
+
+        return f"{spin} {msg} {dots_styled}{elapsed_str}"
+
+    def _spinner_worker(self) -> None:
+        frame_idx = 0
+        while not self.spinner_stop_event.is_set():
             with self.spinner_lock:
-                msg = self.spinner_message
-                line = (
-                    f"\r\033[2K"
-                    f"  {self.badge('apsara', '15', self.theme.spinner_bg)} "
-                    f"{spinner_char} "
-                    f"{self.style(msg, msg_color)}"
-                    f"{self.style('...', dot_color)}"
-                    f"{elapsed_str}"
-                )
-                sys.stdout.write(line)
+                sys.stdout.write(f"\r\033[2K  {self.compose_spinner_line(frame_idx)}")
                 sys.stdout.flush()
-
             frame_idx += 1
-            color_idx += 1
             if self.spinner_stop_event.wait(0.08):
                 break
 
@@ -499,13 +515,9 @@ class ConsoleUI:
     # ── Turn structure ────────────────────────────────────────────────────────
 
     def print_turn_separator(self, turn: int = 0) -> None:
+        # OpenCode stacks turns with whitespace only — no ruled separators.
         self.stop_spinner()
-        w = min(terminal_width(), 88)
-        now = datetime.now().strftime("%H:%M")
-        label = f" turn {turn} · {now} " if turn > 0 else f" {now} "
-        side = max((w - len(label) - 4) // 2, 4)
-        line = "─" * side + label + "─" * side
-        print(f"\n  {self.style(line, self.theme.turn_separator)}\n")
+        print()
 
     def print_rule(self, text: str = "") -> None:
         w = min(terminal_width(), 88)
@@ -518,8 +530,23 @@ class ConsoleUI:
 
     # ── Notification methods ──────────────────────────────────────────────────
 
+    _NOTICE_ICONS = {
+        "info": "●", "status": "●", "work": "●", "tip": "●",
+        "ok": "✓", "warn": "▲", "error": "✗", "blocked": "■",
+        "diff": "●", "editor": "●", "get started": "●",
+    }
+    # Routine notices show just the icon; only attention-worthy ones keep a label.
+    _NOTICE_LABELS = {"tip": "Tip", "warn": "Warning", "error": "Error", "blocked": "Blocked"}
+
     def print_notice(self, label: str, text: str, fg_code: str, bg_code: str, body_color: str) -> None:
-        self.print_line(f"  {self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
+        # OpenCode-style minimal notice: colored dot + optional bold label +
+        # body, no background badge. The badge bg color becomes the icon color.
+        key = label.lower()
+        icon_color = bg_code.replace("48;", "38;", 1) if bg_code.startswith("48;") else bg_code
+        icon = self.style(self._NOTICE_ICONS.get(key, "●"), "1", icon_color)
+        label_word = self._NOTICE_LABELS.get(key)
+        label_part = f"{self.style(label_word, '1', icon_color)} " if label_word else ""
+        self.print_line(f"  {icon} {label_part}{self.style(text, body_color)}")
 
     def status(self, text: str) -> None:
         self.print_notice("status", text, "17", self.theme.status_bg, "38;2;236;220;184")
@@ -536,20 +563,57 @@ class ConsoleUI:
     def error(self, text: str) -> None:
         self.print_notice("error", text, "15", self.theme.error_bg, self.theme.error_text)
 
+    def error_panel(self, title: str, detail: str = "", tip: str = "") -> None:
+        """
+        Rich error block with a red left-accent bar, OpenCode panel style:
+
+          ▌ ✗ Error  Invalid API Key
+          ▌ Groq rejected the request · code invalid_api_key
+          ▌
+          ▌ ● Tip Run /key set groq to update your key
+        """
+        import textwrap as _tw
+        self.stop_spinner()
+        bar = self.style("▌", "1", "38;2;235;110;100")
+        wrap_w = min(self.content_width(), 72)
+
+        self.print_line()
+        self.print_line(
+            f"  {bar} {self.style('✗ Error', '1', '38;2;235;110;100')}  "
+            f"{self.style(title, '1', '38;2;255;218;214')}"
+        )
+        if detail:
+            wrapped: list[str] = []
+            for raw in detail.splitlines():
+                wrapped.extend(_tw.wrap(raw, width=wrap_w) or [""])
+            for line in wrapped[:6]:
+                self.print_line(f"  {bar} {self.style(line, '38;2;220;170;168')}")
+        if tip:
+            self.print_line(f"  {bar}")
+            self.print_line(
+                f"  {bar} {self.style('●', '38;2;240;170;90')} "
+                f"{self.style('Tip', '1', '38;2;240;170;90')} "
+                f"{self.style(tip, '38;2;228;214;196')}"
+            )
+
     def blocked(self, text: str) -> None:
         self.print_line()
-        label = self.badge("blocked", "17", self.theme.blocked_bg)
-        self.print_line(f"  {label} {self.style(text, self.theme.blocked_text)}")
+        self.print_notice("blocked", text, "17", self.theme.blocked_bg, self.theme.blocked_text)
 
     # ── Input bar ────────────────────────────────────────────────────────────
 
     def prompt(self, label: str = "you", hint: str = "") -> str:
+        # Bare accent bar, matching OpenCode's input box left border.
         bar = self.style("▌", self.theme.accent)
-        user_lbl = self.style("you", self.theme.user_label)
-        return f"\n{bar} {user_lbl} "
+        return f"\n{bar} "
 
     def session_saved(self, session_path: Path) -> None:
-        self.print_line(f"  {self.dim(f'  ↳ saved to {session_path}')}")
+        # Show the shortest useful form of the path, not the full absolute one.
+        try:
+            display: Path | str = session_path.relative_to(Path.cwd())
+        except ValueError:
+            display = session_path
+        self.print_line(f"  {self.dim(f'  ↳ saved · {display}')}")
 
     def calculate_session_cost(self) -> float:
         return (self._session_total_tokens / 1000) * 0.01
@@ -571,17 +635,26 @@ class ConsoleUI:
 
     # ── Assistant message ─────────────────────────────────────────────────────
 
-    def assistant(self, text: str) -> None:
+    def _print_thought_marker(self) -> None:
+        """OpenCode-style collapsed '+ Thought: <elapsed>' marker, shown once
+        per turn the moment the model starts emitting its answer."""
+        if not self._thought_pending:
+            return
+        self._thought_pending = False
+        elapsed = time.monotonic() - self._turn_started_at
         self.print_line()
-        asst_lbl = self.style("apsara", self.theme.assistant_label)
-        self.print_line(f"  {asst_lbl}")
+        self.print_line(f"  {self.style('+ Thought: ' + _fmt_elapsed(elapsed), _THOUGHT)}")
+
+    def assistant(self, text: str) -> None:
+        self._print_thought_marker()
+        self.print_line()
         self.render_rich_text(text, typing_delay=self.typing_delay)
 
     def stream_text_start(self) -> None:
         self.stop_spinner()
+        self._print_thought_marker()
         self.print_line()
-        asst_lbl = self.style("apsara", self.theme.assistant_label)
-        sys.stdout.write(f"  {asst_lbl}\n  ")
+        sys.stdout.write("  ")
         sys.stdout.flush()
 
     def stream_text_chunk(self, chunk: str) -> None:
@@ -604,13 +677,14 @@ class ConsoleUI:
         self.print_line(f"    {icon} {name}{args}")
 
     def tool_result_activity(self, tool_name: str, success: bool, summary: str) -> None:
+        # Compact one-liner per tool: '✓ read_file  12 lines read'.
         if success:
             icon = self.style("✓", "38;2;120;200;150")
-            color = "38;2;160;220;180"
         else:
             icon = self.style("✗", "38;2;220;100;100")
-            color = "38;2;255;168;168"
-        self.print_line(f"    {icon} {self.style(summary, color)}")
+        name = self.style(tool_name, "38;2;180;210;255")
+        detail = f"  {self.dim(summary)}" if summary else ""
+        self.print_line(f"  {icon} {name}{detail}")
 
     # ── Hidden events log ─────────────────────────────────────────────────────
 
@@ -622,30 +696,39 @@ class ConsoleUI:
         self.current_turn_hidden_events = []
         self.work_notice_shown = False
         self._turn_outcome = ""
+        self._thought_pending = True
         self._turn_started_at = time.monotonic()
 
-    def finish_turn(self) -> None:
+    def finish_turn(self, model_label: Optional[str] = None, mode: str = "Build") -> None:
+        """OpenCode-style turn footer: '◼ Build · Big Pickle · 7.0s'."""
         self.stop_spinner()
         self.latest_hidden_events = list(self.current_turn_hidden_events)
         count = len(self.latest_hidden_events)
 
-        elapsed = time.monotonic() - getattr(self, "_turn_started_at", time.monotonic())
-        elapsed_text = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m{int(elapsed % 60):02d}s"
+        elapsed_text = _fmt_elapsed(time.monotonic() - self._turn_started_at)
 
         outcome = self._turn_outcome or "ok"
         if outcome == "error":
-            square, label = self.style("■", "38;2;220;100;100"), "error"
+            square = self.style("◼", "38;2;220;100;100")
         elif outcome == "blocked":
-            square, label = self.style("■", "38;2;247;200;100"), "blocked"
+            square = self.style("◼", "38;2;247;200;100")
         else:
-            square, label = self.style("■", "38;2;100;190;140"), "done"
+            square = self.style("◼", self.theme.accent)
 
-        parts = [self.style(label, "38;2;190;196;208"), self.dim(elapsed_text)]
+        tail = [elapsed_text]
+        if model_label:
+            tail.insert(0, model_label)
         if count:
             plural = "s" if count != 1 else ""
-            parts.append(self.dim(f"/details · {count} step{plural}"))
+            tail.append(f"{count} step{plural} · /details")
+        if outcome != "ok":
+            tail.append(outcome)
+
         self.print_line()
-        self.print_line(f"  {square} {self.dim(' · ').join(parts)}")
+        self.print_line(
+            f"  {square} {self.style(mode, '1', '38;2;200;210;228')}"
+            f" {self.dim('· ' + ' · '.join(tail))}"
+        )
 
     def hide_event(self, kind: str, title: str, detail: str = "") -> None:
         from apsara_cli.shared.types import HiddenCliEvent
@@ -664,29 +747,25 @@ class ConsoleUI:
         count = len(events)
         plural = "s" if count != 1 else ""
         self.print_line(
-            f"  {self.badge('details', '15', self.theme.muted_bg)}  "
-            f"{self.style(f'{count} internal step{plural}', '38;2;200;210;230')}"
+            f"  {self.style('◇ Details', '1', _BRIGHT)}  "
+            f"{self.dim(f'{count} internal step{plural}')}"
         )
         self.print_line()
 
         bc = self.theme.border
+        bar = self.style("│", bc)
+        max_detail_w = min(self.content_width() - 4, 72)
         for index, event in enumerate(events, start=1):
-            kind_badge = self.badge(event.kind, "15", "48;2;60;75;105")
+            kind_text = self.style(event.kind.upper(), "1", "38;2;140;170;220")
             title_text = self.style(event.title, "38;2;210;218;235")
-
-            box_w = min(self.content_width() - 4, 72)
-            self.print_line(f"  {self.style('╭' + '─' * (box_w), bc)}")
-            self.print_line(f"  {self.style('│', bc)}  {kind_badge} {title_text}")
+            self.print_line(f"  {bar} {kind_text}  {title_text}")
 
             if event.detail:
-                self.print_line(f"  {self.style('│', bc)}")
                 for dl in truncate_text(event.detail, max_lines=12, max_chars=900).splitlines():
-                    padded = dl[:box_w - 3]
-                    self.print_line(f"  {self.style('│', bc)}  {self.style(padded, '38;2;175;182;200')}")
+                    self.print_line(f"  {bar}   {self.style(dl[:max_detail_w], '38;2;175;182;200')}")
 
-            self.print_line(f"  {self.style('╰' + '─' * (box_w), bc)}")
             if index < count:
-                self.print_line()
+                self.print_line(f"  {bar}")
 
     # ── Input confirmation ────────────────────────────────────────────────────
 
@@ -754,13 +833,11 @@ class ConsoleUI:
 
         title, preview, diff_preview, diff_full, diff_editor, path_hint = describe_action(action, payload)
         self.print_line()
-        bc = "38;2;180;140;60"
-        box_w = min(self.content_width() - 4, 70)
-        label = self.badge("approve?", "17", "48;2;180;130;40")
+        # Flat left-accent panel instead of a rounded box, OpenCode-style.
+        bar = self.style("▌", "1", "38;2;240;170;90")
+        label = self.style("Approve?", "1", "38;2;247;200;100")
         title_styled = self.style(title, "1", "38;2;247;230;190")
-        self.print_line(f"  {self.style('╭' + '─' * box_w + '╮', bc)}")
-        self.print_line(f"  {self.style('│', bc)}  {label}  {title_styled}")
-        self.print_line(f"  {self.style('╰' + '─' * box_w + '╯', bc)}")
+        self.print_line(f"  {bar} {label}  {title_styled}")
 
         if diff_preview:
             self.print_line()

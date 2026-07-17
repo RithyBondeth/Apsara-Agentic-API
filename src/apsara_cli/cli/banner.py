@@ -1,3 +1,9 @@
+"""
+OpenCode-inspired welcome banner: a centered two-tone pixel-block logo with
+no surrounding box. The rest of the welcome chrome (hint row, tip line,
+path/version footer) is composed by chat.py so it can react to session state.
+"""
+
 import os
 import sys
 import textwrap
@@ -9,113 +15,88 @@ if TYPE_CHECKING:
     from apsara_cli.config.cli_config import CliConfig
 
 
+# ── Pixel logo ────────────────────────────────────────────────────────────────
+# 4x5 pixel glyphs; every "X" cell renders as a 2-char "██" block, giving the
+# chunky low-res look of the OpenCode logo.
+
+_PIXELS: dict[str, tuple[str, ...]] = {
+    "A": (".XX.", "X..X", "XXXX", "X..X", "X..X"),
+    "P": ("XXX.", "X..X", "XXX.", "X...", "X..."),
+    "S": (".XXX", "X...", ".XX.", "...X", "XXX."),
+    "R": ("XXX.", "X..X", "XXX.", "X.X.", "X..X"),
+    " ": ("....", "....", "....", "....", "...."),
+}
+
+_LOGO_WORD = "APSARA"
+_LOGO_SPLIT = 3  # "APS" cool half + "ARA" warm half — two-tone, opencode-style
+
+# Per-row gradients: cool blue→green on the left, gold→violet on the right.
+_LOGO_LEFT_COLORS = [
+    "38;2;120;175;255",
+    "38;2;110;198;252",
+    "38;2;120;214;230",
+    "38;2;138;220;195",
+    "38;2;162;220;160",
+]
+_LOGO_RIGHT_COLORS = [
+    "38;2;255;215;90",
+    "38;2;252;176;120",
+    "38;2;245;150;170",
+    "38;2;220;145;235",
+    "38;2;160;160;255",
+]
+_SUBTITLE_COLOR = "38;2;168;172;205"
+
+
+def _render_letters(letters: str, row: int) -> str:
+    return "  ".join(
+        "".join("██" if px == "X" else "  " for px in _PIXELS.get(ch, _PIXELS[" "])[row])
+        for ch in letters
+    )
+
+
+def logo_row_parts() -> list[tuple[str, str]]:
+    """Per-row (dim_half, bright_half) raw text for the pixel logo."""
+    rows: list[tuple[str, str]] = []
+    for row in range(5):
+        dim_half = _render_letters(_LOGO_WORD[:_LOGO_SPLIT], row) + "  "
+        bright_half = _render_letters(_LOGO_WORD[_LOGO_SPLIT:], row)
+        rows.append((dim_half, bright_half))
+    return rows
+
+
+def logo_width() -> int:
+    dim_half, bright_half = logo_row_parts()[0]
+    return len(dim_half) + len(bright_half)
+
+
+def styled_logo_lines(ui: "ConsoleUI", pad: int = 0) -> list[str]:
+    """The logo with per-row gradient styling, left-padded by ``pad`` spaces."""
+    left = " " * pad
+    return [
+        left
+        + ui.style(cool_half, "1", _LOGO_LEFT_COLORS[row])
+        + ui.style(warm_half, "1", _LOGO_RIGHT_COLORS[row])
+        for row, (cool_half, warm_half) in enumerate(logo_row_parts())
+    ]
+
+
+def small_logo_line(ui: "ConsoleUI") -> str:
+    """Narrow-terminal fallback: letter-spaced two-tone wordmark."""
+    cool_part = " ".join(_LOGO_WORD[:_LOGO_SPLIT])
+    warm_part = " ".join(_LOGO_WORD[_LOGO_SPLIT:])
+    return (
+        ui.style(cool_part + " ", "1", _LOGO_LEFT_COLORS[0])
+        + ui.style(warm_part, "1", _LOGO_RIGHT_COLORS[0])
+    )
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
 def center_text(text: str, width: int) -> str:
     if len(text) >= width:
         return text
     return text.center(width)
-
-
-def track_title(text: str) -> str:
-    words = [word for word in text.strip().split() if word]
-    if not words:
-        return ""
-    return "   ".join(" ".join(list(word.upper())) for word in words)
-
-
-def render_block_word(word: str) -> list[str]:
-    # ANSI Shadow font — 6 rows, uses █ block + ╗╔║╚╝═ box-drawing chars
-    glyphs = {
-        "A": [
-            " █████╗ ",
-            "██╔══██╗",
-            "███████║",
-            "██╔══██║",
-            "██║  ██║",
-            "╚═╝  ╚═╝",
-        ],
-        "P": [
-            "██████╗ ",
-            "██╔══██╗",
-            "██████╔╝",
-            "██╔═══╝ ",
-            "██║     ",
-            "╚═╝     ",
-        ],
-        "S": [
-            "███████╗",
-            "██╔════╝",
-            "███████╗",
-            "╚════██║",
-            "███████║",
-            "╚══════╝",
-        ],
-        "R": [
-            "██████╗ ",
-            "██╔══██╗",
-            "██████╔╝",
-            "██╔══██╗",
-            "██║  ██║",
-            "╚═╝  ╚═╝",
-        ],
-        "G": [
-            " ██████╗ ",
-            "██╔════╝ ",
-            "██║  ███╗",
-            "██║   ██║",
-            "╚██████╔╝",
-            " ╚═════╝ ",
-        ],
-        "E": [
-            "███████╗",
-            "██╔════╝",
-            "█████╗  ",
-            "██╔══╝  ",
-            "███████╗",
-            "╚══════╝",
-        ],
-        "N": [
-            "███╗   ██╗",
-            "████╗  ██║",
-            "██╔██╗ ██║",
-            "██║╚██╗██║",
-            "██║ ╚████║",
-            "╚═╝  ╚═══╝",
-        ],
-        "T": [
-            "████████╗",
-            "╚══██╔══╝",
-            "   ██║   ",
-            "   ██║   ",
-            "   ██║   ",
-            "   ╚═╝   ",
-        ],
-        "I": [
-            "██╗",
-            "██║",
-            "██║",
-            "██║",
-            "██║",
-            "╚═╝",
-        ],
-        "C": [
-            " ██████╗ ",
-            "██╔════╝ ",
-            "██║      ",
-            "██║      ",
-            "╚██████╗ ",
-            " ╚═════╝ ",
-        ],
-        " ": ["    ", "    ", "    ", "    ", "    ", "    "],
-    }
-    rows = ["", "", "", "", "", ""]
-    for letter in word.upper():
-        glyph = glyphs.get(letter, glyphs[" "])
-        glyph_w = max(len(seg) for seg in glyph)
-        for i, seg in enumerate(glyph):
-            rows[i] += seg.ljust(glyph_w) + "  "
-    # Pad every row to the same width so center_text aligns them identically
-    max_w = max(len(r) for r in rows)
-    return [r.ljust(max_w) for r in rows]
 
 
 def should_animate_welcome(config: "CliConfig") -> bool:
@@ -144,102 +125,48 @@ def wrap_banner_text(text: str, width: int) -> list[str]:
     return wrapped
 
 
-def _build_big_title_rows(terminal: int) -> list[tuple[str, tuple[str, ...]]]:
-    if terminal < 76:
-        return [(track_title("Apsara Agentic"), ("1", "38;2;249;193;103"))]
-
-    # Per-row gradient (6 rows): APSARA blue→cyan→green, AGENTIC gold→pink→purple
-    apsara_colors = [
-        ("1", "38;2;120;175;255"),
-        ("1", "38;2;110;198;252"),
-        ("1", "38;2;120;214;230"),
-        ("1", "38;2;138;220;195"),
-        ("1", "38;2;162;220;160"),
-        ("1", "38;2;200;216;140"),
-    ]
-    agentic_colors = [
-        ("1", "38;2;255;215;90"),
-        ("1", "38;2;255;190;100"),
-        ("1", "38;2;252;162;130"),
-        ("1", "38;2;240;140;200"),
-        ("1", "38;2;200;140;248"),
-        ("1", "38;2;148;162;255"),
-    ]
-
-    rows: list[tuple[str, tuple[str, ...]]] = []
-    for line, codes in zip(render_block_word("APSARA"), apsara_colors):
-        rows.append((line, codes))
-    rows.append(("", ()))
-    for line, codes in zip(render_block_word("AGENTIC"), agentic_colors):
-        rows.append((line, codes))
-    return rows
+def _centered(ui: "ConsoleUI", text: str, terminal: int, *codes: str) -> str:
+    pad = " " * max((terminal - len(text)) // 2, 2)
+    return pad + ui.style(text, *codes)
 
 
-def _build_welcome_content(config: "CliConfig") -> list[tuple[str, tuple[str, ...]]]:
-    from apsara_cli.shared.ui import terminal_width
+def banner_taglines(config: "CliConfig") -> tuple[str, str]:
+    """(subtitle, powered-by credit) with the Bondeth-branded defaults."""
     from apsara_cli import __version__
 
-    terminal = max(72, min(terminal_width(), 112))
-    title     = config.ui.welcome_title    or "Welcome to Apsara Agentic"
-    subtitle  = config.ui.welcome_subtitle or "Elegant local coding assistance for your workspace"
-    powered   = config.ui.powered_by       or f"Powered by Bondeth · v{__version__}"
-    wrap_w    = max(36, min(68, terminal - 24))
+    subtitle = config.ui.welcome_subtitle or "Elegant local coding assistance for your workspace"
+    powered = config.ui.powered_by or f"Powered by Bondeth · v{__version__}"
+    return subtitle, powered
 
-    rows: list[tuple[str, tuple[str, ...]]] = [
-        ("BONDETH EDITION · ALPHA", ("1", "38;2;104;170;255")),
-        ("", ()),
-    ]
-    rows.extend(_build_big_title_rows(terminal))
-    rows.extend([
-        ("", ()),
-        ("project-first  ·  workspace-aware  ·  human-approved", ("38;2;190;196;214",)),
-        ("", ()),
-    ])
-    for line in wrap_banner_text(title, wrap_w):
-        rows.append((line, ("1", "38;2;246;239;230")))
-    for line in wrap_banner_text(subtitle, wrap_w):
-        rows.append((line, ("38;2;200;192;182",)))
-    rows.append(("", ()))
-    for line in wrap_banner_text(powered, wrap_w):
-        rows.append((line, ("38;2;200;166;110",)))
-    return rows
 
+# ── Banner ───────────────────────────────────────────────────────────────────
 
 def render_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> list[str]:
     from apsara_cli.shared.ui import terminal_width
 
-    border_color = ("2", "38;2;105;92;78")
-    terminal = max(72, min(terminal_width(), 112))
-    rows = _build_welcome_content(config)
-    content_w = max(48, min(max(len(text) for text, _ in rows if text), terminal - 10))
-    banner_w = content_w + 8
-    left_pad = " " * max((terminal - banner_w) // 2, 0)
+    terminal = max(48, min(terminal_width(), 112))
+    lines: list[str] = [""]
 
-    def bline(inner: str) -> str:
-        return left_pad + ui.style("│" + inner + "│", *border_color)
+    if terminal >= logo_width() + 4:
+        pad = max((terminal - logo_width()) // 2, 2)
+        lines.extend(styled_logo_lines(ui, pad))
+    else:
+        plain_len = len(" ".join(_LOGO_WORD))
+        lines.append(" " * max((terminal - plain_len) // 2, 2) + small_logo_line(ui))
 
-    rendered: list[str] = [
-        left_pad + ui.style("╭" + "─" * (banner_w - 2) + "╮", *border_color),
-        bline(" " * (banner_w - 2)),
-    ]
+    wrap_w = max(36, min(68, terminal - 8))
+    title = config.ui.welcome_title
+    subtitle, powered = banner_taglines(config)
 
-    for text, codes in rows:
-        if text:
-            content = center_text(text, content_w)
-            rendered.append(
-                left_pad
-                + ui.style("│   ", *border_color)
-                + ui.style(content, *codes)
-                + ui.style("   │", *border_color)
-            )
-        else:
-            rendered.append(bline(" " * (banner_w - 2)))
-
-    rendered.extend([
-        bline(" " * (banner_w - 2)),
-        left_pad + ui.style("╰" + "─" * (banner_w - 2) + "╯", *border_color),
-    ])
-    return rendered
+    lines.append("")
+    if title:
+        for text in wrap_banner_text(title, wrap_w):
+            lines.append(_centered(ui, text, terminal, "1", "38;2;225;230;242"))
+    for text in wrap_banner_text(subtitle, wrap_w):
+        lines.append(_centered(ui, text, terminal, _SUBTITLE_COLOR))
+    for text in wrap_banner_text(powered, wrap_w):
+        lines.append(_centered(ui, text, terminal, "38;2;200;166;110"))
+    return lines
 
 
 def print_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> None:
@@ -247,17 +174,12 @@ def print_welcome_banner(ui: "ConsoleUI", config: "CliConfig") -> None:
     if not lines:
         return
 
-    animate = should_animate_welcome(config)
-    delay = welcome_frame_delay_seconds(config)
-
-    if animate:
-        # Reveal the border first, then sweep content lines in
-        for i, line in enumerate(lines):
+    if should_animate_welcome(config):
+        delay = welcome_frame_delay_seconds(config)
+        for line in lines:
             print(line)
-            # Faster for border rows, slightly slower for content rows
-            row_delay = delay * 0.4 if i in (0, 1, len(lines) - 2, len(lines) - 1) else delay
-            time.sleep(row_delay)
-        time.sleep(delay * 3)
+            time.sleep(delay)
+        time.sleep(delay * 2)
     else:
         for line in lines:
             print(line)

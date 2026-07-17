@@ -8,19 +8,79 @@ from apsara_cli.shared.text import truncate_text
 
 
 def _error_suggestion(message: str) -> Optional[str]:
-    """Return a short actionable hint for a known error pattern, or None."""
+    """Return a short actionable hint for a known error pattern, or None.
+
+    Ordering matters: API-key problems are checked before network patterns,
+    because provider errors often arrive wrapped in a generic 'LLM Connection
+    Error' prefix that would otherwise match the network hint.
+    """
     m = message.lower()
+    provider = _error_provider(message)
+    key_target = provider or "<provider>"
+    if ("invalid api key" in m or "invalid_api_key" in m or "incorrect api key" in m
+            or "unauthorized" in m or "401" in m or "authentication" in m or "auth_error" in m):
+        return f"Run /key set {key_target} to update your key, or /models to switch models."
     if "rate limit" in m or "429" in m or "too many requests" in m or "ratelimit" in m:
-        return "Tip: wait a moment and retry, or switch models with /model <name>."
+        return "Wait a moment and retry, or switch models with /model <name>."
     if ("context" in m or "token" in m) and ("length" in m or "too long" in m or "maximum" in m or "exceed" in m):
-        return "Tip: use /clear to reset history, or /status to check context size."
-    if "connection" in m or "timeout" in m or "timed out" in m or "network" in m or "resolve" in m:
-        return "Tip: check your internet connection and try again."
-    if "not found" in m or "404" in m or ("model" in m and ("exist" in m or "invalid" in m or "unknown" in m)):
-        return "Tip: verify the model name with /model, or run `apsara doctor --live`."
+        return "Use /clear to reset history, or /status to check context size."
+    if "not found" in m or "404" in m or ("model" in m and ("exist" in m or "unknown" in m)):
+        return "Verify the model name with /model, or run `apsara doctor --live`."
     if "permission" in m or "403" in m or "forbidden" in m:
-        return "Tip: your API key may lack access to this model. Run `apsara doctor --live`."
-    return "Tip: run `apsara doctor --live` for full diagnostics."
+        return "Your API key may lack access to this model. Run `apsara doctor --live`."
+    if ("timed out" in m or "timeout" in m or "network" in m or "resolve" in m
+            or "connection refused" in m or "econn" in m or "unreachable" in m):
+        return "Check your internet connection and try again."
+    return "Run `apsara doctor --live` for full diagnostics."
+
+
+def _error_provider(message: str) -> str:
+    """Best-effort provider name from e.g. 'GroqException' in the message."""
+    import re
+    match = re.search(r"([A-Z][a-zA-Z]+?)Exception", message)
+    return match.group(1).lower() if match else ""
+
+
+def _summarize_error(message: str) -> tuple[str, str]:
+    """
+    Distill raw LiteLLM noise into (title, detail).
+
+    'litellm.BadRequestError: GroqException - {"error":{"message":"Invalid
+    API Key","code":"invalid_api_key"}}' becomes
+    ('Invalid API Key', 'Groq · invalid_api_key').
+    """
+    import re
+    msg = message.strip()
+    first_line = next((ln.strip() for ln in msg.splitlines() if ln.strip()), msg)
+
+    # Pull the human-readable message out of an embedded provider JSON blob.
+    title = ""
+    code = ""
+    blob = re.search(r"\{.*\}", msg, re.DOTALL)
+    if blob:
+        try:
+            payload = json.loads(blob.group(0))
+            err = payload.get("error", payload)
+            if isinstance(err, dict):
+                title = str(err.get("message") or "").strip()
+                code = str(err.get("code") or err.get("type") or "").strip()
+        except Exception:
+            pass
+
+    provider = _error_provider(msg)
+    if title:
+        detail_bits = [b for b in (provider.capitalize() if provider else "", code) if b]
+        return title, " · ".join(detail_bits)
+
+    # No JSON payload — clean up the wrapper prefixes and use the first line
+    # as the title; any remaining lines become the detail.
+    cleaned = re.sub(r"^(llm connection error:\s*)?", "", first_line, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^litellm\.\w+:\s*", "", cleaned)
+    cleaned = cleaned.strip() or "Something went wrong"
+    rest = " ".join(ln.strip() for ln in msg.splitlines()[1:] if ln.strip())
+    if len(cleaned) > 90:
+        return cleaned[:87] + "…", (first_line + (" " + rest if rest else ""))
+    return cleaned, rest
 
 
 def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -160,9 +220,8 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
         result = str(event.get("result", ""))
         success, summary = _tool_result_summary(tool_name, result)
 
-        # Show compact inline indicator
+        # Show compact inline indicator: one '✓ tool_name  summary' line
         ui.stop_spinner()
-        ui.tool_activity(tool_name, "")
         ui.tool_result_activity(tool_name, success, summary)
 
         # Resume spinner for next step
@@ -202,19 +261,17 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
         return
 
     if event_type == "error":
+        error_msg = str(event.get("message", ""))
         if event.get("auth_error"):
-            ui.error("Authentication failed — your API key may be missing or invalid.")
-            ui.info("Run `apsara doctor --live` to diagnose, or check your .env file.")
-        else:
-            error_msg = str(event.get("message", ""))
-            # Trim raw LiteLLM noise: take only the first meaningful line
-            first_line = next(
-                (ln.strip() for ln in error_msg.splitlines() if ln.strip()),
-                error_msg,
+            provider = _error_provider(error_msg)
+            ui.error_panel(
+                "Authentication failed",
+                "Your API key may be missing or invalid.",
+                f"Run /key set {provider or '<provider>'} to update it, "
+                "or `apsara doctor --live` to diagnose.",
             )
-            ui.error(first_line)
-            suggestion = _error_suggestion(error_msg)
-            if suggestion:
-                ui.info(suggestion)
+        else:
+            title, detail = _summarize_error(error_msg)
+            ui.error_panel(title, detail, _error_suggestion(error_msg) or "")
         ui.set_turn_outcome("error")
         return

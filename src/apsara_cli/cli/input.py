@@ -91,7 +91,10 @@ def _build_session(workspace_root: Path) -> object:
         complete_while_typing=True,
         key_bindings=kb,
         multiline=True,
-        prompt_continuation=lambda width, line_number, is_soft_wrap: ANSI("\033[1;38;2;96;150;250m▌\033[0m "),
+        # Continuation gutter matches the typing box: indigo '│' edge + accent bar.
+        prompt_continuation=lambda width, line_number, is_soft_wrap: ANSI(
+            "\033[38;2;90;108;180m│\033[0m\033[1;38;2;96;150;250m▌\033[0m "
+        ),
         style=Style.from_dict({
             # Dim single-line strip under the input, OpenCode-footer style.
             "bottom-toolbar": "noreverse bg:default fg:#8a8f98",
@@ -133,7 +136,9 @@ async def get_input_async(prompt_text: str, workspace_root: Path, toolbar: Optio
     if _session is None:
         _session = _build_session(workspace_root)
 
+    # ANSI so the OpenCode-style mode line keeps its colors in the toolbar,
+    # passed through verbatim so the box's bottom border stays aligned.
     return await _session.prompt_async(
         ANSI(prompt_text),
-        bottom_toolbar=(" " + toolbar) if toolbar else None,
+        bottom_toolbar=ANSI(toolbar) if toolbar else None,
     )
