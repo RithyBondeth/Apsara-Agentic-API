@@ -113,6 +113,23 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
     return resolved
 
 
+def build_status_line(options: "ResolvedOptions", current_model: str, session_label: str) -> str:
+    """
+    Mode · model · session · hint — the single source of truth for the
+    bottom status line, shared by the classic REPL toolbar and the TUI
+    status bar.
+    """
+    entry = lookup_model(current_model)
+    model_name = entry.display_name if entry else current_model.split("/")[-1]
+    if options.dry_run:
+        mode = "dry-run"
+    elif options.read_only:
+        mode = "read-only"
+    else:
+        mode = "chat"
+    return f"{mode} · {model_name} · {session_label}  —  /help commands · esc+enter newline"
+
+
 def _load_stored_keys() -> None:
     """Load stored API keys from ~/.apsara/credentials.json into os.environ."""
     import os
@@ -470,7 +487,15 @@ def handle_chat_command(
             ui.print_line()
             ui.print_line(f"  {'  '.join(header_parts)}")
             ui.print_line()
-            chosen = pick_model(rows, current_model, ui)
+            # Under the full-screen TUI, pick_model()'s own transient
+            # Application would otherwise contend with the outer one for the
+            # terminal — TuiConsoleUI exposes _run_passthrough for exactly
+            # this (see tui.py's module docstring).
+            run_passthrough = getattr(ui, "_run_passthrough", None)
+            if run_passthrough is not None:
+                chosen = run_passthrough(lambda: pick_model(rows, current_model, ui))
+            else:
+                chosen = pick_model(rows, current_model, ui)
             if chosen is None:
                 ui.info("No change — model selection cancelled.")
                 return True, current_model
@@ -999,15 +1024,7 @@ async def chat_loop(args: object, config: object) -> int:
 
     while True:
         # OpenCode-style toolbar under the input: mode · model · session · hint.
-        _hint_entry = lookup_model(current_model)
-        _model_name = _hint_entry.display_name if _hint_entry else current_model.split("/")[-1]
-        if options.dry_run:
-            _mode = "dry-run"
-        elif options.read_only:
-            _mode = "read-only"
-        else:
-            _mode = "chat"
-        _toolbar = f"{_mode} · {_model_name} · {session_label}  —  /help commands · esc+enter newline"
+        _toolbar = build_status_line(options, current_model, session_label)
         try:
             instruction = (
                 await get_input_async(ui.prompt(), options.workspace_root, toolbar=_toolbar)

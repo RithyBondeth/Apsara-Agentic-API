@@ -46,6 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat_parser = subparsers.add_parser("chat", help="Open an interactive local chat session.")
     _add_shared_options(chat_parser)
+    chat_parser.add_argument("--tui", action="store_true", default=False,
+                             help="Use the full-screen split-pane TUI instead of the classic scrolling chat.")
 
     init_parser = subparsers.add_parser("init", help="Initialize Apsara in the current project and open chat.")
     _add_shared_options(init_parser)
@@ -78,6 +80,9 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
         from apsara_cli.cli.chat import run_once
         return await run_once(args, config)
     if args.command == "chat":
+        if getattr(args, "tui", False):
+            from apsara_cli.cli.tui import tui_loop
+            return await tui_loop(args, config)
         from apsara_cli.cli.chat import chat_loop
         return await chat_loop(args, config)
     if args.command == "init":

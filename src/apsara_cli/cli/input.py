@@ -30,7 +30,7 @@ _SUB_COMMANDS: dict[str, list[str]] = {
 }
 
 
-class _SlashCompleter(Completer):
+class SlashCompleter(Completer):
     """Progressive slash-command completer.
 
     Typing ``/`` shows only top-level commands.  After a known prefix
@@ -72,7 +72,7 @@ def _build_session(workspace_root: Path) -> object:
     history_dir = Path.home() / ".apsara"
     history_dir.mkdir(parents=True, exist_ok=True)
 
-    completer = _SlashCompleter()
+    completer = SlashCompleter()
 
     kb = KeyBindings()
 
