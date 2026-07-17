@@ -36,11 +36,52 @@ class CliUi:
 
 
 @dataclass
+class CliTheme:
+    body: Optional[str] = None
+    muted: Optional[str] = None
+    dim: Optional[str] = None
+    heading: Optional[str] = None
+    accent: Optional[str] = None
+    success: Optional[str] = None
+    info_text: Optional[str] = None
+    warning_text: Optional[str] = None
+    error_text: Optional[str] = None
+    blocked_text: Optional[str] = None
+    info_bg: Optional[str] = None
+    ok_bg: Optional[str] = None
+    warn_bg: Optional[str] = None
+    error_bg: Optional[str] = None
+    status_bg: Optional[str] = None
+    blocked_bg: Optional[str] = None
+    spinner_bg: Optional[str] = None
+    muted_bg: Optional[str] = None
+    assistant_label: Optional[str] = None
+    user_label: Optional[str] = None
+    turn_separator: Optional[str] = None
+    border: Optional[str] = None
+    content_width: Optional[int] = None
+
+    def apply_to(self, theme: Any) -> None:
+        for field_name in (
+            "body", "muted", "dim", "heading", "accent",
+            "success", "info_text", "warning_text", "error_text", "blocked_text",
+            "info_bg", "ok_bg", "warn_bg", "error_bg", "status_bg",
+            "blocked_bg", "spinner_bg", "muted_bg",
+            "assistant_label", "user_label", "turn_separator", "border",
+            "content_width",
+        ):
+            value = getattr(self, field_name, None)
+            if value is not None:
+                setattr(theme, field_name, value)
+
+
+@dataclass
 class CliConfig:
     path: Path
     exists: bool
     defaults: CliDefaults
     ui: CliUi
+    theme: CliTheme = CliTheme()
 
 
 def _optional_str(value: Any, field_name: str) -> Optional[str]:
@@ -181,4 +222,33 @@ def load_cli_config(
         ),
     )
 
-    return CliConfig(path=path, exists=True, defaults=defaults, ui=ui)
+    theme_raw = ui_raw.get("theme", {})
+    if not isinstance(theme_raw, dict):
+        theme_raw = {}
+    theme = CliTheme(
+        body=_optional_str(theme_raw.get("body"), "ui.theme.body"),
+        muted=_optional_str(theme_raw.get("muted"), "ui.theme.muted"),
+        dim=_optional_str(theme_raw.get("dim"), "ui.theme.dim"),
+        heading=_optional_str(theme_raw.get("heading"), "ui.theme.heading"),
+        accent=_optional_str(theme_raw.get("accent"), "ui.theme.accent"),
+        success=_optional_str(theme_raw.get("success"), "ui.theme.success"),
+        info_text=_optional_str(theme_raw.get("info_text"), "ui.theme.info_text"),
+        warning_text=_optional_str(theme_raw.get("warning_text"), "ui.theme.warning_text"),
+        error_text=_optional_str(theme_raw.get("error_text"), "ui.theme.error_text"),
+        blocked_text=_optional_str(theme_raw.get("blocked_text"), "ui.theme.blocked_text"),
+        info_bg=_optional_str(theme_raw.get("info_bg"), "ui.theme.info_bg"),
+        ok_bg=_optional_str(theme_raw.get("ok_bg"), "ui.theme.ok_bg"),
+        warn_bg=_optional_str(theme_raw.get("warn_bg"), "ui.theme.warn_bg"),
+        error_bg=_optional_str(theme_raw.get("error_bg"), "ui.theme.error_bg"),
+        status_bg=_optional_str(theme_raw.get("status_bg"), "ui.theme.status_bg"),
+        blocked_bg=_optional_str(theme_raw.get("blocked_bg"), "ui.theme.blocked_bg"),
+        spinner_bg=_optional_str(theme_raw.get("spinner_bg"), "ui.theme.spinner_bg"),
+        muted_bg=_optional_str(theme_raw.get("muted_bg"), "ui.theme.muted_bg"),
+        assistant_label=_optional_str(theme_raw.get("assistant_label"), "ui.theme.assistant_label"),
+        user_label=_optional_str(theme_raw.get("user_label"), "ui.theme.user_label"),
+        turn_separator=_optional_str(theme_raw.get("turn_separator"), "ui.theme.turn_separator"),
+        border=_optional_str(theme_raw.get("border"), "ui.theme.border"),
+        content_width=_optional_int(theme_raw.get("content_width"), "ui.theme.content_width"),
+    )
+
+    return CliConfig(path=path, exists=True, defaults=defaults, ui=ui, theme=theme)

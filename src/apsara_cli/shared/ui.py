@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -38,38 +39,72 @@ def default_use_color() -> bool:
     return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 
-# ── Spinner configuration ─────────────────────────────────────────────────────
+# ── Theme ─────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Theme:
+    """Named color roles for the entire CLI.  Override any field to re-theme."""
+
+    body: str = "38;2;240;236;231"
+    muted: str = "2;38;2;160;166;178"
+    dim: str = "38;2;140;130;118"
+    heading: str = "1;38;2;250;216;143"
+    accent: str = "1;38;2;96;150;250"
+
+    success: str = "38;2;120;200;150"
+    info_text: str = "38;2;188;218;255"
+    warning_text: str = "38;2;247;223;181"
+    error_text: str = "38;2;255;205;205"
+    blocked_text: str = "38;2;247;200;100"
+
+    info_bg: str = "48;2;73;127;221"
+    ok_bg: str = "48;2;61;153;117"
+    warn_bg: str = "48;2;239;167;74"
+    error_bg: str = "48;2;191;87;84"
+    status_bg: str = "48;2;242;201;76"
+    blocked_bg: str = "48;2;200;120;40"
+    spinner_bg: str = "48;2;133;92;219"
+    muted_bg: str = "48;2;70;85;115"
+
+    assistant_label: str = "2;38;2;133;92;219"
+    user_label: str = "2;38;2;96;150;250"
+
+    turn_separator: str = "2;38;2;130;125;140"
+    border: str = "38;2;80;100;140"
+
+    palette_thinking: list[str] = field(default_factory=lambda: [
+        "38;2;111;154;255", "38;2;128;168;255", "38;2;144;182;255",
+        "38;2;158;174;248", "38;2;175;154;244", "38;2;197;154;244",
+        "38;2;160;154;255", "38;2;132;182;255", "38;2;122;210;222",
+        "38;2;140;200;220",
+    ])
+    palette_executing: list[str] = field(default_factory=lambda: [
+        "38;2;238;206;124", "38;2;248;216;130", "38;2;255;196;108",
+        "38;2;255;185;100", "38;2;242;201;76",  "38;2;248;210;100",
+        "38;2;255;220;120", "38;2;248;200;90",  "38;2;236;190;80",
+        "38;2;244;206;110",
+    ])
+    palette_writing: list[str] = field(default_factory=lambda: [
+        "38;2;121;210;184", "38;2;130;220;190", "38;2;140;224;180",
+        "38;2;150;216;168", "38;2;166;216;168", "38;2;140;200;140",
+        "38;2;120;210;160", "38;2;110;200;180", "38;2;130;218;186",
+        "38;2;142;222;174",
+    ])
+
+    content_width: int = 84
+
+    def spinner_palette(self, message: str) -> list[str]:
+        m = message.lower()
+        if any(w in m for w in ("writ", "creat", "updat", "file", "saving")):
+            return self.palette_writing
+        if any(w in m for w in ("run", "execut", "command", "bash", "scan")):
+            return self.palette_executing
+        return self.palette_thinking
+
+
+DEFAULT_THEME = Theme()
 
 _BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-# Gradient palettes per activity type
-_PALETTE_THINKING = [
-    "38;2;111;154;255", "38;2;128;168;255", "38;2;144;182;255",
-    "38;2;158;174;248", "38;2;175;154;244", "38;2;197;154;244",
-    "38;2;160;154;255", "38;2;132;182;255", "38;2;122;210;222",
-    "38;2;140;200;220",
-]
-_PALETTE_EXECUTING = [
-    "38;2;238;206;124", "38;2;248;216;130", "38;2;255;196;108",
-    "38;2;255;185;100", "38;2;242;201;76",  "38;2;248;210;100",
-    "38;2;255;220;120", "38;2;248;200;90",  "38;2;236;190;80",
-    "38;2;244;206;110",
-]
-_PALETTE_WRITING = [
-    "38;2;121;210;184", "38;2;130;220;190", "38;2;140;224;180",
-    "38;2;150;216;168", "38;2;166;216;168", "38;2;140;200;140",
-    "38;2;120;210;160", "38;2;110;200;180", "38;2;130;218;186",
-    "38;2;142;222;174",
-]
-
-
-def _spinner_palette(message: str) -> list[str]:
-    m = message.lower()
-    if any(w in m for w in ("writ", "creat", "updat", "file", "saving")):
-        return _PALETTE_WRITING
-    if any(w in m for w in ("run", "execut", "command", "bash", "scan")):
-        return _PALETTE_EXECUTING
-    return _PALETTE_THINKING
 
 
 # ── Action description helpers ────────────────────────────────────────────────
@@ -134,32 +169,28 @@ class ConsoleUI:
         use_color: bool,
         auto_approve: bool = False,
         typing_delay: float = 0.008,
+        theme: Optional[Theme] = None,
     ):
         self.use_color = use_color
         self.auto_approve = auto_approve
         self.approve_all = auto_approve
         self.typing_delay = typing_delay if sys.stdout.isatty() and not os.environ.get("CI") else 0.0
+        self.theme = theme or DEFAULT_THEME
 
         self.hidden_events: list[Any] = []
         self.latest_hidden_events: list[Any] = []
         self.current_turn_hidden_events: list[Any] = []
         self.work_notice_shown = False
 
-        # Turn outcome tracking ("ok" | "error" | "blocked" | "")
         self._turn_outcome: str = ""
-        
-        # Logging for production diagnostics. Created lazily on the first
-        # log_event() call so no-op commands (--help, sessions, doctor) don't
-        # litter the working directory with empty .apsara/logs/ session files.
+
         self.log_file: Optional[Path] = None
         self._logging_attempted: bool = False
 
-        # Cumulative session token counters
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._session_total_tokens: int = 0
 
-        # Spinner / status-line state
         self.spinner_message = "Apsara is working"
         self.spinner_stop_event = threading.Event()
         self.spinner_thread: Optional[threading.Thread] = None
@@ -169,11 +200,6 @@ class ConsoleUI:
         self._spinner_color_index: int = 0
 
     def _ensure_log_file(self) -> None:
-        """Create the session log file on first use, under ./.apsara/logs/.
-
-        Idempotent and best-effort: attempted at most once; on any failure
-        logging is silently disabled for this session.
-        """
         if self._logging_attempted:
             return
         self._logging_attempted = True
@@ -188,7 +214,6 @@ class ConsoleUI:
             self.log_file = None
 
     def log_event(self, category: str, title: str, detail: str = "") -> None:
-        """Write an event to the session log file (created lazily on first call)."""
         self._ensure_log_file()
         if not self.log_file:
             return
@@ -197,7 +222,6 @@ class ConsoleUI:
                 timestamp = datetime.now().strftime("%H:%M:%S")
                 f.write(f"[{timestamp}] [{category.upper()}] {title}\n")
                 if detail:
-                    # Indent detail for readability
                     indented = "\n".join(f"  | {line}" for line in detail.splitlines())
                     f.write(f"{indented}\n")
         except Exception:
@@ -216,10 +240,10 @@ class ConsoleUI:
         return self.style(f" {text.upper()} ", "1", fg_code, bg_code)
 
     def muted(self, text: str) -> str:
-        return self.style(text, "2", "38;2;160;166;178")
+        return self.style(text, self.theme.muted)
 
     def dim(self, text: str) -> str:
-        return self.style(text, "38;2;140;130;118")
+        return self.style(text, self.theme.dim)
 
     # ── Output primitives ─────────────────────────────────────────────────────
 
@@ -232,11 +256,11 @@ class ConsoleUI:
             line = f"  {raw_line}"
             self.print_line(self.style(line, color_code) if color_code else line)
 
-    def content_width(self, fallback: int = 84) -> int:
-        return max(44, min(fallback, terminal_width() - 8))
+    def content_width(self, fallback: Optional[int] = None) -> int:
+        w = fallback or self.theme.content_width
+        return max(44, min(w, terminal_width() - 8))
 
     def _print_typed(self, prefix: str, content: str, color_code: str, delay: float) -> None:
-        """Print a styled line with optional character-by-character animation."""
         self.stop_spinner()
         if not delay or not sys.stdout.isatty() or os.environ.get("CI"):
             print(f"{prefix}{self.style(content, color_code)}")
@@ -253,7 +277,6 @@ class ConsoleUI:
         sys.stdout.flush()
 
     def _print_box_line(self, left: str, content: str, right: str, color_code: str = "") -> None:
-        """Print one line inside a box."""
         self.stop_spinner()
         if color_code:
             print(f"  {self.style(left, color_code)}{content}{self.style(right, color_code)}")
@@ -293,14 +316,14 @@ class ConsoleUI:
                 return
             highlighted = _highlight_code("\n".join(lines_buf), lang)
             box_w = max((_visual_len(l) for l in highlighted), default=0) + 4
-            border_color = "38;2;80;100;140"
-            top    = self.style("╭" + "─" * box_w + "╮", border_color)
-            bottom = self.style("╰" + "─" * box_w + "╯", border_color)
+            bc = self.theme.border
+            top    = self.style("╭" + "─" * box_w + "╮", bc)
+            bottom = self.style("╰" + "─" * box_w + "╯", bc)
             self.print_line(f"  {top}")
             for cl in highlighted:
                 pad = " " * max(box_w - _visual_len(cl) - 2, 0)
-                left  = self.style("│ ", border_color)
-                right = self.style(" │", border_color)
+                left  = self.style("│ ", bc)
+                right = self.style(" │", bc)
                 fallback = self.style(cl, "38;2;173;203;255") if not lang else cl
                 print(f"  {left}{fallback}{pad}{right}")
             self.print_line(f"  {bottom}")
@@ -326,11 +349,11 @@ class ConsoleUI:
                 self.print_line()
             elif line_type == "heading":
                 self.print_line()
-                self.print_line(f"  {self.style(line, '1', '38;2;250;216;143')}")
+                self.print_line(f"  {self.style(line, self.theme.heading)}")
             elif line_type == "list":
                 self._print_typed("  ", line, "38;2;220;226;240", typing_delay * 0.5)
             else:
-                self._print_typed("  ", line, "38;2;240;236;231", typing_delay)
+                self._print_typed("  ", line, self.theme.body, typing_delay)
 
         if code_lines:
             flush_code(code_lines, current_lang)
@@ -351,24 +374,22 @@ class ConsoleUI:
                 self.print_line(f"  {self.style(raw_line, '38;2;220;225;235')}")
 
     def render_side_by_side_diff(self, old_text: str, new_text: str) -> None:
-        """Render a side-by-side comparison of two text blocks."""
         import difflib
-        width = self.content_width(fallback=120)
+        width = self.content_width()
         half_w = (width // 2) - 4
-        
+
         old_lines = old_text.splitlines()
         new_lines = new_text.splitlines()
-        
-        # We use SequenceMatcher to align lines
+
         sm = difflib.SequenceMatcher(None, old_lines, new_lines)
-        
-        border_color = "38;2;80;100;140"
+
+        bc = self.theme.border
         header_old = self.badge("original", "15", "48;2;120;100;90")
         header_new = self.badge("proposed", "15", "48;2;100;150;110")
-        
-        sep = self.style(" │ ", border_color)
+
+        sep = self.style(" │ ", bc)
         self.print_line(f"  {header_old}{' ' * (half_w - 6)}{sep}{header_new}")
-        self.print_line(f"  {self.style('─' * half_w + '─┼─' + '─' * half_w, border_color)}")
+        self.print_line(f"  {self.style('─' * half_w + '─┼─' + '─' * half_w, bc)}")
 
         for tag, i1, i2, j1, j2 in sm.get_opcodes():
             if tag == 'equal':
@@ -377,14 +398,13 @@ class ConsoleUI:
                     right = new_lines[j][:half_w].ljust(half_w)
                     print(f"  {self.dim(left)}{sep}{self.dim(right)}")
             elif tag == 'replace':
-                # Show both, side by side
                 max_len = max(i2 - i1, j2 - j1)
                 for k in range(max_len):
                     left_idx = i1 + k
                     right_idx = j1 + k
                     left_val = old_lines[left_idx] if left_idx < i2 else ""
                     right_val = new_lines[right_idx] if right_idx < j2 else ""
-                    
+
                     left_styled = self.style(left_val[:half_w].ljust(half_w), "38;2;255;168;168") if left_val else " " * half_w
                     right_styled = self.style(right_val[:half_w].ljust(half_w), "38;2;152;224;171") if right_val else " " * half_w
                     print(f"  {left_styled}{sep}{right_styled}")
@@ -396,8 +416,8 @@ class ConsoleUI:
                 for j in range(j1, j2):
                     right = self.style(new_lines[j][:half_w].ljust(half_w), "38;2;152;224;171")
                     print(f"  {' ' * half_w}{sep}{right}")
-        
-        self.print_line(f"  {self.style('─' * half_w + '─┴─' + '─' * half_w, border_color)}")
+
+        self.print_line(f"  {self.style('─' * half_w + '─┴─' + '─' * half_w, bc)}")
 
     # ── Spinner ───────────────────────────────────────────────────────────────
 
@@ -405,14 +425,13 @@ class ConsoleUI:
         return sys.stdout.isatty() and os.environ.get("CI") is None
 
     def _spinner_worker(self) -> None:
-        palette = _spinner_palette(self.spinner_message)
+        palette = self.theme.spinner_palette(self.spinner_message)
         frame_idx = 0
         color_idx = 0
         start = time.monotonic()
 
         while not self.spinner_stop_event.is_set():
-            # Recompute palette if message changed
-            palette = _spinner_palette(self.spinner_message)
+            palette = self.theme.spinner_palette(self.spinner_message)
 
             frame = _BRAILLE[frame_idx % len(_BRAILLE)]
             color = palette[color_idx % len(palette)]
@@ -431,7 +450,7 @@ class ConsoleUI:
                 msg = self.spinner_message
                 line = (
                     f"\r\033[2K"
-                    f"  {self.badge('apsara', '15', '48;2;133;92;219')} "
+                    f"  {self.badge('apsara', '15', self.theme.spinner_bg)} "
                     f"{spinner_char} "
                     f"{self.style(msg, msg_color)}"
                     f"{self.style('...', dot_color)}"
@@ -468,7 +487,6 @@ class ConsoleUI:
         self.spinner_thread = None
 
     def update_spinner_action(self, action: str) -> None:
-        """Update the spinner message without restarting (thread-safe)."""
         with self.spinner_lock:
             self.spinner_message = action
 
@@ -481,24 +499,22 @@ class ConsoleUI:
     # ── Turn structure ────────────────────────────────────────────────────────
 
     def print_turn_separator(self, turn: int = 0) -> None:
-        """Print a visual separator between conversation turns."""
         self.stop_spinner()
         w = min(terminal_width(), 88)
-        now = datetime.now().strftime("%H:%M:%S")
+        now = datetime.now().strftime("%H:%M")
         label = f" turn {turn} · {now} " if turn > 0 else f" {now} "
         side = max((w - len(label) - 4) // 2, 4)
         line = "─" * side + label + "─" * side
-        print(f"\n  {self.style(line, '2', '38;2;110;100;90')}\n")
+        print(f"\n  {self.style(line, self.theme.turn_separator)}\n")
 
     def print_rule(self, text: str = "") -> None:
-        """Thin separator rule, optionally labeled."""
         w = min(terminal_width(), 88)
         if text:
             side = max((w - len(text) - 6) // 2, 2)
             line = "─" * side + f"  {text}  " + "─" * side
         else:
             line = "─" * (w - 4)
-        print(f"  {self.style(line, '2', '38;2;110;100;90')}")
+        print(f"  {self.style(line, self.theme.turn_separator)}")
 
     # ── Notification methods ──────────────────────────────────────────────────
 
@@ -506,40 +522,36 @@ class ConsoleUI:
         self.print_line(f"  {self.badge(label, fg_code, bg_code)} {self.style(text, body_color)}")
 
     def status(self, text: str) -> None:
-        self.print_notice("status", text, "17", "48;2;242;201;76", "38;2;236;220;184")
+        self.print_notice("status", text, "17", self.theme.status_bg, "38;2;236;220;184")
 
     def info(self, text: str) -> None:
-        self.print_notice("info", text, "15", "48;2;73;127;221", "38;2;188;218;255")
+        self.print_notice("info", text, "15", self.theme.info_bg, self.theme.info_text)
 
     def success(self, text: str) -> None:
-        self.print_notice("ok", text, "15", "48;2;61;153;117", "38;2;186;239;203")
+        self.print_notice("ok", text, "15", self.theme.ok_bg, "38;2;186;239;203")
 
     def warning(self, text: str) -> None:
-        self.print_notice("warn", text, "17", "48;2;239;167;74", "38;2;247;223;181")
+        self.print_notice("warn", text, "17", self.theme.warn_bg, self.theme.warning_text)
 
     def error(self, text: str) -> None:
-        self.print_notice("error", text, "15", "48;2;191;87;84", "38;2;255;205;205")
+        self.print_notice("error", text, "15", self.theme.error_bg, self.theme.error_text)
 
     def blocked(self, text: str) -> None:
         self.print_line()
-        border = "38;2;200;140;60"
-        w = min(self.content_width(), 72)
-        label = self.badge("blocked", "17", "48;2;200;120;40")
-        self.print_line(f"  {label} {self.style(text, '38;2;247;223;181')}")
+        label = self.badge("blocked", "17", self.theme.blocked_bg)
+        self.print_line(f"  {label} {self.style(text, self.theme.blocked_text)}")
 
-    # ── Input bar (OpenCode-style accent bar) ─────────────────────────────────
-
-    _BAR_ACCENT = "38;2;96;150;250"
+    # ── Input bar ────────────────────────────────────────────────────────────
 
     def prompt(self, label: str = "you", hint: str = "") -> str:
-        bar = self.style("▌", "1", self._BAR_ACCENT)
-        return f"\n{bar} "
+        bar = self.style("▌", self.theme.accent)
+        user_lbl = self.style("you", self.theme.user_label)
+        return f"\n{bar} {user_lbl} "
 
     def session_saved(self, session_path: Path) -> None:
         self.print_line(f"  {self.dim(f'  ↳ saved to {session_path}')}")
 
     def calculate_session_cost(self) -> float:
-        """Estimate session cost in USD (blended rate $0.01 / 1K tokens)."""
         return (self._session_total_tokens / 1000) * 0.01
 
     def usage(self, usage_data: dict[str, Any]) -> None:
@@ -561,16 +573,19 @@ class ConsoleUI:
 
     def assistant(self, text: str) -> None:
         self.print_line()
+        asst_lbl = self.style("apsara", self.theme.assistant_label)
+        self.print_line(f"  {asst_lbl}")
         self.render_rich_text(text, typing_delay=self.typing_delay)
 
     def stream_text_start(self) -> None:
         self.stop_spinner()
         self.print_line()
-        sys.stdout.write("  ")
+        asst_lbl = self.style("apsara", self.theme.assistant_label)
+        sys.stdout.write(f"  {asst_lbl}\n  ")
         sys.stdout.flush()
 
     def stream_text_chunk(self, chunk: str) -> None:
-        color = "38;2;240;236;231"
+        color = self.theme.body
         segments = chunk.split("\n")
         styled = [self.style(seg, color) if seg else "" for seg in segments]
         sys.stdout.write("\n  ".join(styled))
@@ -583,14 +598,12 @@ class ConsoleUI:
     # ── Tool activity (inline compact) ───────────────────────────────────────
 
     def tool_activity(self, tool_name: str, summary: str) -> None:
-        """Show a compact inline tool call indicator."""
         icon = self.style("◆", "38;2;100;150;220")
         name = self.style(tool_name, "38;2;180;210;255")
         args = self.dim(f"  {summary}") if summary else ""
         self.print_line(f"    {icon} {name}{args}")
 
     def tool_result_activity(self, tool_name: str, success: bool, summary: str) -> None:
-        """Show a compact inline tool result indicator."""
         if success:
             icon = self.style("✓", "38;2;120;200;150")
             color = "38;2;160;220;180"
@@ -602,7 +615,6 @@ class ConsoleUI:
     # ── Hidden events log ─────────────────────────────────────────────────────
 
     def set_turn_outcome(self, outcome: str) -> None:
-        """Record the outcome of the current turn: 'ok', 'error', or 'blocked'."""
         self._turn_outcome = outcome
 
     def begin_turn(self) -> None:
@@ -652,28 +664,27 @@ class ConsoleUI:
         count = len(events)
         plural = "s" if count != 1 else ""
         self.print_line(
-            f"  {self.badge('details', '15', '48;2;70;85;115')}  "
+            f"  {self.badge('details', '15', self.theme.muted_bg)}  "
             f"{self.style(f'{count} internal step{plural}', '38;2;200;210;230')}"
         )
         self.print_line()
 
-        border_color = "38;2;80;95;125"
+        bc = self.theme.border
         for index, event in enumerate(events, start=1):
             kind_badge = self.badge(event.kind, "15", "48;2;60;75;105")
             title_text = self.style(event.title, "38;2;210;218;235")
 
-            # Box top
             box_w = min(self.content_width() - 4, 72)
-            self.print_line(f"  {self.style('╭' + '─' * (box_w), border_color)}")
-            self.print_line(f"  {self.style('│', border_color)}  {kind_badge} {title_text}")
+            self.print_line(f"  {self.style('╭' + '─' * (box_w), bc)}")
+            self.print_line(f"  {self.style('│', bc)}  {kind_badge} {title_text}")
 
             if event.detail:
-                self.print_line(f"  {self.style('│', border_color)}")
+                self.print_line(f"  {self.style('│', bc)}")
                 for dl in truncate_text(event.detail, max_lines=12, max_chars=900).splitlines():
                     padded = dl[:box_w - 3]
-                    self.print_line(f"  {self.style('│', border_color)}  {self.style(padded, '38;2;175;182;200')}")
+                    self.print_line(f"  {self.style('│', bc)}  {self.style(padded, '38;2;175;182;200')}")
 
-            self.print_line(f"  {self.style('╰' + '─' * (box_w), border_color)}")
+            self.print_line(f"  {self.style('╰' + '─' * (box_w), bc)}")
             if index < count:
                 self.print_line()
 
@@ -743,13 +754,13 @@ class ConsoleUI:
 
         title, preview, diff_preview, diff_full, diff_editor, path_hint = describe_action(action, payload)
         self.print_line()
-        border_color = "38;2;180;140;60"
+        bc = "38;2;180;140;60"
         box_w = min(self.content_width() - 4, 70)
         label = self.badge("approve?", "17", "48;2;180;130;40")
         title_styled = self.style(title, "1", "38;2;247;230;190")
-        self.print_line(f"  {self.style('╭' + '─' * box_w + '╮', border_color)}")
-        self.print_line(f"  {self.style('│', border_color)}  {label}  {title_styled}")
-        self.print_line(f"  {self.style('╰' + '─' * box_w + '╯', border_color)}")
+        self.print_line(f"  {self.style('╭' + '─' * box_w + '╮', bc)}")
+        self.print_line(f"  {self.style('│', bc)}  {label}  {title_styled}")
+        self.print_line(f"  {self.style('╰' + '─' * box_w + '╯', bc)}")
 
         if diff_preview:
             self.print_line()

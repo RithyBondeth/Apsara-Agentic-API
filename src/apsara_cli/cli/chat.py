@@ -2,6 +2,7 @@ from getpass import getpass
 import json
 import os
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
@@ -23,6 +24,7 @@ from apsara_cli.cli.session import (
 )
 from apsara_cli.shared.text import summarize_history  # noqa: F401 (kept for potential external use)
 from apsara_cli.shared.ui import ConsoleUI
+from apsara_cli.shared.ui import Theme, DEFAULT_THEME
 from apsara_cli.engine.tools import agent_runtime_context, get_agent_tools
 from apsara_cli.engine.models import (
     MODELS,
@@ -32,6 +34,96 @@ from apsara_cli.engine.models import (
     providers_in_order,
     resolve_model_id,
 )
+from apsara_cli.cli.model_picker import pick_model
+
+
+def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions", ui: "ConsoleUI") -> str:
+    """
+    Resolve ``raw_name`` (a model id or alias) and switch to it, prompting
+    for a missing API key when needed. Returns the resolved model id
+    (unchanged from ``current_model`` if the switch didn't happen).
+    """
+    # Resolve alias → canonical model_id
+    resolved = resolve_model_id(raw_name)
+    entry = lookup_model(raw_name)
+
+    if entry:
+        ctx = format_context_window(entry.context_window)
+        has_key = is_key_available(entry)
+        ui.print_line()
+        ui.print_line(
+            f"  {ui.style('◆', '38;2;100;150;220')} "
+            f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
+            f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
+        )
+        if entry.tier == "local":
+            ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
+        elif has_key:
+            ui.print_line(f"  {ui.style(f'✓ {entry.env_var} is set', '38;2;120;200;150')}")
+        else:
+            # ── Prompt for missing API key ─────────────────────────────
+            ui.print_line(
+                f"  {ui.style('✗', '38;2;220;120;100')} "
+                f"{ui.style(entry.env_var, '1', '38;2;255;220;140')} "
+                f"{ui.style('is not set', '38;2;220;120;100')}"
+            )
+            ui.print_line()
+            ui.print_line(
+                f"  {ui.style('?', '38;2;247;200;100')} "
+                f"Enter your {ui.style(entry.env_var, '1', '38;2;255;220;140')} "
+                f"{ui.dim('(hidden — press Enter to skip)')}"
+            )
+            try:
+                raw_key = getpass("  → ")
+            except (EOFError, KeyboardInterrupt):
+                raw_key = ""
+
+            if raw_key.strip():
+                os.environ[entry.env_var] = raw_key.strip()
+                ui.success(f"{entry.env_var} active for this session.")
+                ui.print_line()
+                ui.print_line(
+                    f"  Save to .env?  "
+                    f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
+                    f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
+                )
+                save_choice = ui.read_single_key()
+                if save_choice in {"y", "Y", "\r", "\n", ""}:
+                    try:
+                        saved_path = _save_api_key_to_env(
+                            options.workspace_root, entry.env_var, raw_key.strip()
+                        )
+                        ui.success(f"Saved to {saved_path}")
+                    except Exception as exc:
+                        ui.error(f"Could not write .env: {exc}")
+                else:
+                    ui.info("Key active for this session only — not saved to disk.")
+            else:
+                ui.warning(
+                    f"No key entered — switching anyway. "
+                    f"Add {entry.env_var} to your .env to make it permanent."
+                )
+        ui.print_line()
+    else:
+        # Unknown model — allow it but warn
+        ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+
+    if resolved != current_model:
+        ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+    return resolved
+
+
+def _load_stored_keys() -> None:
+    """Load stored API keys from ~/.apsara/credentials.json into os.environ."""
+    import os
+    from apsara_cli.cli.auth import get_provider_key
+    from apsara_cli.engine.models import providers_in_order as _providers, provider_env_var
+    for provider in _providers():
+        env_var = provider_env_var(provider)
+        if env_var and not os.environ.get(env_var):
+            stored = get_provider_key(provider)
+            if stored:
+                os.environ[env_var] = stored
 
 
 def _save_api_key_to_env(workspace_root: Path, key_name: str, key_value: str) -> Path:
@@ -297,7 +389,6 @@ def handle_chat_command(
             "local": ("38;2;160;180;220", "local"),
         }
 
-        ui.print_line()
         header_parts = [ui.badge("models", "15", "48;2;70;85;115")]
         if filt:
             header_parts.append(ui.style(f"filtered: {filt}", "38;2;200;210;230"))
@@ -308,9 +399,11 @@ def handle_chat_command(
             header_parts.append(
                 ui.style(f"{total} models  ·  {free_count} free/local  ·  {paid_count} paid", "38;2;200;210;230")
             )
-        ui.print_line(f"  {'  '.join(header_parts)}")
-        ui.print_line()
 
+        # rows: (styled_line, model_id) — model_id is None for non-selectable
+        # provider group headers, used both for the interactive picker and
+        # (flattened) for the plain-text fallback listing.
+        rows: list[tuple[str, Optional[str]]] = []
         shown_any = False
         for provider in providers:
             entries = [m for m in MODELS if m.provider == provider]
@@ -320,9 +413,7 @@ def handle_chat_command(
             ):
                 continue
 
-            provider_label = ui.style(provider.upper(), "1", "38;2;190;200;220")
-            ui.print_line(f"  {provider_label}")
-
+            provider_rows: list[tuple[str, Optional[str]]] = []
             for entry in entries:
                 if filt and filt not in entry.model_id.lower() and filt not in entry.display_name.lower() and filt != provider:
                     continue
@@ -333,7 +424,6 @@ def handle_chat_command(
                 ctx        = format_context_window(entry.context_window)
                 tier_color, tier_label = _TIER_COLOR.get(entry.tier, ("38;2;200;200;200", entry.tier))
 
-                # Status icon
                 if is_current:
                     status_icon = ui.style("●", "38;2;120;200;150")
                 elif has_key or entry.tier == "local":
@@ -351,23 +441,51 @@ def handle_chat_command(
                 else:
                     key_text = ui.style(f"✗ needs {entry.env_var}", "38;2;220;120;100")
 
-                ui.print_line(
-                    f"    {status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}"
-                )
-                # model_id + aliases hint
                 aliases_hint = ""
                 if entry.aliases:
                     aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
-                ui.print_line(
-                    f"       {ui.dim(entry.model_id)}{aliases_hint}"
-                )
 
-            ui.print_line()
+                line = (
+                    f"{status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}  "
+                    f"{ui.dim(entry.model_id)}{aliases_hint}"
+                )
+                provider_rows.append((line, entry.model_id))
+
+            if provider_rows:
+                provider_label = ui.style(provider.upper(), "1", "38;2;190;200;220")
+                rows.append((provider_label, None))
+                rows.extend(provider_rows)
 
         if not shown_any:
+            ui.print_line()
+            ui.print_line(f"  {'  '.join(header_parts)}")
+            ui.print_line()
             ui.warning(f"No models match '{filt}'. Try a provider name like 'openai', 'groq', 'anthropic'.")
             ui.print_line()
+            return True, current_model
 
+        # ── Interactive arrow-key picker (falls back to a plain listing
+        # when prompt_toolkit or a real terminal isn't available) ─────────
+        if sys.stdout.isatty():
+            ui.print_line()
+            ui.print_line(f"  {'  '.join(header_parts)}")
+            ui.print_line()
+            chosen = pick_model(rows, current_model, ui)
+            if chosen is None:
+                ui.info("No change — model selection cancelled.")
+                return True, current_model
+            resolved = _switch_model(chosen, current_model, options, ui)
+            return True, resolved
+
+        ui.print_line()
+        ui.print_line(f"  {'  '.join(header_parts)}")
+        ui.print_line()
+        for line_text, model_id in rows:
+            if model_id is None:
+                ui.print_line(f"  {line_text}")
+            else:
+                ui.print_line(f"    {line_text}")
+        ui.print_line()
         ui.print_line(f"  {ui.dim('Switch with /model <id-or-alias>  ·  /models <provider> to filter')}")
         ui.print_line()
         return True, current_model
@@ -387,78 +505,12 @@ def handle_chat_command(
         return True, current_model
 
     if command_text.startswith("/model "):
-        raw_name  = command_text[len("/model "):].strip()
+        raw_name = command_text[len("/model "):].strip()
         if not raw_name:
             ui.error("Usage: /model <model-id-or-alias>")
             return True, current_model
 
-        # Resolve alias → canonical model_id
-        resolved  = resolve_model_id(raw_name)
-        entry     = lookup_model(raw_name)
-
-        if entry:
-            ctx     = format_context_window(entry.context_window)
-            has_key = is_key_available(entry)
-            ui.print_line()
-            ui.print_line(
-                f"  {ui.style('◆', '38;2;100;150;220')} "
-                f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
-                f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
-            )
-            if entry.tier == "local":
-                ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
-            elif has_key:
-                ui.print_line(f"  {ui.style(f'✓ {entry.env_var} is set', '38;2;120;200;150')}")
-            else:
-                # ── Prompt for missing API key ─────────────────────────────
-                ui.print_line(
-                    f"  {ui.style('✗', '38;2;220;120;100')} "
-                    f"{ui.style(entry.env_var, '1', '38;2;255;220;140')} "
-                    f"{ui.style('is not set', '38;2;220;120;100')}"
-                )
-                ui.print_line()
-                ui.print_line(
-                    f"  {ui.style('?', '38;2;247;200;100')} "
-                    f"Enter your {ui.style(entry.env_var, '1', '38;2;255;220;140')} "
-                    f"{ui.dim('(hidden — press Enter to skip)')}"
-                )
-                try:
-                    raw_key = getpass("  → ")
-                except (EOFError, KeyboardInterrupt):
-                    raw_key = ""
-
-                if raw_key.strip():
-                    os.environ[entry.env_var] = raw_key.strip()
-                    ui.success(f"{entry.env_var} active for this session.")
-                    ui.print_line()
-                    ui.print_line(
-                        f"  Save to .env?  "
-                        f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
-                        f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
-                    )
-                    save_choice = ui.read_single_key()
-                    if save_choice in {"y", "Y", "\r", "\n", ""}:
-                        try:
-                            saved_path = _save_api_key_to_env(
-                                options.workspace_root, entry.env_var, raw_key.strip()
-                            )
-                            ui.success(f"Saved to {saved_path}")
-                        except Exception as exc:
-                            ui.error(f"Could not write .env: {exc}")
-                    else:
-                        ui.info("Key active for this session only — not saved to disk.")
-                else:
-                    ui.warning(
-                        f"No key entered — switching anyway. "
-                        f"Add {entry.env_var} to your .env to make it permanent."
-                    )
-            ui.print_line()
-        else:
-            # Unknown model — allow it but warn
-            ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
-
-        if resolved != current_model:
-            ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+        resolved = _switch_model(raw_name, current_model, options, ui)
         return True, resolved
 
     if command_text == "/session":
@@ -818,7 +870,17 @@ def save_if_needed(
 
 async def run_once(args: object, config: object) -> int:
     options = resolve_runtime_options(args, config.defaults)
-    ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve)
+
+    # Load stored API keys into environment so litellm can use them
+    _load_stored_keys()
+
+    # Build theme from config overrides
+    theme = Theme()
+    config_theme = getattr(config, "theme", None)
+    if config_theme is not None:
+        config_theme.apply_to(theme)
+
+    ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve, theme=theme)
     history: list[dict[str, Any]] = []
 
     if not options.stateless:
@@ -843,7 +905,17 @@ async def chat_loop(args: object, config: object) -> int:
     from apsara_cli.cli.banner import print_welcome_banner
 
     options = resolve_runtime_options(args, config.defaults)
-    ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve)
+
+    # Load stored API keys into environment so litellm can use them
+    _load_stored_keys()
+
+    # Build theme from config overrides
+    theme = Theme()
+    config_theme = getattr(config, "theme", None)
+    if config_theme is not None:
+        config_theme.apply_to(theme)
+
+    ui = ConsoleUI(use_color=options.use_color, auto_approve=options.auto_approve, theme=theme)
     history: list[dict[str, Any]] = []
     current_model = options.model
     turn_count = 0
