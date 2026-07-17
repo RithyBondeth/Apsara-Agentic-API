@@ -84,6 +84,15 @@ def _build_session(workspace_root: Path) -> object:
     def _newline(event):
         event.current_buffer.insert_text("\n")
 
+    @kb.add("c-p")
+    def _command_palette(event):
+        """ctrl+p: browse every slash command in the completion menu."""
+        buffer = event.current_buffer
+        if not buffer.text.startswith("/"):
+            buffer.text = "/"
+            buffer.cursor_position = 1
+        buffer.start_completion(select_first=False)
+
     return PromptSession(
         history=FileHistory(str(history_dir / "input_history")),
         auto_suggest=AutoSuggestFromHistory(),

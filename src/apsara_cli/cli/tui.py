@@ -29,6 +29,7 @@ from typing import Any, Optional
 from prompt_toolkit.application import Application
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
@@ -481,19 +482,29 @@ async def tui_loop(args: object, config: object) -> int:
     ui.lines.append(
         " " * max((pane_w - len(_powered)) // 2, 2) + ui.style(_powered, "38;2;200;166;110")
     )
-
-    if history:
-        prior_turns = sum(1 for m in history if m.get("role") == "user")
-        plural = "s" if prior_turns != 1 else ""
-        resumed = f"resumed {prior_turns} prior turn{plural}"
-        ui.lines.append("")
-        ui.lines.append(" " * max((pane_w - len(resumed)) // 2, 2) + ui.style(resumed, _DIMTXT))
+    # No 'resumed N prior turns' line here — the sidebar's Session section
+    # already shows the turn/message counts and the resumed/new state.
 
     # ── Layout ─────────────────────────────────────────────────────────────
 
-    session_started = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Sidebar session subtitle: 'resumed · <ts>' or 'new · <ts>', OpenCode's
+    # 'New session – <timestamp>' equivalent.
+    session_started = (
+        ("resumed · " if history else "new · ") + datetime.now().strftime("%Y-%m-%d %H:%M")
+    )
 
-    chat_control = FormattedTextControl(lambda: _chat_text(ui), focusable=False)
+    def _chat_cursor_position() -> Point:
+        # The Window clamps its scroll to keep this 'cursor' visible on every
+        # render — so pointing it at the last line implements follow-bottom,
+        # and pointing it at the current scroll row freezes manual browsing.
+        total = len(ui.lines) + (2 if ui._spinner_frame else 0)
+        if follow["on"]:
+            return Point(x=0, y=max(total - 1, 0))
+        return Point(x=0, y=max(chat_window.vertical_scroll, 0))
+
+    chat_control = FormattedTextControl(
+        lambda: _chat_text(ui), focusable=False, get_cursor_position=_chat_cursor_position
+    )
     chat_window = Window(content=chat_control, wrap_lines=True, always_hide_cursor=True)
 
     sidebar_control = FormattedTextControl(
@@ -673,8 +684,44 @@ async def tui_loop(args: object, config: object) -> int:
 
     body = FloatContainer(
         content=DynamicContainer(lambda: welcome_root if state["welcome"] else chat_root),
-        floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=10, scroll_offset=1))],
+        floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=16, scroll_offset=1))],
     )
+
+    # ── Chat-pane scrolling: auto-follow the newest line, but let PageUp/
+    # PageDown and the mouse wheel browse history (e.g. long /help output) ──
+    follow = {"on": True, "last_set": 0}
+
+    def _chat_max_scroll() -> int:
+        ri = chat_window.render_info
+        if ri is None:
+            return 0
+        return max(ri.content_height - ri.window_height, 0)
+
+    def _before_render(app_) -> None:
+        if state["welcome"]:
+            return
+        max_scroll = _chat_max_scroll()
+        cur = chat_window.vertical_scroll
+        if follow["on"]:
+            if cur < follow["last_set"]:
+                follow["on"] = False  # mouse wheel scrolled up — stop following
+            else:
+                chat_window.vertical_scroll = max_scroll
+                follow["last_set"] = max_scroll
+        elif cur >= max_scroll:
+            follow["on"] = True  # reached the bottom again — resume following
+            follow["last_set"] = cur
+
+    def _after_render(app_) -> None:
+        # render_info is only fresh AFTER a render, so when following we may
+        # discover the true bottom just now — snap to it and repaint once.
+        if state["welcome"] or not follow["on"]:
+            return
+        max_scroll = _chat_max_scroll()
+        if chat_window.vertical_scroll != max_scroll:
+            chat_window.vertical_scroll = max_scroll
+            follow["last_set"] = max_scroll
+            app_.invalidate()
 
     style = Style.from_dict({
         "accent": "fg:#6096fa",
@@ -700,6 +747,32 @@ async def tui_loop(args: object, config: object) -> int:
     @kb.add("escape", "enter")
     def _newline(event) -> None:
         event.current_buffer.insert_text("\n")
+
+    @kb.add("c-p")
+    def _command_palette(event) -> None:
+        """ctrl+p: browse every slash command in the completion menu."""
+        if not input_buffer.text.startswith("/"):
+            input_buffer.reset()
+            input_buffer.insert_text("/")
+        input_buffer.start_completion(select_first=False)
+
+    @kb.add("pageup")
+    def _scroll_up(event) -> None:
+        ri = chat_window.render_info
+        page = max((ri.window_height if ri else 10) - 1, 1)
+        follow["on"] = False
+        chat_window.vertical_scroll = max(chat_window.vertical_scroll - page, 0)
+
+    @kb.add("pagedown")
+    def _scroll_down(event) -> None:
+        ri = chat_window.render_info
+        page = max((ri.window_height if ri else 10) - 1, 1)
+        max_scroll = _chat_max_scroll()
+        new_scroll = min(chat_window.vertical_scroll + page, max_scroll)
+        chat_window.vertical_scroll = new_scroll
+        if new_scroll >= max_scroll:
+            follow["on"] = True
+            follow["last_set"] = new_scroll
 
     async def _handle_submission(text: str) -> None:
         ui.append_user_message(text)
@@ -740,6 +813,8 @@ async def tui_loop(args: object, config: object) -> int:
         style=style,
         full_screen=True,
         mouse_support=True,
+        before_render=_before_render,
+        after_render=_after_render,
     )
     ui.attach(app)
 
