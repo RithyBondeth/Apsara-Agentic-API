@@ -27,12 +27,13 @@ app when they finish.
 """
 
 import asyncio
+import os
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.application import Application
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
@@ -53,11 +54,16 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import Processor, Transformation
+from prompt_toolkit.layout.processors import (
+    ConditionalProcessor,
+    PasswordProcessor,
+    Processor,
+    Transformation,
+)
 from prompt_toolkit.styles import Style
 
 from apsara_cli.cli.chat import (
-    _switch_model,
+    _save_api_key_to_env,
     build_mode_line,
     build_model_rows,
     execute_instruction,
@@ -487,6 +493,15 @@ async def tui_loop(args: object, config: object) -> int:
     }
     picker_active = Condition(lambda: picker["active"])
 
+    # Inline key entry (when a picked model has no key): a masked prompt in
+    # the chat pane — NOT getpass/run_in_terminal, which would suspend the
+    # whole TUI onto a bare terminal screen. mode is None | "key" | "yesno";
+    # a Future bridges the async switch coroutine to the key-press bindings.
+    keyprompt: dict[str, Any] = {"mode": None, "future": None}
+    kp_key = Condition(lambda: keyprompt["mode"] == "key")
+    kp_yesno = Condition(lambda: keyprompt["mode"] == "yesno")
+    kp_any = Condition(lambda: keyprompt["mode"] is not None)
+
     from apsara_cli.cli.banner import banner_taglines, logo_width, small_logo_line, styled_logo_lines
     from apsara_cli.shared.ui import terminal_width
 
@@ -570,7 +585,15 @@ async def tui_loop(args: object, config: object) -> int:
 
     def _make_input_box(input_height, width=None):
         control_window = Window(
-            content=BufferControl(buffer=input_buffer, input_processors=[_placeholder]),
+            content=BufferControl(
+                buffer=input_buffer,
+                input_processors=[
+                    # Mask characters while entering an API key; hide the
+                    # "Ask anything..." placeholder during any key prompt.
+                    ConditionalProcessor(PasswordProcessor(), kp_key),
+                    ConditionalProcessor(_placeholder, ~kp_any),
+                ],
+            ),
             height=input_height,
         )
         mode_window = Window(
@@ -845,28 +868,105 @@ async def tui_loop(args: object, config: object) -> int:
             ui.info("No change — model selection cancelled.")
             return
 
-        # _switch_model prompts (getpass) only when the target lacks a key.
-        # That key-entry flow needs the real terminal, so run it via
-        # prompt_toolkit's run_in_terminal — it cleanly suspends the
-        # full-screen app, hands over the terminal for getpass, then
-        # restores the app (banner + transcript) intact. The old
-        # _run_passthrough did a raw renderer.erase() that wiped the banner
-        # and never redrew it properly. When the key IS present there's no
-        # prompt, so we just switch inline into the transcript.
-        entry = lookup_model(chosen)
-        needs_key = entry is not None and not (is_key_available(entry) or entry.tier == "local")
-        if needs_key:
-            def _switch_with_key_prompt() -> str:
-                was = ui._passthrough
-                ui._passthrough = True  # route output to the real terminal
-                try:
-                    return _switch_model(chosen, state["model"], options, ui)
-                finally:
-                    ui._passthrough = was
-            state["model"] = await run_in_terminal(_switch_with_key_prompt)
-            ui._invalidate()
+        # Switch — with fully inline key entry if the model needs a key.
+        state["model"] = await _switch_model_tui(chosen)
+
+    # ── Inline API-key entry (native, in-pane) ────────────────────────────
+    def _kp_resolve(value) -> None:
+        fut = keyprompt["future"]
+        if fut is not None and not fut.done():
+            fut.set_result(value)
+
+    async def _prompt_for_key(env_var: str) -> Optional[str]:
+        """Masked key entry in the chat pane; returns the key or None if skipped."""
+        ui.lines.append("")
+        ui.lines.append(
+            f"  {ui.style('?', '38;2;247;200;100')} Enter your "
+            f"{ui.style(env_var, '1', '38;2;255;220;140')} "
+            f"{ui.dim('(hidden — Enter to skip)')}"
+        )
+        input_buffer.reset()
+        keyprompt["future"] = asyncio.get_event_loop().create_future()
+        keyprompt["mode"] = "key"
+        ui._invalidate()
+        try:
+            raw = await keyprompt["future"]
+        finally:
+            keyprompt["mode"] = None
+            keyprompt["future"] = None
+            input_buffer.reset()
+        return raw.strip() or None
+
+    async def _prompt_yes_no(question: str) -> bool:
+        ui.lines.append(
+            f"  {question}  "
+            f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
+            f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
+        )
+        keyprompt["future"] = asyncio.get_event_loop().create_future()
+        keyprompt["mode"] = "yesno"
+        ui._invalidate()
+        try:
+            return await keyprompt["future"]
+        finally:
+            keyprompt["mode"] = None
+            keyprompt["future"] = None
+
+    async def _switch_model_tui(raw_name: str) -> str:
+        """
+        TUI-native equivalent of chat._switch_model: same display, but the
+        missing-key prompt and the save y/n happen inline in the chat pane
+        (masked input + key bindings) instead of via getpass, so the
+        full-screen UI is never suspended onto a bare terminal.
+        """
+        from apsara_cli.engine.models import resolve_model_id
+
+        resolved = resolve_model_id(raw_name)
+        entry = lookup_model(raw_name)
+        if entry is None:
+            ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+            if resolved != state["model"]:
+                ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+            return resolved
+
+        ctx = format_context_window(entry.context_window)
+        ui.print_line()
+        ui.print_line(
+            f"  {ui.style('◆', '38;2;100;150;220')} "
+            f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
+            f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
+        )
+        if entry.tier == "local":
+            ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
+        elif is_key_available(entry):
+            ui.print_line(f"  {ui.style(f'✓ {entry.env_var} is set', '38;2;120;200;150')}")
         else:
-            state["model"] = _switch_model(chosen, state["model"], options, ui)
+            ui.print_line(
+                f"  {ui.style('✗', '38;2;220;120;100')} "
+                f"{ui.style(entry.env_var, '1', '38;2;255;220;140')} "
+                f"{ui.style('is not set', '38;2;220;120;100')}"
+            )
+            raw_key = await _prompt_for_key(entry.env_var)
+            if raw_key:
+                os.environ[entry.env_var] = raw_key
+                ui.success(f"{entry.env_var} active for this session.")
+                if await _prompt_yes_no("Save to .env?"):
+                    try:
+                        saved = _save_api_key_to_env(options.workspace_root, entry.env_var, raw_key)
+                        ui.success(f"Saved to {saved}")
+                    except Exception as exc:
+                        ui.error(f"Could not write .env: {exc}")
+                else:
+                    ui.info("Key active for this session only — not saved to disk.")
+            else:
+                ui.warning(
+                    f"No key entered — switching anyway. "
+                    f"Add {entry.env_var} to your .env to make it permanent."
+                )
+
+        if resolved != state["model"]:
+            ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+        return resolved
 
     kb = KeyBindings()
 
@@ -878,7 +978,7 @@ async def tui_loop(args: object, config: object) -> int:
     def _eof(event) -> None:
         event.app.exit()
 
-    @kb.add("escape", "enter", filter=~picker_active)
+    @kb.add("escape", "enter", filter=~picker_active & ~kp_any)
     def _newline(event) -> None:
         event.current_buffer.insert_text("\n")
 
@@ -902,6 +1002,30 @@ async def tui_loop(args: object, config: object) -> int:
     @kb.add("c-c", filter=picker_active, eager=True)
     def _picker_cancel(event) -> None:
         _picker_resolve(None)
+
+    # ── Inline key-prompt bindings (only while a key prompt is open) ──────
+    @kb.add("enter", filter=kp_key, eager=True)
+    def _kp_key_submit(event) -> None:
+        text = input_buffer.text
+        input_buffer.reset()
+        _kp_resolve(text)
+
+    @kb.add("escape", filter=kp_key, eager=True)
+    def _kp_key_skip(event) -> None:
+        input_buffer.reset()
+        _kp_resolve("")  # empty → skipped
+
+    @kb.add("y", filter=kp_yesno, eager=True)
+    @kb.add("Y", filter=kp_yesno, eager=True)
+    @kb.add("enter", filter=kp_yesno, eager=True)
+    def _kp_yes(event) -> None:
+        _kp_resolve(True)
+
+    @kb.add("n", filter=kp_yesno, eager=True)
+    @kb.add("N", filter=kp_yesno, eager=True)
+    @kb.add("escape", filter=kp_yesno, eager=True)
+    def _kp_no(event) -> None:
+        _kp_resolve(False)
 
     @kb.add("c-p")
     def _command_palette(event) -> None:
@@ -953,7 +1077,7 @@ async def tui_loop(args: object, config: object) -> int:
         save_if_needed(history, state["model"], options, ui)
         ui._invalidate()
 
-    @kb.add("enter", filter=Condition(lambda: not input_buffer.complete_state) & ~picker_active)
+    @kb.add("enter", filter=Condition(lambda: not input_buffer.complete_state) & ~picker_active & ~kp_any)
     def _submit(event) -> None:
         text = input_buffer.text.strip()
         input_buffer.reset()
