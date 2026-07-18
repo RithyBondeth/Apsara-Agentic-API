@@ -198,6 +198,93 @@ def _save_api_key_to_env(workspace_root: Path, key_name: str, key_value: str) ->
     return env_path
 
 
+_MODEL_TIER_COLOR = {
+    "free":  ("38;2;120;200;150", "free"),
+    "paid":  ("38;2;247;200;100", "paid"),
+    "local": ("38;2;160;180;220", "local"),
+}
+
+
+def build_model_rows(
+    current_model: str, filt: str, ui: "ConsoleUI"
+) -> tuple[list[str], list[tuple[str, Optional[str]]], bool]:
+    """
+    Build the /models header and its selectable rows.
+
+    Returns ``(header_parts, rows, shown_any)`` where ``rows`` is a list of
+    ``(styled_line, model_id)`` tuples in display order — ``model_id`` is
+    ``None`` for a non-selectable provider group header. Shared by the
+    classic REPL's inline picker (chat.py) and the TUI's native in-app
+    picker (tui.py) so both list exactly the same models.
+    """
+    providers = providers_in_order()
+
+    header_parts = [ui.badge("models", "15", "48;2;70;85;115")]
+    if filt:
+        header_parts.append(ui.style(f"filtered: {filt}", "38;2;200;210;230"))
+    else:
+        total = len(MODELS)
+        free_count = sum(1 for m in MODELS if m.tier in {"free", "local"})
+        paid_count = sum(1 for m in MODELS if m.tier == "paid")
+        header_parts.append(
+            ui.style(f"{total} models  ·  {free_count} free/local  ·  {paid_count} paid", "38;2;200;210;230")
+        )
+
+    rows: list[tuple[str, Optional[str]]] = []
+    shown_any = False
+    for provider in providers:
+        entries = [m for m in MODELS if m.provider == provider]
+        if filt and not any(
+            filt in m.model_id.lower() or filt in m.display_name.lower() or filt == m.provider
+            for m in entries
+        ):
+            continue
+
+        provider_rows: list[tuple[str, Optional[str]]] = []
+        for entry in entries:
+            if filt and filt not in entry.model_id.lower() and filt not in entry.display_name.lower() and filt != provider:
+                continue
+            shown_any = True
+
+            is_current = entry.model_id == current_model
+            has_key    = is_key_available(entry)
+            ctx        = format_context_window(entry.context_window)
+            tier_color, tier_label = _MODEL_TIER_COLOR.get(entry.tier, ("38;2;200;200;200", entry.tier))
+
+            if is_current:
+                status_icon = ui.style("●", "38;2;120;200;150")
+            elif has_key or entry.tier == "local":
+                status_icon = ui.style("○", "38;2;140;170;200")
+            else:
+                status_icon = ui.style("○", "38;2;120;100;90")
+
+            name_style = ("1", "38;2;220;225;240") if is_current else ("38;2;190;200;220",)
+            name_text  = ui.style(entry.display_name, *name_style)
+            tier_badge = ui.style(f"[{tier_label}]", tier_color)
+            ctx_text   = ui.dim(f"{ctx} ctx")
+
+            if has_key or entry.tier == "local":
+                key_text = ui.style("✓ key set", "38;2;120;200;150")
+            else:
+                key_text = ui.style(f"✗ needs {entry.env_var}", "38;2;220;120;100")
+
+            aliases_hint = ""
+            if entry.aliases:
+                aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
+
+            line = (
+                f"{status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}  "
+                f"{ui.dim(entry.model_id)}{aliases_hint}"
+            )
+            provider_rows.append((line, entry.model_id))
+
+        if provider_rows:
+            rows.append((ui.style(provider.upper(), "1", "38;2;190;200;220"), None))
+            rows.extend(provider_rows)
+
+    return header_parts, rows, shown_any
+
+
 _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Conversation", [
         ("/add", "<path>", "Pin a file's contents into the context"),
@@ -435,81 +522,11 @@ def handle_chat_command(
 
     if command_text == "/models" or command_text.startswith("/models "):
         # ── /models [provider-filter] ──────────────────────────────────────
+        # NOTE: the full-screen TUI intercepts /models in tui.py before it
+        # reaches here (it drives a native in-app picker instead), so this
+        # branch runs for the classic REPL and non-TTY fallbacks only.
         filt = command_text[len("/models"):].strip().lower()
-        providers = providers_in_order()
-
-        _TIER_COLOR = {
-            "free":  ("38;2;120;200;150", "free"),
-            "paid":  ("38;2;247;200;100", "paid"),
-            "local": ("38;2;160;180;220", "local"),
-        }
-
-        header_parts = [ui.badge("models", "15", "48;2;70;85;115")]
-        if filt:
-            header_parts.append(ui.style(f"filtered: {filt}", "38;2;200;210;230"))
-        else:
-            total = len(MODELS)
-            free_count  = sum(1 for m in MODELS if m.tier in {"free", "local"})
-            paid_count  = sum(1 for m in MODELS if m.tier == "paid")
-            header_parts.append(
-                ui.style(f"{total} models  ·  {free_count} free/local  ·  {paid_count} paid", "38;2;200;210;230")
-            )
-
-        # rows: (styled_line, model_id) — model_id is None for non-selectable
-        # provider group headers, used both for the interactive picker and
-        # (flattened) for the plain-text fallback listing.
-        rows: list[tuple[str, Optional[str]]] = []
-        shown_any = False
-        for provider in providers:
-            entries = [m for m in MODELS if m.provider == provider]
-            if filt and not any(
-                filt in m.model_id.lower() or filt in m.display_name.lower() or filt == m.provider
-                for m in entries
-            ):
-                continue
-
-            provider_rows: list[tuple[str, Optional[str]]] = []
-            for entry in entries:
-                if filt and filt not in entry.model_id.lower() and filt not in entry.display_name.lower() and filt != provider:
-                    continue
-                shown_any = True
-
-                is_current = entry.model_id == current_model
-                has_key    = is_key_available(entry)
-                ctx        = format_context_window(entry.context_window)
-                tier_color, tier_label = _TIER_COLOR.get(entry.tier, ("38;2;200;200;200", entry.tier))
-
-                if is_current:
-                    status_icon = ui.style("●", "38;2;120;200;150")
-                elif has_key or entry.tier == "local":
-                    status_icon = ui.style("○", "38;2;140;170;200")
-                else:
-                    status_icon = ui.style("○", "38;2;120;100;90")
-
-                name_style = ("1", "38;2;220;225;240") if is_current else ("38;2;190;200;220",)
-                name_text  = ui.style(entry.display_name, *name_style)
-                tier_badge = ui.style(f"[{tier_label}]", tier_color)
-                ctx_text   = ui.dim(f"{ctx} ctx")
-
-                if has_key or entry.tier == "local":
-                    key_text = ui.style("✓ key set", "38;2;120;200;150")
-                else:
-                    key_text = ui.style(f"✗ needs {entry.env_var}", "38;2;220;120;100")
-
-                aliases_hint = ""
-                if entry.aliases:
-                    aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
-
-                line = (
-                    f"{status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}  "
-                    f"{ui.dim(entry.model_id)}{aliases_hint}"
-                )
-                provider_rows.append((line, entry.model_id))
-
-            if provider_rows:
-                provider_label = ui.style(provider.upper(), "1", "38;2;190;200;220")
-                rows.append((provider_label, None))
-                rows.extend(provider_rows)
+        header_parts, rows, shown_any = build_model_rows(current_model, filt, ui)
 
         if not shown_any:
             ui.print_line()
@@ -520,20 +537,15 @@ def handle_chat_command(
             return True, current_model
 
         # ── Interactive arrow-key picker (falls back to a plain listing
-        # when prompt_toolkit or a real terminal isn't available) ─────────
+        # when a real terminal isn't available). Renders inline through the
+        # caller's ConsoleUI — see model_picker.py — so it stays in the
+        # current terminal UI exactly like every other command, instead of
+        # opening a separate screen. ──────────────────────────────────────
         if sys.stdout.isatty():
             ui.print_line()
             ui.print_line(f"  {'  '.join(header_parts)}")
             ui.print_line()
-            # Under the full-screen TUI, pick_model()'s own transient
-            # Application would otherwise contend with the outer one for the
-            # terminal — TuiConsoleUI exposes _run_passthrough for exactly
-            # this (see tui.py's module docstring).
-            run_passthrough = getattr(ui, "_run_passthrough", None)
-            if run_passthrough is not None:
-                chosen = run_passthrough(lambda: pick_model(rows, current_model, ui))
-            else:
-                chosen = pick_model(rows, current_model, ui)
+            chosen = pick_model(rows, current_model, ui)
             if chosen is None:
                 ui.info("No change — model selection cancelled.")
                 return True, current_model

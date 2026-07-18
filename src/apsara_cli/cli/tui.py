@@ -6,17 +6,23 @@ working directory and token usage, all inside one `prompt_toolkit` full-screen
 Application.
 
 Design note: this file does NOT reimplement any of ConsoleUI's formatting
-logic (badges, diffs, markdown/code rendering, confirm-dialog boxes) --
-`TuiConsoleUI` only swaps *where* that already-styled output goes (into an
-in-memory transcript buffer that gets redrawn, instead of straight to
-stdout). Blocking, synchronous calls that need the real terminal (single
-keypress reads for confirmations, getpass, the /models arrow-key picker)
-are safe to run as-is here: they are always invoked synchronously, inline,
-from within the agent turn's execution (engine/tools.py calls
-`execute_tool()` directly, without `await`), so the outer Application's
-event loop is never concurrently polling the terminal at that moment --
-there is no real contention to arbitrate. We just mark those stretches as
-"passthrough" (real terminal I/O) and force a full repaint of the outer
+logic (badges, diffs, markdown/code rendering, confirm-dialog boxes, the
+/models picker) -- `TuiConsoleUI` only swaps *where* that already-styled
+output goes (into an in-memory transcript buffer that gets redrawn, instead
+of straight to stdout). Most interactive flows (confirmations, the /models
+picker) stay fully inline this way: they call ui.print_line()/read_single_key()
+like any other command, and nothing ever leaves the running Application or
+erases the screen.
+
+A few blocking, synchronous calls genuinely need the real terminal (getpass
+for API keys, in particular, since masked input has no inline equivalent
+here). Those are safe to run as-is: whatever slash command or tool
+confirmation triggers them runs synchronously inside a background task
+(`_handle_submission`, or engine/tools.py calling `execute_tool()` directly
+without `await`), so the outer Application's event loop is never
+concurrently polling the terminal at that moment -- there is no real
+contention to arbitrate. We mark those stretches as "passthrough" (real
+terminal I/O, via `_run_passthrough`) and force a full repaint of the outer
 app when they finish.
 """
 
@@ -26,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
@@ -51,7 +57,9 @@ from prompt_toolkit.layout.processors import Processor, Transformation
 from prompt_toolkit.styles import Style
 
 from apsara_cli.cli.chat import (
+    _switch_model,
     build_mode_line,
+    build_model_rows,
     execute_instruction,
     handle_chat_command,
     save_if_needed,
@@ -145,6 +153,18 @@ class TuiConsoleUI(ConsoleUI):
             return
         self._invalidate()
 
+    def redraw_block(self, prev_line_count: int, new_lines: list[str]) -> None:
+        """Splice the transcript buffer in place instead of touching real
+        stdout — keeps inline pickers (e.g. /models) inside the scrolling
+        chat pane rather than a separate screen."""
+        if self._passthrough or self.app is None:
+            super().redraw_block(prev_line_count, new_lines)
+            return
+        if prev_line_count:
+            del self.lines[-prev_line_count:]
+        self.lines.extend(new_lines)
+        self._invalidate()
+
     # ── Spinner: asyncio ticker instead of a raw-stdout thread ───────────
 
     def start_spinner(self, message: str) -> None:
@@ -228,11 +248,6 @@ class TuiConsoleUI(ConsoleUI):
         finally:
             self._passthrough = False
             self._invalidate()
-
-
-def run_passthrough_modal(ui: TuiConsoleUI, fn):
-    """Public helper for callers outside TuiConsoleUI (e.g. the /models picker)."""
-    return ui._run_passthrough(fn)
 
 
 class _PlaceholderProcessor(Processor):
@@ -461,6 +476,17 @@ async def tui_loop(args: object, config: object) -> int:
     # split chat/sidebar layout takes over on the first submission.
     state = {"model": options.model, "welcome": not history}
 
+    # /models runs as a NATIVE in-app picker in the TUI (not the blocking
+    # stdin-reading pick_model, which can't work while the Application owns
+    # the terminal): the list is appended to the transcript and navigated
+    # via the app's own key bindings, with an asyncio.Future bridging the
+    # background submission coroutine to those key presses.
+    picker: dict[str, Any] = {
+        "active": False, "rows": [], "selectable": [],
+        "selected": 0, "block_len": 0, "future": None,
+    }
+    picker_active = Condition(lambda: picker["active"])
+
     from apsara_cli.cli.banner import banner_taglines, logo_width, small_logo_line, styled_logo_lines
     from apsara_cli.shared.ui import terminal_width
 
@@ -496,7 +522,12 @@ async def tui_loop(args: object, config: object) -> int:
     def _chat_cursor_position() -> Point:
         # The Window clamps its scroll to keep this 'cursor' visible on every
         # render — so pointing it at the last line implements follow-bottom,
-        # and pointing it at the current scroll row freezes manual browsing.
+        # pointing it at the current scroll row freezes manual browsing, and
+        # (while the /models picker is open) pointing it at the highlighted
+        # row keeps the selection on screen as you arrow through a long list.
+        if picker["active"] and picker["block_len"]:
+            block_start = len(ui.lines) - picker["block_len"]
+            return Point(x=0, y=max(block_start + picker["selected"], 0))
         total = len(ui.lines) + (2 if ui._spinner_frame else 0)
         if follow["on"]:
             return Point(x=0, y=max(total - 1, 0))
@@ -698,7 +729,9 @@ async def tui_loop(args: object, config: object) -> int:
         return max(ri.content_height - ri.window_height, 0)
 
     def _before_render(app_) -> None:
-        if state["welcome"]:
+        # While the /models picker is open, _chat_cursor_position drives the
+        # scroll (keeping the highlighted row visible) — don't fight it.
+        if state["welcome"] or picker["active"]:
             return
         max_scroll = _chat_max_scroll()
         cur = chat_window.vertical_scroll
@@ -715,7 +748,7 @@ async def tui_loop(args: object, config: object) -> int:
     def _after_render(app_) -> None:
         # render_info is only fresh AFTER a render, so when following we may
         # discover the true bottom just now — snap to it and repaint once.
-        if state["welcome"] or not follow["on"]:
+        if state["welcome"] or picker["active"] or not follow["on"]:
             return
         max_scroll = _chat_max_scroll()
         if chat_window.vertical_scroll != max_scroll:
@@ -734,6 +767,107 @@ async def tui_loop(args: object, config: object) -> int:
         "completion-menu.completion.current": "bg:#f7b76a fg:#1a1a1a",
     })
 
+    # ── /models native in-app picker ─────────────────────────────────────
+    _PICKER_CURSOR = ("1", "38;2;120;200;150")
+    _PICKER_HINT = "↑/↓ or j/k move   enter select   esc cancel"
+
+    def _picker_row(txt: str, model_id, highlighted: bool) -> str:
+        if model_id is None:               # provider group header
+            return f"  {txt}"
+        if highlighted:
+            return f"  {ui.style('❯ ', *_PICKER_CURSOR)}{txt}"
+        return f"    {txt}"
+
+    def _render_picker() -> None:
+        lines = [
+            _picker_row(txt, mid, i == picker["selected"])
+            for i, (txt, mid) in enumerate(picker["rows"])
+        ]
+        lines.append("")
+        lines.append(f"  {ui.dim(_PICKER_HINT)}")
+        if picker["block_len"]:
+            del ui.lines[-picker["block_len"]:]
+        ui.lines.extend(lines)
+        picker["block_len"] = len(lines)
+        ui._invalidate()
+
+    def _finalize_picker(chosen) -> None:
+        # Replace the live block with a static listing (chosen row keeps the
+        # ❯, no hint) so it reads cleanly in scrollback.
+        if picker["block_len"]:
+            del ui.lines[-picker["block_len"]:]
+        for txt, mid in picker["rows"]:
+            ui.lines.append(_picker_row(txt, mid, mid is not None and mid == chosen))
+        picker["block_len"] = 0
+        ui._invalidate()
+
+    def _picker_move(delta: int) -> None:
+        sel = picker["selectable"]
+        if not sel:
+            return
+        pos = sel.index(picker["selected"])
+        picker["selected"] = sel[(pos + delta) % len(sel)]
+        _render_picker()
+
+    def _picker_resolve(model_id) -> None:
+        fut = picker["future"]
+        if fut is not None and not fut.done():
+            fut.set_result(model_id)
+
+    async def _run_model_picker(filt: str) -> None:
+        header_parts, rows, shown_any = build_model_rows(state["model"], filt, ui)
+        ui.lines.append("")
+        ui.lines.append("  " + "  ".join(header_parts))
+        ui.lines.append("")
+        if not shown_any:
+            ui.warning(f"No models match '{filt}'. Try a provider like 'openai', 'groq', 'anthropic'.")
+            return
+
+        selectable = [i for i, (_, mid) in enumerate(rows) if mid is not None]
+        picker["rows"] = rows
+        picker["selectable"] = selectable
+        picker["selected"] = next(
+            (i for i in selectable if rows[i][1] == state["model"]), selectable[0]
+        )
+        picker["block_len"] = 0
+        picker["future"] = asyncio.get_event_loop().create_future()
+        picker["active"] = True
+        _render_picker()
+        try:
+            chosen = await picker["future"]
+        finally:
+            picker["active"] = False
+            picker["future"] = None
+
+        input_buffer.reset()  # drop any stray keys that reached the input box
+        _finalize_picker(chosen)
+        if chosen is None:
+            ui.info("No change — model selection cancelled.")
+            return
+
+        # _switch_model prompts (getpass) only when the target lacks a key.
+        # That key-entry flow needs the real terminal, so run it via
+        # prompt_toolkit's run_in_terminal — it cleanly suspends the
+        # full-screen app, hands over the terminal for getpass, then
+        # restores the app (banner + transcript) intact. The old
+        # _run_passthrough did a raw renderer.erase() that wiped the banner
+        # and never redrew it properly. When the key IS present there's no
+        # prompt, so we just switch inline into the transcript.
+        entry = lookup_model(chosen)
+        needs_key = entry is not None and not (is_key_available(entry) or entry.tier == "local")
+        if needs_key:
+            def _switch_with_key_prompt() -> str:
+                was = ui._passthrough
+                ui._passthrough = True  # route output to the real terminal
+                try:
+                    return _switch_model(chosen, state["model"], options, ui)
+                finally:
+                    ui._passthrough = was
+            state["model"] = await run_in_terminal(_switch_with_key_prompt)
+            ui._invalidate()
+        else:
+            state["model"] = _switch_model(chosen, state["model"], options, ui)
+
     kb = KeyBindings()
 
     @kb.add("c-c")
@@ -744,9 +878,30 @@ async def tui_loop(args: object, config: object) -> int:
     def _eof(event) -> None:
         event.app.exit()
 
-    @kb.add("escape", "enter")
+    @kb.add("escape", "enter", filter=~picker_active)
     def _newline(event) -> None:
         event.current_buffer.insert_text("\n")
+
+    # ── /models picker navigation (only while the picker is open) ─────────
+    @kb.add("up", filter=picker_active, eager=True)
+    @kb.add("k", filter=picker_active, eager=True)
+    def _picker_up(event) -> None:
+        _picker_move(-1)
+
+    @kb.add("down", filter=picker_active, eager=True)
+    @kb.add("j", filter=picker_active, eager=True)
+    def _picker_down(event) -> None:
+        _picker_move(1)
+
+    @kb.add("enter", filter=picker_active, eager=True)
+    def _picker_accept(event) -> None:
+        _picker_resolve(picker["rows"][picker["selected"]][1])
+
+    @kb.add("escape", filter=picker_active, eager=True)
+    @kb.add("q", filter=picker_active, eager=True)
+    @kb.add("c-c", filter=picker_active, eager=True)
+    def _picker_cancel(event) -> None:
+        _picker_resolve(None)
 
     @kb.add("c-p")
     def _command_palette(event) -> None:
@@ -777,6 +932,12 @@ async def tui_loop(args: object, config: object) -> int:
     async def _handle_submission(text: str) -> None:
         ui.append_user_message(text)
 
+        # /models needs the native async picker (not the blocking pick_model
+        # inside handle_chat_command, which can't read keys under the TUI).
+        if text == "/models" or text.startswith("/models "):
+            await _run_model_picker(text[len("/models"):].strip().lower())
+            return
+
         if text.startswith("/"):
             keep, new_model = handle_chat_command(text, history, state["model"], options, config, ui)
             state["model"] = new_model
@@ -792,7 +953,7 @@ async def tui_loop(args: object, config: object) -> int:
         save_if_needed(history, state["model"], options, ui)
         ui._invalidate()
 
-    @kb.add("enter", filter=Condition(lambda: not input_buffer.complete_state))
+    @kb.add("enter", filter=Condition(lambda: not input_buffer.complete_state) & ~picker_active)
     def _submit(event) -> None:
         text = input_buffer.text.strip()
         input_buffer.reset()

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -288,6 +289,21 @@ class ConsoleUI:
             sys.stdout.flush()
             time.sleep(delay)
         sys.stdout.write(ansi_close + "\n")
+        sys.stdout.flush()
+
+    def redraw_block(self, prev_line_count: int, new_lines: list[str]) -> None:
+        """
+        Redraw a fixed block of ``prev_line_count`` previously-printed lines
+        in place, replacing them with ``new_lines``. Used by interactive
+        inline pickers (e.g. /models) so navigation stays inline in the
+        current terminal UI instead of opening a separate full-screen view —
+        the same idea as the spinner's \\r redraw, just multi-line.
+        """
+        self.stop_spinner()
+        if prev_line_count and self.use_color and sys.stdout.isatty():
+            sys.stdout.write(f"\033[{prev_line_count}A")
+        for line in new_lines:
+            sys.stdout.write(f"\r\033[2K{line}\n")
         sys.stdout.flush()
 
     def _print_box_line(self, left: str, content: str, right: str, color_code: str = "") -> None:
@@ -769,7 +785,38 @@ class ConsoleUI:
 
     # ── Input confirmation ────────────────────────────────────────────────────
 
-    def read_single_key(self) -> str:
+    @contextmanager
+    def raw_terminal(self):
+        """
+        Hold the terminal in raw mode for the duration of the ``with`` block,
+        instead of read_single_key()'s default of entering/restoring raw mode
+        on every single call. Needed by callers that read several keystrokes
+        in a tight loop with rendering in between (e.g. the /models
+        arrow-key picker): toggling termios modes between each read opens a
+        brief cooked-mode window where the kernel's line discipline can
+        buffer an incoming multi-byte escape sequence until it sees a
+        newline, instead of delivering it byte-by-byte — no read timeout can
+        recover from that, since the bytes just aren't released yet.
+        """
+        if termios is None or tty is None or not sys.stdin.isatty():
+            yield
+            return
+        file_descriptor = sys.stdin.fileno()
+        original_settings = termios.tcgetattr(file_descriptor)
+        tty.setraw(file_descriptor)
+        try:
+            yield
+        finally:
+            termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
+
+    def read_raw_key(self) -> str:
+        """
+        Read one key (or one escape sequence, e.g. an arrow key) assuming a
+        POSIX terminal is already in raw mode — call this only from inside a
+        ``with self.raw_terminal():`` block. ``read_single_key()`` is the
+        one-shot convenience wrapper around this for callers that just need
+        a single keystroke.
+        """
         if msvcrt is not None:
             key = msvcrt.getwch()
             if key in {"\x00", "\xe0"}:
@@ -778,19 +825,34 @@ class ConsoleUI:
 
         if termios is not None and tty is not None and sys.stdin.isatty():
             file_descriptor = sys.stdin.fileno()
-            original_settings = termios.tcgetattr(file_descriptor)
-            try:
-                tty.setraw(file_descriptor)
-                key = sys.stdin.read(1)
-                if key == "\x1b" and _select.select([sys.stdin], [], [], 0.02)[0]:
-                    key += sys.stdin.read(1)
-                    if _select.select([sys.stdin], [], [], 0.02)[0]:
-                        key += sys.stdin.read(1)
-                return key
-            finally:
-                termios.tcsetattr(file_descriptor, termios.TCSADRAIN, original_settings)
+            # Read via the raw fd (os.read), not sys.stdin.read(): Python's
+            # buffered TextIOWrapper can slurp an entire multi-byte escape
+            # sequence into its own userspace buffer on the very first read,
+            # after which select() on the fd correctly reports "no more bytes
+            # at the OS level" even though '[' and the final letter are
+            # already sitting in Python's buffer — no timeout can fix that
+            # mismatch, since the bytes are already gone from the level
+            # select() is watching. Reading and select()-ing the same fd
+            # keeps both operating in one buffering domain, so a full
+            # arrow-key escape sequence (ESC [ A/B/C/D) actually assembles
+            # instead of misfiring as a bare-ESC cancel.
+            key = os.read(file_descriptor, 1).decode(errors="replace")
+            if key == "\x1b" and _select.select([file_descriptor], [], [], 0.08)[0]:
+                key += os.read(file_descriptor, 1).decode(errors="replace")
+                if _select.select([file_descriptor], [], [], 0.08)[0]:
+                    key += os.read(file_descriptor, 1).decode(errors="replace")
+            return key
 
         return input().strip()[:1]
+
+    def read_single_key(self) -> str:
+        """One-shot keystroke read: enters raw mode, reads one key (or
+        escape sequence), restores the terminal. For a tight loop of several
+        reads (e.g. an arrow-key picker), hold `raw_terminal()` across the
+        whole loop and call `read_raw_key()` directly instead — see
+        model_picker.py."""
+        with self.raw_terminal():
+            return self.read_raw_key()
 
     def prompt_confirmation_choice(self, *, allow_view: bool = False, allow_editor: bool = False) -> str:
         options = [

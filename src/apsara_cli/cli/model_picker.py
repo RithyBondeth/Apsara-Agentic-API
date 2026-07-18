@@ -1,17 +1,28 @@
-"""Arrow-key interactive model picker for the /models command."""
+"""
+Arrow-key interactive model picker for the /models command.
+
+Renders inline through the caller's ConsoleUI (print_line + read_single_key
++ redraw_block) instead of opening a separate prompt_toolkit Application —
+so it stays inside the current terminal UI (the classic scrolling REPL or
+the TUI's chat pane) exactly like every other command, rather than briefly
+swapping in its own screen.
+"""
 
 from typing import Optional
 
-try:
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout
-    from prompt_toolkit.layout.containers import HSplit, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    from prompt_toolkit.formatted_text import ANSI
-    HAS_PROMPT_TOOLKIT = True
-except ImportError:
-    HAS_PROMPT_TOOLKIT = False
+
+# Escape sequences/keys that read_raw_key() can hand back for arrow keys.
+# Two ANSI encodings exist for the same physical key: "\x1b[A" (CSI / normal
+# cursor-key mode, the default most terminals start in) and "\x1bOA" (SS3 /
+# DECCKM "application cursor key" mode, which full-screen TUI programs
+# commonly trigger — prompt_toolkit's own parser maps both the same way, see
+# ansi_escape_sequences.py, so this picker needs to accept both too or arrow
+# keys silently do nothing whenever a terminal happens to be in application
+# mode). Plus the Windows msvcrt path ("\xe0H" / "\x00H").
+_UP_KEYS = {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k", "K"}
+_DOWN_KEYS = {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j", "J"}
+_ACCEPT_KEYS = {"\r", "\n", ""}
+_CANCEL_KEYS = {"\x1b", "q", "Q", "\x03"}
 
 
 def pick_model(
@@ -29,11 +40,11 @@ def pick_model(
     set to ``None`` is treated as a non-selectable header/separator line
     (e.g. a provider group label) and is skipped during navigation.
 
-    Falls back to returning None (caller should fall back to the
-    type-to-switch flow) when prompt_toolkit isn't available.
+    Returns None immediately (caller falls back to the type-to-switch flow)
+    when there is nothing selectable.
     """
     selectable = [i for i, (_, model_id) in enumerate(rows) if model_id is not None]
-    if not HAS_PROMPT_TOOLKIT or not selectable:
+    if not selectable:
         return None
 
     selected = selectable[0]
@@ -42,58 +53,52 @@ def pick_model(
             selected = i
             break
 
-    result: dict = {"model_id": None}
-
-    def get_text():
+    def render(hint: str) -> list[str]:
         lines = []
         for i, (line_text, model_id) in enumerate(rows):
             if model_id is None:
-                lines.append(line_text)
+                lines.append(f"  {line_text}")
             elif i == selected:
-                lines.append(ui.style("❯ ", "1", "38;2;120;200;150") + line_text)
+                lines.append(f"  {ui.style('❯ ', '1', '38;2;120;200;150')}{line_text}")
             else:
-                lines.append("  " + line_text)
+                lines.append(f"    {line_text}")
         lines.append("")
-        lines.append(ui.dim("  ↑/↓ or j/k move   enter select   esc/q cancel"))
-        return ANSI("\n".join(lines))
+        lines.append(f"  {ui.dim(hint)}")
+        return lines
 
-    control = FormattedTextControl(get_text, focusable=True)
-    window = Window(content=control, always_hide_cursor=True)
+    frame = render("↑/↓ or j/k move   enter select   esc/q cancel")
+    for line in frame:
+        ui.print_line(line)
+    prev_count = len(frame)
 
-    kb = KeyBindings()
-
-    def _move(delta: int) -> None:
+    def move(delta: int) -> None:
         nonlocal selected
         pos = selectable.index(selected)
         selected = selectable[(pos + delta) % len(selectable)]
 
-    @kb.add("up")
-    @kb.add("k")
-    def _up(event) -> None:
-        _move(-1)
+    # Hold raw mode across the WHOLE loop rather than re-entering it on each
+    # keystroke (read_single_key()'s default) — toggling raw/cooked mode
+    # between reads, with a full-list redraw in between, opens a window
+    # where the kernel can buffer an arrow key's escape bytes instead of
+    # delivering them immediately, making navigation misfire as Cancel.
+    with ui.raw_terminal():
+        while True:
+            key = ui.read_raw_key()
 
-    @kb.add("down")
-    @kb.add("j")
-    def _down(event) -> None:
-        _move(1)
+            if key in _ACCEPT_KEYS:
+                ui.redraw_block(prev_count, [])
+                return rows[selected][1]
+            if key in _CANCEL_KEYS:
+                ui.redraw_block(prev_count, [])
+                return None
 
-    @kb.add("enter")
-    def _accept(event) -> None:
-        result["model_id"] = rows[selected][1]
-        event.app.exit()
+            if key in _UP_KEYS:
+                move(-1)
+            elif key in _DOWN_KEYS:
+                move(1)
+            else:
+                continue
 
-    @kb.add("escape")
-    @kb.add("c-c")
-    @kb.add("q")
-    def _cancel(event) -> None:
-        event.app.exit()
-
-    app = Application(
-        layout=Layout(HSplit([window])),
-        key_bindings=kb,
-        full_screen=False,
-        mouse_support=False,
-        erase_when_done=True,
-    )
-    app.run(in_thread=True)
-    return result["model_id"]
+            frame = render("↑/↓ or j/k move   enter select   esc/q cancel")
+            ui.redraw_block(prev_count, frame)
+            prev_count = len(frame)
