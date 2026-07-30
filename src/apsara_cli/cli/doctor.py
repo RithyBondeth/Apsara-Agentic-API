@@ -162,6 +162,7 @@ def run_workspace_checks(options, config, args) -> list:
         enable_bash=options.allow_bash,
         allowed_commands=options.allowed_commands,
         max_file_size_bytes=options.max_file_size,
+        bash_timeout_seconds=options.bash_timeout,
         confirmation_callback=lambda action, payload: False,
     ):
         tool_names = [tool["function"]["name"] for tool in get_agent_tools()]
@@ -189,7 +190,11 @@ def run_workspace_checks(options, config, args) -> list:
             else:
                 results.append(DoctorCheckResult("bash-tool", "pass", f"Bash tool is enabled and command '{default_command}' succeeded."))
         else:
-            results.append(DoctorCheckResult("bash-tool", "warn", "Bash tool is disabled. Use --allow-bash if you want command execution."))
+            results.append(DoctorCheckResult(
+                "bash-tool", "warn",
+                "Bash tool is disabled, so the agent cannot run your tests to check its own "
+                "work. Enable it with: --allow-bash --allowed-commands @verify",
+            ))
 
     results.extend(check_mcp_servers(options, config))
 
@@ -217,6 +222,7 @@ async def run_live_probe(options: "ResolvedOptions") -> DoctorCheckResult:
         enable_bash=options.allow_bash,
         allowed_commands=options.allowed_commands,
         max_file_size_bytes=options.max_file_size,
+        bash_timeout_seconds=options.bash_timeout,
         confirmation_callback=lambda action, payload: False,
     ):
         response_message, usage = await asyncio.wait_for(

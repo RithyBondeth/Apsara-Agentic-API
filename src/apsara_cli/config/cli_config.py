@@ -23,6 +23,7 @@ class CliDefaults:
     allow_bash: Optional[bool] = None
     allowed_commands: Optional[list[str]] = None
     max_file_size: Optional[int] = None
+    bash_timeout: Optional[int] = None
     auto_approve: Optional[bool] = None
     color: Optional[bool] = None
 
@@ -272,6 +273,9 @@ def load_cli_config(
         ),
         max_file_size=_optional_int(
             defaults_raw.get("max_file_size"), "defaults.max_file_size"
+        ),
+        bash_timeout=_optional_int(
+            defaults_raw.get("bash_timeout"), "defaults.bash_timeout"
         ),
         auto_approve=_optional_bool(
             defaults_raw.get("auto_approve"), "defaults.auto_approve"

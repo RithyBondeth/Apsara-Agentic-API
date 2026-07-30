@@ -242,3 +242,47 @@ def test_real_tool_errors_still_abort():
 
     assert any(e["type"] == "blocked" for e in events)
     assert state["calls"] <= 4, "must abort after 3 consecutive real errors"
+
+
+def test_rerunning_a_command_with_changing_output_is_not_a_loop():
+    """The verification loop: run tests, fix, run again. Not cycling."""
+    run_tests = _tool_call_event(
+        name="run_bash_command", arguments='{"command": "pytest -q"}', call_id="t"
+    )
+    edit = _tool_call_event(
+        name="edit_file", arguments='{"path": "calc.py"}', call_id="e"
+    )
+    scripts = [[run_tests], [edit], [run_tests], [edit], [run_tests], [_final_event("Green.")]]
+    fake, _ = _scripted_llm(scripts)
+
+    # Same command, different output each time — progress, not repetition.
+    results = iter(["1 failed", "edited", "1 failed, 1 passed", "edited", "2 passed", ""])
+
+    async def changing(name, args):
+        return next(results, "")
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", changing):
+        events = _run([{"role": "user", "content": "fix the tests"}])
+
+    assert not any(e["type"] == "blocked" for e in events), (
+        "re-running tests with changing results must not count as a loop"
+    )
+    assert events[-1]["type"] == "final_answer"
+
+
+def test_rerunning_a_command_with_identical_output_is_a_loop():
+    run_tests = _tool_call_event(
+        name="run_bash_command", arguments='{"command": "pytest -q"}', call_id="t"
+    )
+    edit = _tool_call_event(name="edit_file", arguments='{"path": "x.py"}', call_id="e")
+    scripts = [[run_tests], [edit], [run_tests], [edit], [run_tests], [edit], [run_tests]]
+    fake, _ = _scripted_llm(scripts)
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="1 failed")):
+        events = _run([{"role": "user", "content": "fix the tests"}])
+
+    assert any(e["type"] == "blocked" for e in events), (
+        "identical command AND identical output means genuinely stuck"
+    )

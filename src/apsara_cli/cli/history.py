@@ -1,8 +1,81 @@
-from typing import Any
+import os
+from typing import Any, Optional
 
 from apsara_cli.shared.types import ContextTrimResult
 
-SAFE_INPUT_TOKEN_BUDGET = 9_000
+# Used when we genuinely don't know the model's context window. This was once
+# the budget for *every* model, which meant a 200k-window model was driven at
+# 4.5% of capacity — one large file read would evict the conversation.
+FALLBACK_INPUT_TOKEN_BUDGET = 9_000
+
+# Deprecated alias kept so external callers don't break; prefer
+# input_token_budget(model), which is window-aware.
+SAFE_INPUT_TOKEN_BUDGET = FALLBACK_INPUT_TOKEN_BUDGET
+
+# Fraction of the window we'll fill with conversation. The rest absorbs the
+# tool schemas (sizeable once MCP servers are connected), the streamed reply,
+# and error in the token estimate itself.
+WINDOW_FRACTION = 0.75
+
+# Ceiling regardless of window size: past this, latency and per-request cost
+# dominate, and on a bring-your-own-key tool that bill is the user's. Raise it
+# deliberately with APSARA_INPUT_TOKEN_BUDGET.
+MAX_INPUT_TOKEN_BUDGET = 128_000
+MIN_INPUT_TOKEN_BUDGET = 4_000
+
+
+def model_context_window(model: str) -> Optional[int]:
+    """Total context window for `model`, or None if unknown.
+
+    The built-in registry wins; LiteLLM's model table covers the long tail of
+    models users can route to but that Apsara doesn't ship metadata for.
+    """
+    try:
+        from apsara_cli.engine.models import lookup_model
+
+        entry = lookup_model(model)
+        if entry is not None and entry.context_window:
+            return int(entry.context_window)
+    except Exception:
+        pass
+
+    try:
+        import litellm
+
+        # Plain dict lookup: get_model_info() raises and writes noise to stderr
+        # for unrecognised models, which would leak into CLI output.
+        #
+        # Only max_input_tokens is meaningful here. The table's max_tokens field
+        # is the *output* cap on the entries that carry it, so treating it as a
+        # context window would silently size the budget off the wrong number.
+        info = litellm.model_cost.get(model) or {}
+        window = info.get("max_input_tokens")
+        if window:
+            return int(window)
+    except Exception:
+        pass
+
+    return None
+
+
+def input_token_budget(model: str) -> int:
+    """How many tokens of conversation we're willing to send for `model`."""
+    override = os.environ.get("APSARA_INPUT_TOKEN_BUDGET")
+    if override:
+        try:
+            return max(MIN_INPUT_TOKEN_BUDGET, int(override))
+        except ValueError:
+            pass
+
+    window = model_context_window(model)
+    if not window:
+        return FALLBACK_INPUT_TOKEN_BUDGET
+
+    from apsara_cli.engine.llm import DEFAULT_MAX_COMPLETION_TOKENS
+
+    usable = int(window * WINDOW_FRACTION) - DEFAULT_MAX_COMPLETION_TOKENS
+    usable = min(usable, MAX_INPUT_TOKEN_BUDGET)
+    return max(MIN_INPUT_TOKEN_BUDGET, usable)
 
 
 def group_conversation_turns(history: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -35,8 +108,9 @@ async def trim_history_for_request(history: list[dict[str, Any]], model: str) ->
 
     base_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     original_tokens = estimate_request_tokens(base_messages + history, model=model)
+    budget = input_token_budget(model)
 
-    if original_tokens <= SAFE_INPUT_TOKEN_BUDGET:
+    if original_tokens <= budget:
         return ContextTrimResult(
             request_history=history,
             dropped_turns=0,
@@ -65,7 +139,7 @@ async def trim_history_for_request(history: list[dict[str, Any]], model: str) ->
         candidate_tokens = estimate_request_tokens(base_messages + candidate_history, model=model)
         
         # If we have at least one turn kept and adding another exceeds budget, stop
-        if kept_turns and candidate_tokens > SAFE_INPUT_TOKEN_BUDGET:
+        if kept_turns and candidate_tokens > budget:
             # The remaining turns (those we didn't add to kept_turns) are dropped
             # Since we are iterating backwards, the remaining turns are the ones earlier in the loop
             dropped_turns_list = turns[:len(turns) - len(kept_turns)]

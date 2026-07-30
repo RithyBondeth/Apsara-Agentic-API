@@ -16,6 +16,7 @@ class ResolvedOptions:
     use_color: bool
     dry_run: bool = False
     read_only: bool = False
+    bash_timeout: Optional[int] = None
 
 
 @dataclass

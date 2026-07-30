@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, Iterator, Optional, Set
 
 from apsara_cli.config import trust
@@ -36,6 +36,9 @@ _allowed_commands_override: ContextVar[Optional[Set[str]]] = ContextVar(
 )
 _max_file_size_override: ContextVar[Optional[int]] = ContextVar(
     "max_file_size_override", default=None
+)
+_bash_timeout_override: ContextVar[Optional[int]] = ContextVar(
+    "bash_timeout_override", default=None
 )
 _confirmation_callback_override: ContextVar[Optional[ConfirmationCallback]] = ContextVar(
     "confirmation_callback_override", default=None
@@ -87,6 +90,7 @@ def agent_runtime_context(
     dry_run: Optional[bool] = None,
     read_only: Optional[bool] = None,
     trust_callback: Optional[TrustCallback] = None,
+    bash_timeout_seconds: Optional[int] = None,
 ) -> Iterator[None]:
     workspace_token = None
     bash_token = None
@@ -96,6 +100,7 @@ def agent_runtime_context(
     dry_run_token = None
     read_only_token = None
     trust_token = None
+    bash_timeout_token = None
 
     try:
         if workspace_root is not None:
@@ -116,8 +121,12 @@ def agent_runtime_context(
             read_only_token = _read_only_override.set(read_only)
         if trust_callback is not None:
             trust_token = _trust_callback_override.set(trust_callback)
+        if bash_timeout_seconds is not None:
+            bash_timeout_token = _bash_timeout_override.set(bash_timeout_seconds)
         yield
     finally:
+        if bash_timeout_token is not None:
+            _bash_timeout_override.reset(bash_timeout_token)
         if trust_token is not None:
             _trust_callback_override.reset(trust_token)
         if read_only_token is not None:
@@ -296,6 +305,13 @@ def _load_local_plugins() -> list[dict[str, Any]]:
 
     _plugin_cache[cache_key] = (combined_digest, list(plugins))
     return plugins
+
+
+def _bash_timeout() -> int:
+    overridden = _bash_timeout_override.get()
+    if overridden is not None:
+        return max(1, int(overridden))
+    return max(1, int(settings.AGENT_BASH_TIMEOUT_SECONDS))
 
 
 def _max_file_size_bytes() -> int:
@@ -653,6 +669,27 @@ def _redirection_target_escapes(tokens: list[str]) -> bool:
     return False
 
 
+def _command_is_allowed(name: str) -> bool:
+    """Check one command name against the allowlist.
+
+    Also accepts a path whose final component is allowlisted, because that is
+    how project-local tooling is normally invoked: `.venv/bin/pytest`,
+    `./node_modules/.bin/jest`, `/usr/local/bin/node`. Without this, enabling
+    `pytest` would still fail for most real projects.
+
+    The tradeoff, stated plainly: allowlisting `pytest` also permits
+    `<any-path>/pytest`. The allowlist constrains *which program names* run, not
+    which file on disk backs them — it is a coarse guard layered under the
+    human confirmation gate, not a sandbox.
+    """
+    allowed = _allowed_commands()
+    if name in allowed:
+        return True
+    if "/" in name or "\\" in name:
+        return PurePath(name).name in allowed
+    return False
+
+
 def _validate_bash_command(command: str) -> Optional[str]:
     """Return an error string if *command* is unsafe under the allowlist, else None.
 
@@ -681,7 +718,7 @@ def _validate_bash_command(command: str) -> Optional[str]:
     command_names = _extract_command_names(command)
     if not command_names:
         return "Command cannot be empty."
-    disallowed = [n for n in command_names if n not in _allowed_commands()]
+    disallowed = [n for n in command_names if not _command_is_allowed(n)]
     if disallowed:
         allowed = ", ".join(sorted(_allowed_commands()))
         return f"Command(s) not allowed: {', '.join(disallowed)}. Allowed: {allowed}"
@@ -715,12 +752,13 @@ def run_bash_command(command: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully executed command: {command} (simulated)"
 
+        timeout_seconds = _bash_timeout()
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout_seconds,
             cwd=str(_workspace_root()),
         )
         return (
@@ -729,7 +767,10 @@ def run_bash_command(command: str) -> str:
             f"EXIT CODE: {result.returncode}"
         )
     except subprocess.TimeoutExpired:
-        return "Error: Command timed out after 30 seconds."
+        return (
+            f"Error: Command timed out after {_bash_timeout()} seconds. "
+            "Raise it with --bash-timeout if the command legitimately takes longer."
+        )
     except Exception as exc:
         return _format_exception("Error executing command", exc)
 
@@ -1371,7 +1412,11 @@ async def execute_tool_async(tool_name: str, arguments: Dict[str, Any]) -> str:
     return execute_tool(tool_name, arguments)
 
 
-AGENT_TOOLS = get_agent_tools()
+# NOTE: there used to be a module-level `AGENT_TOOLS = get_agent_tools()` here.
+# It was unused, and building the tool list at import time loaded and executed
+# workspace plugins before --workspace had been resolved — so the trust gate ran
+# against the process's startup directory and printed to stdout during import.
+# Call get_agent_tools() inside a runtime context instead.
 
 
 def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:

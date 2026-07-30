@@ -6,7 +6,10 @@ from apsara_cli.engine.tools import execute_tool_async, get_mcp_manager
 from apsara_cli.shared.text import is_tool_error
 
 DEFAULT_MAX_STEPS = 25
-# One invocation repeated this many times in a turn means the agent is cycling.
+# A repeat only counts as cycling when the *result* repeats too. Re-running the
+# test suite after an edit is the verification loop working as intended — the
+# same command returning a different result is progress. The same command
+# returning the identical output this many times is a stuck agent.
 MAX_IDENTICAL_INVOCATIONS = 3
 
 
@@ -66,8 +69,8 @@ async def run_agent_stream(
     consecutive_errors = 0
     consecutive_repeats = 0
     last_tool_invocation = None
-    # Counts every invocation in the turn, not just consecutive ones: an agent
-    # that alternates A,B,A,B is just as stuck as one repeating A,A,A.
+    # Counts (tool, args, result) across the whole turn, not just consecutive
+    # calls: an agent alternating A,B,A,B is as stuck as one repeating A,A,A.
     invocation_counts: Dict[tuple, int] = {}
     completed = False
 
@@ -128,9 +131,6 @@ async def run_agent_stream(
                 else:
                     consecutive_repeats = 0
                 last_tool_invocation = current_invocation
-                invocation_counts[current_invocation] = (
-                    invocation_counts.get(current_invocation, 0) + 1
-                )
 
                 try:
                     arguments = json.loads(arguments_raw)
@@ -150,6 +150,12 @@ async def run_agent_stream(
                     consecutive_errors += 1
                 else:
                     consecutive_errors = 0
+
+                # Include the result: identical call + identical output is a
+                # loop; identical call + changed output is the agent making
+                # progress (e.g. re-running tests after a fix).
+                outcome = (tool_name, arguments_raw, tool_result_str)
+                invocation_counts[outcome] = invocation_counts.get(outcome, 0) + 1
 
                 messages.append({
                     "role": "tool",

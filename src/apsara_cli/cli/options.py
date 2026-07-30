@@ -21,6 +21,43 @@ def resolve_value(explicit: Any, config_value: Any, fallback: Any) -> Any:
     return fallback
 
 
+# Named bundles for --allowed-commands, referenced as @name.
+#
+# The default allowlist is read-only tools that duplicate what the agent can
+# already do natively, so out of the box it cannot run the thing that proves its
+# work. @verify fixes that; it is opt-in because running a project's build
+# scripts is a real trust decision.
+COMMAND_PRESETS: dict[str, Set[str]] = {
+    "verify": {
+        # Python
+        "pytest", "python", "python3", "tox", "ruff", "mypy",
+        # JS/TS
+        "npm", "npx", "pnpm", "yarn", "node", "tsc", "jest", "vitest", "eslint",
+        # Other toolchains
+        "go", "cargo", "make", "mvn", "gradle", "dotnet",
+    },
+    "read": {"pwd", "ls", "find", "rg", "cat", "sed", "head", "tail", "wc"},
+    "git": {"git"},
+}
+
+
+def expand_command_presets(commands: Set[str]) -> Set[str]:
+    """Replace @preset entries with their commands, leaving others untouched."""
+    expanded: Set[str] = set()
+    for entry in commands:
+        if entry.startswith("@"):
+            name = entry[1:]
+            if name not in COMMAND_PRESETS:
+                known = ", ".join("@" + key for key in sorted(COMMAND_PRESETS))
+                raise ValueError(
+                    f"Unknown command preset '{entry}'. Available presets: {known}."
+                )
+            expanded |= COMMAND_PRESETS[name]
+        else:
+            expanded.add(entry)
+    return expanded
+
+
 def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
     if raw_commands is None:
         return None
@@ -33,7 +70,7 @@ def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
 
     if not commands:
         raise ValueError("Allowed commands cannot be empty when provided.")
-    return commands
+    return expand_command_presets(commands)
 
 
 def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> ResolvedOptions:
@@ -52,6 +89,11 @@ def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> R
         resolve_value(args.allowed_commands, config_defaults.allowed_commands, None)
     )
     max_file_size = resolve_value(args.max_file_size, config_defaults.max_file_size, None)
+    bash_timeout = resolve_value(
+        getattr(args, "bash_timeout", None),
+        getattr(config_defaults, "bash_timeout", None),
+        None,
+    )
     auto_approve = bool(resolve_value(args.auto_approve, config_defaults.auto_approve, False))
     use_color = bool(resolve_value(args.color, config_defaults.color, default_use_color()))
     dry_run = bool(getattr(args, "dry_run", False))
@@ -69,6 +111,7 @@ def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> R
         use_color=use_color,
         dry_run=dry_run,
         read_only=read_only,
+        bash_timeout=int(bash_timeout) if bash_timeout is not None else None,
     )
 
 

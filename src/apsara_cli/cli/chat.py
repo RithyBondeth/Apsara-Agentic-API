@@ -13,7 +13,12 @@ if TYPE_CHECKING:
     from apsara_cli.shared.ui import ConsoleUI
 
 from apsara_cli.shared.events import print_event
-from apsara_cli.cli.history import SAFE_INPUT_TOKEN_BUDGET, trim_history_for_request, update_history_from_event
+from apsara_cli.cli.history import (
+    input_token_budget,
+    model_context_window,
+    trim_history_for_request,
+    update_history_from_event,
+)
 from apsara_cli.cli.input import get_input_async
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.session import (
@@ -562,6 +567,7 @@ def handle_chat_command(
             enable_bash=options.allow_bash,
             allowed_commands=options.allowed_commands,
             max_file_size_bytes=options.max_file_size,
+            bash_timeout_seconds=options.bash_timeout,
             dry_run=options.dry_run,
             read_only=options.read_only,
             trust_callback=ui.confirm_action,
@@ -780,7 +786,9 @@ def handle_chat_command(
 
         base = [{"role": "system", "content": SYSTEM_PROMPT}]
         tokens = estimate_request_tokens(base + history, model=current_model)
-        pct = int(tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
+        budget = input_token_budget(current_model)
+        window = model_context_window(current_model)
+        pct = int(tokens / budget * 100)
         turns = sum(1 for m in history if m.get("role") == "user")
         msgs = len(history)
         session_label = (
@@ -816,10 +824,11 @@ def handle_chat_command(
         ui.print_line(f"  {ui.dim('  session  ')} {ui.style(session_label, '38;2;220;216;210')}")
         ui.print_line(f"  {ui.dim('  turns    ')} {ui.style(str(turns), '38;2;220;216;210')}")
         ui.print_line(f"  {ui.dim('  messages ')} {ui.style(str(msgs), '38;2;220;216;210')}")
+        window_note = f"  of {window:,} window" if window else "  (window unknown)"
         ui.print_line(
             f"  {ui.dim('  tokens   ')} "
             f"{ui.style(f'{tokens:,}', health_color)} "
-            f"{ui.dim(f'/ {SAFE_INPUT_TOKEN_BUDGET:,} budget  ({pct}%  {health_label})')}"
+            f"{ui.dim(f'/ {budget:,} budget  ({pct}%  {health_label}){window_note}')}"
         )
         ui.print_line(f"  {ui.dim('  cost     ')} {ui.style(f'${cost:.4f}', '38;2;120;200;150')} {ui.dim('(est. session total)')}")
         ui.print_line()
@@ -961,6 +970,7 @@ async def execute_instruction(
         enable_bash=options.allow_bash,
         allowed_commands=options.allowed_commands,
         max_file_size_bytes=options.max_file_size,
+        bash_timeout_seconds=options.bash_timeout,
         confirmation_callback=None if options.auto_approve else ui.confirm_action,
         dry_run=options.dry_run,
         read_only=options.read_only,
@@ -1223,11 +1233,11 @@ async def chat_loop(args: object, config: object) -> int:
                 from apsara_cli.engine.llm import estimate_request_tokens
                 _base = [{"role": "system", "content": SYSTEM_PROMPT}]
                 _curr_tokens = estimate_request_tokens(_base + history, model=current_model)
-                _warn_threshold = int(SAFE_INPUT_TOKEN_BUDGET * 0.75)
-                if _curr_tokens >= _warn_threshold:
-                    _pct = int(_curr_tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
+                _budget = input_token_budget(current_model)
+                if _curr_tokens >= int(_budget * 0.75):
+                    _pct = int(_curr_tokens / _budget * 100)
                     ui.warning(
-                        f"Context at {_pct}% capacity ({_curr_tokens:,} / {SAFE_INPUT_TOKEN_BUDGET:,} tokens). "
+                        f"Context at {_pct}% capacity ({_curr_tokens:,} / {_budget:,} tokens). "
                         "Oldest turns may be trimmed — use /clear to reset."
                     )
             except Exception:

@@ -13,6 +13,15 @@ DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
 # model = "gpt-4o"
 # auto_approve = false
 
+# Let the agent verify its own work. Without a test runner on the allowlist it
+# can write code but never run it, so it cannot catch its own mistakes.
+# @verify expands to the common test/build tools (pytest, npm, go, cargo,
+# make, ...); @read and @git are also available. Every command still needs
+# your approval at run time unless you pass --auto-approve.
+# allow_bash = true
+# allowed_commands = ["@verify", "@git"]
+# bash_timeout = 120
+
 [ui]
 # welcome_title = "Apsara Agentic"
 

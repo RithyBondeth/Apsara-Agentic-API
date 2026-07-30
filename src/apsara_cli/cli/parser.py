@@ -17,7 +17,12 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--no-bash", dest="allow_bash", action="store_false",
                            help="Disable the local bash tool for this run.")
     subparser.add_argument("--allowed-commands", default=None,
-                           help="Comma-separated command allowlist used with bash tool access.")
+                           help="Comma-separated command allowlist used with bash tool access. "
+                                "Supports presets: @verify (test/build tools), @read, @git — "
+                                "e.g. '@verify,git'.")
+    subparser.add_argument("--bash-timeout", type=int, default=None, metavar="SECONDS",
+                           help="Timeout for a single bash command. Defaults to 120s; raise it "
+                                "for slow test suites.")
     subparser.add_argument("--max-file-size", type=int, default=None,
                            help="Override the maximum readable file size in bytes for this run.")
     subparser.add_argument("--auto-approve", dest="auto_approve", action="store_true", default=None,

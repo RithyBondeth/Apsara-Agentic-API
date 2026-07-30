@@ -91,12 +91,24 @@ patch, and `e` opens it in `$EDITOR`.
 The bash tool is disabled by default. Enable it with an explicit allowlist:
 
 ```bash
-apsara chat --allow-bash --allowed-commands pytest,npm,git,rg
+apsara chat --allow-bash --allowed-commands @verify,git
 ```
+
+`@verify` is a preset covering the usual test and build tools — `pytest`,
+`python`, `npm`, `npx`, `node`, `tsc`, `jest`, `vitest`, `go`, `cargo`, `make`,
+`mvn`, `gradle`, `dotnet`, `ruff`, `mypy`, and friends. `@read` and `@git` are
+also available, and you can mix presets with plain command names.
+
+**Turn this on.** Without a test runner on the allowlist the agent can write
+code but never run it, so it can't catch its own mistakes — you get
+single-shot generation instead of an agent that iterates until the suite is
+green.
 
 Commands are parsed and checked against the allowlist — including every stage of
 a pipe or `&&` chain — and redirections that would write outside the workspace
-are rejected.
+are rejected. Each command still needs your approval at run time unless you pass
+`--auto-approve`. A single command is killed after `--bash-timeout` seconds
+(default 120).
 
 ## MCP servers
 
@@ -153,7 +165,8 @@ model = "gpt-4o"
 session = "default"
 stateless = false
 allow_bash = false
-allowed_commands = ["pytest", "rg"]
+allowed_commands = ["@verify", "@git"]
+bash_timeout = 120
 max_file_size = 1000000
 auto_approve = false
 color = true
@@ -180,6 +193,12 @@ Conversations are saved as JSON under `.apsara-cli/sessions/` in the workspace �
 local files, no database. Long conversations are summarized and trimmed
 automatically to stay within the model's context budget, while the full history
 stays on disk.
+
+The budget is derived from the selected model's context window, so a
+200k-window model gets a far larger working set than a 32k one. `/status` shows
+the current usage against both. Override it with `APSARA_INPUT_TOKEN_BUDGET` if
+you want to trade cost for memory, and cap the agent's per-turn tool calls with
+`APSARA_MAX_STEPS`.
 
 In chat, slash commands include `/help`, `/details`, `/history`, `/tools`,
 `/model`, `/session`, `/add <path>`, `/save`, and `/bug`.
