@@ -73,6 +73,8 @@ async def run_agent_stream(
     # calls: an agent alternating A,B,A,B is as stuck as one repeating A,A,A.
     invocation_counts: Dict[tuple, int] = {}
     completed = False
+    # One corrective intervention per turn before we give up on it.
+    nudged = False
 
     for step in range(max_steps):
 
@@ -175,9 +177,51 @@ async def run_agent_stream(
                 count >= MAX_IDENTICAL_INVOCATIONS for count in invocation_counts.values()
             )
             if consecutive_errors >= 3 or consecutive_repeats >= 2 or cycling:
+                if not nudged:
+                    # Don't give up on the first sign of trouble. Models often
+                    # just need telling that they're repeating themselves —
+                    # name the specific problem, clear the counters, and let it
+                    # try once more before we stop the turn.
+                    nudged = True
+                    if consecutive_errors >= 3:
+                        problem = (
+                            f"Your last {consecutive_errors} tool calls all failed. "
+                            f"The most recent error was: {tool_result_str[:300]}"
+                        )
+                    else:
+                        problem = (
+                            f"You have already called {last_tool_invocation[0]} with "
+                            "exactly these arguments and got exactly this result. "
+                            "Repeating it will not produce anything new."
+                        )
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"STOP AND RECONSIDER. {problem}\n\n"
+                            "Do not repeat that action. Either take a materially "
+                            "different approach — re-read the file to get its current "
+                            "exact contents, or use a different tool — or, if you "
+                            "genuinely cannot proceed, stop calling tools and explain "
+                            "what is blocking you."
+                        ),
+                    })
+                    yield json.dumps({
+                        "type": "status",
+                        "message": "Detected a repeated action — redirecting.",
+                    })
+                    consecutive_errors = 0
+                    consecutive_repeats = 0
+                    invocation_counts.clear()
+                    continue
+
                 yield json.dumps({
                     "type": "blocked",
-                    "message": "I am stuck in a loop. I keep hitting errors or repeating actions. Please review my outputs and provide new instructions."
+                    "message": (
+                        "I am stuck in a loop. I kept hitting the same errors or "
+                        "repeating the same actions even after changing course, so I "
+                        "stopped rather than burn more tokens. Review the output above "
+                        "and give me a more specific instruction."
+                    ),
                 })
                 completed = True
                 break

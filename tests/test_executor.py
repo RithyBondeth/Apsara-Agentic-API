@@ -193,7 +193,9 @@ def test_alternating_tool_calls_are_detected_as_a_loop():
         events = _run([{"role": "user", "content": "loop"}])
 
     assert any(e["type"] == "blocked" for e in events)
-    assert state["calls"] <= 5, "must break out well before the step budget"
+    assert state["calls"] < executor.DEFAULT_MAX_STEPS, (
+        "must break out before exhausting the step budget"
+    )
 
 
 def test_distinct_tool_calls_are_not_treated_as_a_loop():
@@ -241,7 +243,9 @@ def test_real_tool_errors_still_abort():
         events = _run([{"role": "user", "content": "read"}])
 
     assert any(e["type"] == "blocked" for e in events)
-    assert state["calls"] <= 4, "must abort after 3 consecutive real errors"
+    # 3 errors -> corrective nudge -> 3 more -> stop. Still far short of the
+    # 25-step budget, which is the property that matters.
+    assert state["calls"] <= 8, "must abort well before the step budget"
 
 
 def test_rerunning_a_command_with_changing_output_is_not_a_loop():
@@ -286,3 +290,115 @@ def test_rerunning_a_command_with_identical_output_is_a_loop():
     assert any(e["type"] == "blocked" for e in events), (
         "identical command AND identical output means genuinely stuck"
     )
+
+
+# ── corrective nudge before giving up ─────────────────────────────────────────
+
+def test_a_loop_is_redirected_before_being_abandoned():
+    """A stuck model usually just needs telling. Nudge, then let it recover."""
+    stuck = _tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="s")
+    scripts = [[stuck], [stuck], [stuck], [_final_event("Recovered, here's the answer.")]]
+    fake, _ = _scripted_llm(scripts)
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="same output")):
+        events = _run([{"role": "user", "content": "go"}])
+
+    assert any(
+        e["type"] == "status" and "redirecting" in e.get("message", "").lower()
+        for e in events
+    ), "should announce the redirect"
+    assert not any(e["type"] == "blocked" for e in events), (
+        "a model that recovers after the nudge must not be reported as stuck"
+    )
+    assert events[-1]["type"] == "final_answer"
+
+
+def test_persistent_loop_is_still_stopped():
+    stuck = _tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="s")
+    fake, state = _scripted_llm([[stuck]])
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="same output")):
+        events = _run([{"role": "user", "content": "go"}])
+
+    assert events[-1]["type"] == "blocked"
+    assert "even after changing course" in events[-1]["message"]
+    assert state["calls"] < executor.DEFAULT_MAX_STEPS
+
+
+def test_nudge_names_the_specific_repeated_tool():
+    """A generic 'try something else' is much weaker than naming the action."""
+    captured = {}
+
+    async def capture_llm(messages, model):
+        captured["messages"] = list(messages)
+        yield _final_event("done")
+
+    stuck = _tool_call_event(name="glob_search", arguments='{"pattern": "*.py"}', call_id="s")
+    scripts = [[stuck], [stuck], [stuck]]
+    fake, _ = _scripted_llm(scripts)
+
+    calls = {"n": 0}
+
+    async def llm(messages, model):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            async for e in fake(messages, model):
+                yield e
+        else:
+            captured["messages"] = list(messages)
+            yield _final_event("done")
+
+    with patch.object(executor, "call_llm_stream", llm), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="no matches")):
+        _run([{"role": "user", "content": "go"}])
+
+    nudges = [
+        m for m in captured["messages"]
+        if m.get("role") == "system" and "STOP AND RECONSIDER" in (m.get("content") or "")
+    ]
+    assert nudges, "the corrective message must reach the model"
+    assert "glob_search" in nudges[0]["content"], "should name the repeated tool"
+
+
+def test_nudge_includes_the_error_when_failing():
+    captured = {}
+    failing = _tool_call_event(name="read_file", arguments='{"path": "x.txt"}', call_id="f")
+    calls = {"n": 0}
+
+    async def llm(messages, model):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            yield failing
+        else:
+            captured["messages"] = list(messages)
+            yield _final_event("done")
+
+    with patch.object(executor, "call_llm_stream", llm), \
+         patch.object(executor, "execute_tool_async",
+                      AsyncMock(return_value="Error reading file: no such file zzz")):
+        _run([{"role": "user", "content": "go"}])
+
+    nudges = [
+        m for m in captured.get("messages", [])
+        if m.get("role") == "system" and "STOP AND RECONSIDER" in (m.get("content") or "")
+    ]
+    assert nudges
+    assert "no such file zzz" in nudges[0]["content"], "should quote the actual error"
+
+
+def test_only_one_nudge_per_turn():
+    """The nudge must not become its own loop."""
+    stuck = _tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="s")
+    fake, _ = _scripted_llm([[stuck]])
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="same")):
+        events = _run([{"role": "user", "content": "go"}])
+
+    redirects = [
+        e for e in events
+        if e["type"] == "status" and "redirecting" in e.get("message", "").lower()
+    ]
+    assert len(redirects) == 1, f"expected exactly one nudge, got {len(redirects)}"
