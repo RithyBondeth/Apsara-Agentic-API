@@ -8,7 +8,7 @@ import asyncio
 import json
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -89,7 +89,7 @@ def test_tool_call_then_final_answer():
     scripts = [[_tool_call_event(usage={"total_tokens": 10})], [_final_event("Read it.")]]
     fake, state = _scripted_llm(scripts)
     with patch.object(executor, "call_llm_stream", fake), \
-         patch.object(executor, "execute_tool", return_value="file contents") as exec_mock:
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="file contents")) as exec_mock:
         events = _run([{"role": "user", "content": "read a.txt"}])
 
     # Tool was dispatched with parsed arguments.
@@ -123,9 +123,88 @@ def test_repeated_erroring_tool_calls_trigger_blocked():
     # Every LLM turn returns the identical failing tool call.
     fake, state = _scripted_llm([[_tool_call_event()]])
     with patch.object(executor, "call_llm_stream", fake), \
-         patch.object(executor, "execute_tool", return_value="Error: nope"):
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="Error: nope")):
         events = _run([{"role": "user", "content": "loop"}])
 
     assert any(e["type"] == "blocked" for e in events)
     # The guardrail must break the loop well before the 15-step ceiling.
     assert state["calls"] < 15
+
+
+# ── step budget ───────────────────────────────────────────────────────────────
+
+def test_exhausted_step_budget_is_announced(monkeypatch):
+    """Running out of steps must not look like a completed turn."""
+    monkeypatch.setenv("APSARA_MAX_STEPS", "3")
+
+    # Every turn asks for a different tool call, so no stuck-detector fires.
+    scripts = [
+        [_tool_call_event(name="read_file", arguments=f'{{"path": "f{i}.txt"}}', call_id=f"c{i}")]
+        for i in range(6)
+    ]
+    fake, state = _scripted_llm(scripts)
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="ok")):
+        events = _run([{"role": "user", "content": "big job"}])
+
+    assert state["calls"] == 3, "must stop at the configured budget"
+    assert events[-1]["type"] == "blocked"
+    assert "all 3 steps" in events[-1]["message"]
+    assert "APSARA_MAX_STEPS" in events[-1]["message"]
+
+
+def test_step_budget_is_configurable(monkeypatch):
+    monkeypatch.setenv("APSARA_MAX_STEPS", "2")
+    assert executor._max_steps() == 2
+    monkeypatch.setenv("APSARA_MAX_STEPS", "not-a-number")
+    assert executor._max_steps() == executor.DEFAULT_MAX_STEPS
+    monkeypatch.delenv("APSARA_MAX_STEPS")
+    assert executor._max_steps() == executor.DEFAULT_MAX_STEPS
+
+
+def test_step_budget_is_clamped(monkeypatch):
+    monkeypatch.setenv("APSARA_MAX_STEPS", "9999")
+    assert executor._max_steps() == 100
+    monkeypatch.setenv("APSARA_MAX_STEPS", "0")
+    assert executor._max_steps() == 1
+
+
+def test_completed_turn_has_no_budget_warning():
+    fake, _ = _scripted_llm([[_final_event("Done.")]])
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "hi"}])
+    assert not any(e["type"] == "blocked" for e in events)
+
+
+# ── cycle detection ───────────────────────────────────────────────────────────
+
+def test_alternating_tool_calls_are_detected_as_a_loop():
+    """A,B,A,B is as stuck as A,A,A — the consecutive check alone misses it."""
+    scripts = [
+        [_tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="a")],
+        [_tool_call_event(name="write_to_file", arguments='{"path": "b.txt"}', call_id="b")],
+        [_tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="a")],
+        [_tool_call_event(name="write_to_file", arguments='{"path": "b.txt"}', call_id="b")],
+        [_tool_call_event(name="read_file", arguments='{"path": "a.txt"}', call_id="a")],
+    ]
+    fake, state = _scripted_llm(scripts)
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="ok")):
+        events = _run([{"role": "user", "content": "loop"}])
+
+    assert any(e["type"] == "blocked" for e in events)
+    assert state["calls"] <= 5, "must break out well before the step budget"
+
+
+def test_distinct_tool_calls_are_not_treated_as_a_loop():
+    scripts = [
+        [_tool_call_event(name="read_file", arguments=f'{{"path": "f{i}.txt"}}', call_id=f"c{i}")]
+        for i in range(4)
+    ] + [[_final_event("Read them all.")]]
+    fake, _ = _scripted_llm(scripts)
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="ok")):
+        events = _run([{"role": "user", "content": "read several"}])
+
+    assert not any(e["type"] == "blocked" for e in events)
+    assert events[-1]["type"] == "final_answer"

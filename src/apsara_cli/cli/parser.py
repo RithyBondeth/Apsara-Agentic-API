@@ -35,7 +35,11 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from apsara_cli import __version__
+
     parser = argparse.ArgumentParser(prog="apsara", description="Local CLI for Apsara.")
+    parser.add_argument("--version", action="version", version=f"apsara {__version__}",
+                        help="Show the installed Apsara version and exit.")
     parser.add_argument("--config", default=None,
                         help=f"Path to a TOML config file. Defaults to {DEFAULT_CONFIG_PATH}")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -70,6 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Also make a real model API call to verify credentials (uses tokens).")
     doctor_parser.add_argument("--no-live", dest="live", action="store_false",
                                help="Skip the live model probe (this is the default).")
+
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="List configured MCP servers and check that they connect."
+    )
+    mcp_parser.add_argument("--workspace", default=None,
+                            help="Workspace root whose MCP servers should be checked.")
+    mcp_parser.add_argument("--no-connect", dest="connect", action="store_false", default=True,
+                            help="List the configured servers without connecting to them.")
+    mcp_parser.add_argument("--color", dest="color", action="store_true", default=None,
+                            help="Force colored terminal output.")
+    mcp_parser.add_argument("--no-color", dest="color", action="store_false",
+                            help="Disable colored terminal output.")
 
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
@@ -106,6 +122,9 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "doctor":
         from apsara_cli.cli.doctor import doctor
         return await doctor(args, config)
+    if args.command == "mcp":
+        from apsara_cli.cli.mcp_cli import mcp_status
+        return await mcp_status(args, config)
     if args.command == "login":
         from apsara_cli.cli.auth_cli import login
         return await login()

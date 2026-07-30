@@ -7,7 +7,7 @@ name = "apsara-agentic"
 version = "0.1.0"
 description = "Apsara Agentic - Local coding assistant CLI."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Bondeth" }]
 keywords = ["ai", "agent", "cli", "coding-assistant", "llm"]
@@ -17,10 +17,10 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development",
 ]
 dependencies = [
@@ -29,6 +29,7 @@ dependencies = [
   "openai>=1.16.0",
   "litellm>=1.35.0",
   "httpx>=0.27.0",
+  "mcp>=2.0.0",
   "tomli>=2.0.1; python_version < '3.11'",
   "rich>=13.7.0",
   "prompt_toolkit>=3.0.0",

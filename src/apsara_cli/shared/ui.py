@@ -138,6 +138,23 @@ def describe_action(
             path,
         )
 
+    if action == "edit_file":
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
+        preview = payload.get("replacement_preview")
+        if payload.get("replace_all"):
+            count = payload.get("occurrences", "?")
+            title = f"Edit {path} ({count} occurrences)"
+        else:
+            title = f"Edit {path}"
+        return (
+            title,
+            preview if isinstance(preview, str) else None,
+            payload.get("diff_preview") if isinstance(payload.get("diff_preview"), str) else None,
+            payload.get("diff_full") if isinstance(payload.get("diff_full"), str) else None,
+            payload.get("diff_editor") if isinstance(payload.get("diff_editor"), str) else None,
+            path,
+        )
+
     if action == "replace_file_lines":
         path = payload.get("display_path") or payload.get("path", "<unknown>")
         preview = payload.get("replacement_preview")
@@ -170,6 +187,27 @@ def describe_action(
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
         return (f"Run command in {cwd}: {command}", None, None, None, None, None)
+
+    if action == "trust_workspace_code":
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
+        if payload.get("kind") == "mcp":
+            title = (
+                f"Trust MCP server '{payload.get('server', path)}' from this project? "
+                "It will be launched as a subprocess."
+            )
+        else:
+            lines = payload.get("line_count")
+            suffix = f" ({lines} lines)" if isinstance(lines, int) else ""
+            title = (
+                f"Trust and execute local plugin {path}{suffix}? "
+                "This code comes from the project, not from you."
+            )
+        preview = payload.get("source_preview") or payload.get("command_preview")
+        return (
+            title,
+            preview if isinstance(preview, str) else None,
+            None, None, None, path,
+        )
 
     return (f"Approve action: {action}", None, None, None, None, None)
 
@@ -883,14 +921,26 @@ class ConsoleUI:
                 return "reject"
 
     def confirm_action(self, action: str, payload: dict[str, Any]) -> bool:
-        if self.approve_all:
+        # Executing workspace-supplied code is never covered by a blanket
+        # approval: --auto-approve (and 'a' during a turn) waive confirmation
+        # for file writes, which is a much weaker consent than "run this code".
+        is_trust = action == "trust_workspace_code"
+
+        if self.approve_all and not is_trust:
             return True
 
         if not sys.stdin.isatty():
-            self.error(
-                f"Approval required for {action}, but stdin is not interactive. "
-                "Re-run with --auto-approve if you trust this action."
-            )
+            if is_trust:
+                self.error(
+                    f"{payload.get('display_path', 'This workspace code')} needs approval "
+                    "before it can run, but stdin is not interactive. Run `apsara chat` "
+                    "in this project once to review and approve it."
+                )
+            else:
+                self.error(
+                    f"Approval required for {action}, but stdin is not interactive. "
+                    "Re-run with --auto-approve if you trust this action."
+                )
             return False
 
         title, preview, diff_preview, diff_full, diff_editor, path_hint = describe_action(action, payload)
@@ -903,7 +953,7 @@ class ConsoleUI:
 
         if diff_preview:
             self.print_line()
-            if action == "replace_file_lines" and "original_preview" in payload and "replacement_preview" in payload:
+            if action in {"edit_file", "replace_file_lines"} and "original_preview" in payload and "replacement_preview" in payload:
                 self.render_side_by_side_diff(payload["original_preview"], payload["replacement_preview"])
             else:
                 self.render_diff_text(diff_preview)
@@ -926,7 +976,10 @@ class ConsoleUI:
                 self._open_editor_preview(title, diff_editor or diff_full or diff_preview or "", path_hint)
                 continue
             if choice == "always":
-                self.approve_all = True
+                # Approving one plugin must not also silence file-write
+                # confirmations; the trust store already remembers this one.
+                if not is_trust:
+                    self.approve_all = True
                 return True
             return choice == "approve"
 

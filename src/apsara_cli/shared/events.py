@@ -107,7 +107,7 @@ def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:
         return f"moving {_first('src')} → {_first('dest')}"
     if n == "write_to_file":
         return f"writing {_first('path', 'file_path')}"
-    if n == "replace_file_lines":
+    if n in {"edit_file", "replace_file_lines"}:
         return f"editing {_first('path', 'file_path')}"
     if n in {"search_in_file", "search_codebase", "grep_search"}:
         return f"searching {_first('query', 'pattern', 'search_term')}"
@@ -150,6 +150,8 @@ def _tool_result_summary(tool_name: str, result: str) -> tuple[bool, str]:
         return True, "file moved"
     if n == "write_to_file":
         return True, f"written  ({char_count} chars)"
+    if n == "edit_file":
+        return True, "file edited"
     if n == "replace_file_lines":
         return True, "lines replaced"
     if n in {"search_in_file", "search_codebase", "grep_search"}:

@@ -15,6 +15,21 @@ DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
 
 [ui]
 # welcome_title = "Apsara Agentic"
+
+# ── MCP servers ──────────────────────────────────────────────────────────────
+# Connect external tools through the Model Context Protocol. Each server is
+# launched (stdio) or reached (http) on demand, and you approve it once before
+# it runs. Check them any time with `apsara mcp`.
+#
+# Launched as a subprocess:
+# [mcp_servers.filesystem]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+#
+# Reached over HTTP — keep secrets in the environment, not in this file:
+# [mcp_servers.internal]
+# url = "https://mcp.example.com/v1"
+# headers = { Authorization = "Bearer ${MCP_TOKEN}" }
 """
 
 DEFAULT_INSTRUCTIONS_TEMPLATE = """# Team Coding Standards

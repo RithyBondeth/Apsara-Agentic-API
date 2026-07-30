@@ -126,3 +126,57 @@ def test_call_llm_stream_retries_on_rate_limit():
     assert attempts["n"] == 2  # failed once, then succeeded
     done = next(e for e in events if e["type"] == "stream_done")
     assert done["content"] == "ok"
+
+
+# ── malformed tool calls (provider rejection) ────────────────────────────────
+
+def test_detects_malformed_tool_call_errors():
+    # Groq's "tool_use_failed" trips the SDK's numeric error-code parser.
+    assert llm._is_malformed_tool_call(
+        ValueError("invalid literal for int() with base 10: 'tool_use_failed'")
+    )
+    assert llm._is_malformed_tool_call(Exception("failed_generation: ..."))
+    assert not llm._is_malformed_tool_call(ValueError("something else entirely"))
+
+
+def test_malformed_tool_call_is_retried_then_succeeds():
+    attempts = {"n": 0}
+
+    async def flaky_acompletion(**kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ValueError("invalid literal for int() with base 10: 'tool_use_failed'")
+
+        async def gen():
+            yield _chunk(content="recovered")
+        return gen()
+
+    async def no_sleep(_seconds):
+        return None
+
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=True), \
+         patch.object(litellm, "acompletion", flaky_acompletion), \
+         patch("apsara_cli.engine.llm.asyncio.sleep", no_sleep):
+        events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))
+
+    assert attempts["n"] == 2
+    done = next(e for e in events if e["type"] == "stream_done")
+    assert done["content"] == "recovered"
+
+
+def test_persistent_malformed_tool_call_gives_an_actionable_error():
+    async def always_fails(**kwargs):
+        raise ValueError("invalid literal for int() with base 10: 'tool_use_failed'")
+
+    async def no_sleep(_seconds):
+        return None
+
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=True), \
+         patch.object(litellm, "acompletion", always_fails), \
+         patch("apsara_cli.engine.llm.asyncio.sleep", no_sleep):
+        events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))
+
+    error = next(e for e in events if e["type"] == "stream_error")
+    assert "int()" not in error["error"], "must not leak the raw parser error"
+    assert "tool call" in error["error"]
+    assert "stronger model" in error["error"]

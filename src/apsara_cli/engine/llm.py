@@ -62,6 +62,17 @@ async def summarize_messages(messages: list[dict], model: str = "groq/llama-3.3-
         return f"[Summary failed: {e}]"
 
 
+def _is_malformed_tool_call(exc: Exception) -> bool:
+    """Detect a provider rejecting the model's tool call.
+
+    Groq returns `"code": "tool_use_failed"`; the OpenAI-compatible error parser
+    expects that field to be numeric and raises `ValueError: invalid literal for
+    int()` instead of a useful error, so match on both shapes.
+    """
+    text = str(exc)
+    return "tool_use_failed" in text or "failed_generation" in text
+
+
 async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> tuple[Any, Any]:
     """
     Send the conversation to LLM with configured tools via LiteLLM.
@@ -174,5 +185,24 @@ async def call_llm_stream(
             return
 
         except Exception as e:
+            if _is_malformed_tool_call(e):
+                # The model emitted a tool call the provider rejected. Groq
+                # reports this as code "tool_use_failed", which the SDK's error
+                # parser then chokes on, so the surfaced exception is a bare
+                # ValueError about int() — useless on its own. It's usually
+                # transient, so retry once before giving up.
+                if attempt < len(_RETRY_DELAYS):
+                    yield {"type": "retry_notice", "delay": 1, "attempt": attempt + 1}
+                    await asyncio.sleep(1)
+                    continue
+                yield {
+                    "type": "stream_error",
+                    "error": (
+                        "The model produced a tool call the provider rejected. This "
+                        "usually means the model struggled with the tool schemas — try "
+                        "a stronger model, or reduce the number of connected MCP servers."
+                    ),
+                }
+                return
             yield {"type": "stream_error", "error": str(e)}
             return

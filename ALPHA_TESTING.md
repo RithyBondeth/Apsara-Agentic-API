@@ -49,7 +49,7 @@ Optional but recommended:
 1. Clone or open the project:
 
 ```bash
-cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-cli"
+cd Apsara-Agentic-API/apsara-agentic-cli
 ```
 
 1. Create and activate a virtual environment:
@@ -240,8 +240,8 @@ I’m testing an early version of Apsara by Bondeth, a local coding assistant CL
 
 ## 11. Related Docs
 
-- Alpha release notes: [RELEASE_NOTES_ALPHA.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RELEASE_NOTES_ALPHA.md)
-- Tester quickstart: [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/TESTER_QUICKSTART.md)
-- Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RUN_PROJECT.md)
-- Main project README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
-- CLI entrypoint: [src/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/cli.py)
+- Alpha release notes: [RELEASE_NOTES_ALPHA.md](RELEASE_NOTES_ALPHA.md)
+- Tester quickstart: [TESTER_QUICKSTART.md](TESTER_QUICKSTART.md)
+- Run guide: [RUN_PROJECT.md](RUN_PROJECT.md)
+- Main project README: [README.md](README.md)
+- CLI entrypoint: `src/apsara_cli/cli/parser.py`

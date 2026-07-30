@@ -1,7 +1,25 @@
 import json
+import os
 from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream
-from apsara_cli.engine.tools import execute_tool
+from apsara_cli.engine.tools import execute_tool_async, get_mcp_manager
+
+DEFAULT_MAX_STEPS = 25
+# One invocation repeated this many times in a turn means the agent is cycling.
+MAX_IDENTICAL_INVOCATIONS = 3
+
+
+def _max_steps() -> int:
+    """Tool-call budget for a single turn, overridable via APSARA_MAX_STEPS."""
+    raw = os.environ.get("APSARA_MAX_STEPS")
+    if not raw:
+        return DEFAULT_MAX_STEPS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_STEPS
+    return max(1, min(value, 100))
+
 
 SYSTEM_PROMPT = """You are an expert autonomous software engineer named Apsara Agent.
 You are equipped with workspace-scoped tools to read files, write files, search the codebase, inspect project structure, and replace file lines. If a command tool is available, use only simple non-interactive commands that respect the workspace boundary.
@@ -29,12 +47,28 @@ async def run_agent_stream(
     except Exception:
         pass
 
+    # Tools from MCP servers are namespaced mcp__<server>__<tool>; tell the model
+    # what it has so it doesn't fall back to guessing with the built-ins.
+    manager = get_mcp_manager()
+    if manager is not None and manager.tool_names():
+        servers = manager.connected_servers()
+        full_system_prompt += (
+            "\n\nYou also have tools from connected MCP servers "
+            f"({', '.join(servers)}). They are named mcp__<server>__<tool> and "
+            "may reach outside the workspace — prefer them when the task needs "
+            "data or actions the built-in workspace tools cannot provide."
+        )
+
     messages = [{"role": "system", "content": full_system_prompt}] + conversation_history
 
-    max_steps = 15
+    max_steps = _max_steps()
     consecutive_errors = 0
     consecutive_repeats = 0
     last_tool_invocation = None
+    # Counts every invocation in the turn, not just consecutive ones: an agent
+    # that alternates A,B,A,B is just as stuck as one repeating A,A,A.
+    invocation_counts: Dict[tuple, int] = {}
+    completed = False
 
     for step in range(max_steps):
 
@@ -93,6 +127,9 @@ async def run_agent_stream(
                 else:
                     consecutive_repeats = 0
                 last_tool_invocation = current_invocation
+                invocation_counts[current_invocation] = (
+                    invocation_counts.get(current_invocation, 0) + 1
+                )
 
                 try:
                     arguments = json.loads(arguments_raw)
@@ -106,7 +143,7 @@ async def run_agent_stream(
                     "tool_call_id": tool_call["id"],
                 })
 
-                tool_result_str = execute_tool(tool_name, arguments)
+                tool_result_str = await execute_tool_async(tool_name, arguments)
 
                 if "Error:" in tool_result_str:
                     consecutive_errors += 1
@@ -127,11 +164,15 @@ async def run_agent_stream(
                     "result": tool_result_str,
                 })
 
-            if consecutive_errors >= 3 or consecutive_repeats >= 2:
+            cycling = any(
+                count >= MAX_IDENTICAL_INVOCATIONS for count in invocation_counts.values()
+            )
+            if consecutive_errors >= 3 or consecutive_repeats >= 2 or cycling:
                 yield json.dumps({
                     "type": "blocked",
                     "message": "I am stuck in a loop. I keep hitting errors or repeating actions. Please review my outputs and provide new instructions."
                 })
+                completed = True
                 break
 
         else:
@@ -140,4 +181,17 @@ async def run_agent_stream(
                 yield json.dumps({"type": "response_end", "content": full_content})
             else:
                 yield json.dumps({"type": "final_answer", "content": full_content})
+            completed = True
             break
+
+    if not completed:
+        # The step budget ran out mid-task. Say so — otherwise the turn just
+        # stops and an unfinished job is indistinguishable from a finished one.
+        yield json.dumps({
+            "type": "blocked",
+            "message": (
+                f"I used all {max_steps} steps for this turn without finishing. "
+                "The work so far is above. Tell me to continue, narrow the task, "
+                "or raise the budget with APSARA_MAX_STEPS."
+            ),
+        })

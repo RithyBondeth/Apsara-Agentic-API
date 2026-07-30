@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from getpass import getpass
 import json
 import os
@@ -35,6 +36,71 @@ from apsara_cli.engine.models import (
     resolve_model_id,
 )
 from apsara_cli.cli.model_picker import pick_model
+
+
+@asynccontextmanager
+async def mcp_session(config: object, options: "ResolvedOptions", ui: "ConsoleUI"):
+    """Connect the configured MCP servers for the life of a session.
+
+    Servers are launched once per session rather than per turn, and each one is
+    gated by the same workspace-trust prompt as local plugins: a config file
+    that ships with a cloned repo must not silently start subprocesses.
+    """
+    from apsara_cli.engine.mcp_client import McpManager
+    from apsara_cli.engine.tools import mcp_manager_context, request_workspace_trust
+    from apsara_cli.config import trust as trust_store
+
+    for message in getattr(config, "mcp_errors", []) or []:
+        ui.warning(message)
+
+    configured = list(getattr(config, "mcp_servers", []) or [])
+    if not configured:
+        yield None
+        return
+
+    approved = []
+    with agent_runtime_context(
+        workspace_root=options.workspace_root,
+        trust_callback=ui.confirm_action,
+    ):
+        for server in configured:
+            if not server.enabled:
+                continue
+            digest = trust_store.digest_text(server.trust_digest_source())
+            if request_workspace_trust(
+                f"mcp:{server.name}",
+                digest,
+                {
+                    "kind": "mcp",
+                    "server": server.name,
+                    "display_path": server.describe(),
+                    "command_preview": server.describe(),
+                },
+            ):
+                approved.append(server)
+            else:
+                ui.warning(f"Skipped untrusted MCP server '{server.name}'.")
+
+    if not approved:
+        yield None
+        return
+
+    manager = McpManager(approved)
+    try:
+        statuses = await manager.connect()
+        for status in statuses:
+            if status.connected:
+                ui.success(
+                    f"MCP '{status.name}' connected — {status.tool_count} tool"
+                    f"{'s' if status.tool_count != 1 else ''}."
+                )
+            else:
+                ui.warning(f"MCP '{status.name}' unavailable: {status.error}")
+
+        with mcp_manager_context(manager):
+            yield manager
+    finally:
+        await manager.aclose()
 
 
 def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions", ui: "ConsoleUI") -> str:
@@ -498,6 +564,7 @@ def handle_chat_command(
             max_file_size_bytes=options.max_file_size,
             dry_run=options.dry_run,
             read_only=options.read_only,
+            trust_callback=ui.confirm_action,
         ):
             tools = get_agent_tools()
         ui.print_line()
@@ -897,6 +964,9 @@ async def execute_instruction(
         confirmation_callback=None if options.auto_approve else ui.confirm_action,
         dry_run=options.dry_run,
         read_only=options.read_only,
+        # Always ask, even under --auto-approve: that flag waives confirmation
+        # for file writes, not for executing code shipped with the project.
+        trust_callback=ui.confirm_action,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
         if trim_result.dropped_turns:
@@ -965,13 +1035,14 @@ async def run_once(args: object, config: object) -> int:
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
 
-    updated_history, latest_usage = await execute_instruction(
-        instruction=args.instruction,
-        model=options.model,
-        history=history,
-        options=options,
-        ui=ui,
-    )
+    async with mcp_session(config, options, ui):
+        updated_history, latest_usage = await execute_instruction(
+            instruction=args.instruction,
+            model=options.model,
+            history=history,
+            options=options,
+            ui=ui,
+        )
 
     save_if_needed(updated_history, options.model, options, ui)
     if latest_usage and latest_usage.get("total_tokens") is not None:
@@ -1095,82 +1166,85 @@ async def chat_loop(args: object, config: object) -> int:
 
     _BOX_BORDER = "38;2;90;108;180"  # soft indigo, matches the TUI input box
 
-    while True:
-        # OpenCode-style typing box: a rounded top border, a padding row, and
-        # a '│▌' gutter are part of the prompt itself; the bottom toolbar
-        # draws the box's lower edge carrying the 'Build · Model' mode line.
-        _w = max(40, min(terminal_width() - 2, 110))
-        _mode, _model_name, _provider = mode_line_parts(options, current_model)
-        _mode_plain = f"{_mode} · {_model_name}" + (f" {_provider}" if _provider else "")
-        _fill = max(_w - len(_mode_plain) - 6, 1)
-        _toolbar = (
-            ui.style("╰─ ", _BOX_BORDER)
-            + build_mode_line(ui, options, current_model)
-            + " "
-            + ui.style("─" * _fill + "╯", _BOX_BORDER)
-        )
-        _prompt = (
-            "\n"
-            + ui.style("╭" + "─" * (_w - 2) + "╮", _BOX_BORDER)
-            + "\n"
-            + ui.style("│", _BOX_BORDER)
-            + "\n"
-            + ui.style("│", _BOX_BORDER)
-            + ui.style("▌", ui.theme.accent)
-            + " "
-        )
-        try:
-            instruction = (
-                await get_input_async(_prompt, options.workspace_root, toolbar=_toolbar)
-            ).strip()
-        except KeyboardInterrupt:
-            ui.print_line()
-            ui.info("Ctrl+C pressed. Type /exit to quit.")
-            continue
-        except EOFError:
-            ui.print_line()
-            break
-
-        if not instruction:
-            continue
-        if instruction.startswith("/"):
-            should_continue, current_model = handle_chat_command(
-                instruction, history, current_model, options, config, ui
+    # Servers stay connected for the whole session rather than being
+    # respawned each turn.
+    async with mcp_session(config, options, ui):
+        while True:
+            # OpenCode-style typing box: a rounded top border, a padding row, and
+            # a '│▌' gutter are part of the prompt itself; the bottom toolbar
+            # draws the box's lower edge carrying the 'Build · Model' mode line.
+            _w = max(40, min(terminal_width() - 2, 110))
+            _mode, _model_name, _provider = mode_line_parts(options, current_model)
+            _mode_plain = f"{_mode} · {_model_name}" + (f" {_provider}" if _provider else "")
+            _fill = max(_w - len(_mode_plain) - 6, 1)
+            _toolbar = (
+                ui.style("╰─ ", _BOX_BORDER)
+                + build_mode_line(ui, options, current_model)
+                + " "
+                + ui.style("─" * _fill + "╯", _BOX_BORDER)
             )
-            if not should_continue:
+            _prompt = (
+                "\n"
+                + ui.style("╭" + "─" * (_w - 2) + "╮", _BOX_BORDER)
+                + "\n"
+                + ui.style("│", _BOX_BORDER)
+                + "\n"
+                + ui.style("│", _BOX_BORDER)
+                + ui.style("▌", ui.theme.accent)
+                + " "
+            )
+            try:
+                instruction = (
+                    await get_input_async(_prompt, options.workspace_root, toolbar=_toolbar)
+                ).strip()
+            except KeyboardInterrupt:
+                ui.print_line()
+                ui.info("Ctrl+C pressed. Type /exit to quit.")
+                continue
+            except EOFError:
+                ui.print_line()
                 break
-            continue
 
-        turn_count += 1
-
-        # Proactive token budget warning before executing
-        try:
-            from apsara_cli.engine.executor import SYSTEM_PROMPT
-            from apsara_cli.engine.llm import estimate_request_tokens
-            _base = [{"role": "system", "content": SYSTEM_PROMPT}]
-            _curr_tokens = estimate_request_tokens(_base + history, model=current_model)
-            _warn_threshold = int(SAFE_INPUT_TOKEN_BUDGET * 0.75)
-            if _curr_tokens >= _warn_threshold:
-                _pct = int(_curr_tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
-                ui.warning(
-                    f"Context at {_pct}% capacity ({_curr_tokens:,} / {SAFE_INPUT_TOKEN_BUDGET:,} tokens). "
-                    "Oldest turns may be trimmed — use /clear to reset."
+            if not instruction:
+                continue
+            if instruction.startswith("/"):
+                should_continue, current_model = handle_chat_command(
+                    instruction, history, current_model, options, config, ui
                 )
-        except Exception:
-            pass
+                if not should_continue:
+                    break
+                continue
 
-        ui.print_turn_separator(turn_count)
+            turn_count += 1
 
-        history, latest_usage = await execute_instruction(
-            instruction=instruction,
-            model=current_model,
-            history=history,
-            options=options,
-            ui=ui,
-        )
+            # Proactive token budget warning before executing
+            try:
+                from apsara_cli.engine.executor import SYSTEM_PROMPT
+                from apsara_cli.engine.llm import estimate_request_tokens
+                _base = [{"role": "system", "content": SYSTEM_PROMPT}]
+                _curr_tokens = estimate_request_tokens(_base + history, model=current_model)
+                _warn_threshold = int(SAFE_INPUT_TOKEN_BUDGET * 0.75)
+                if _curr_tokens >= _warn_threshold:
+                    _pct = int(_curr_tokens / SAFE_INPUT_TOKEN_BUDGET * 100)
+                    ui.warning(
+                        f"Context at {_pct}% capacity ({_curr_tokens:,} / {SAFE_INPUT_TOKEN_BUDGET:,} tokens). "
+                        "Oldest turns may be trimmed — use /clear to reset."
+                    )
+            except Exception:
+                pass
 
-        save_if_needed(history, current_model, options, ui)
-        if latest_usage and latest_usage.get("total_tokens") is not None:
-            ui.usage(latest_usage)
+            ui.print_turn_separator(turn_count)
 
-    return 0
+            history, latest_usage = await execute_instruction(
+                instruction=instruction,
+                model=current_model,
+                history=history,
+                options=options,
+                ui=ui,
+            )
+
+            save_if_needed(history, current_model, options, ui)
+            if latest_usage and latest_usage.get("total_tokens") is not None:
+                ui.usage(latest_usage)
+
+        return 0

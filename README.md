@@ -1,92 +1,159 @@
-# Apsara Agentic API
+# Apsara Agentic
 
-A FastAPI backend for running project-scoped agent conversations with PostgreSQL-backed conversation history and usage tracking.
+A local, bring-your-own-key coding agent for your terminal. Apsara reads and
+edits code in a workspace you choose, runs allowlisted commands, and connects to
+external tools over MCP — using your own API key, with no Apsara server in the
+middle.
 
-## Current Features
+> **Alpha.** The CLI is usable day to day, but interfaces may still change
+> between releases.
 
-- Health check endpoint with database validation
-- Agent execution endpoint with Server-Sent Events streaming
-- Conversation and message persistence in PostgreSQL
-- Local CLI for workspace-scoped coding assistance and saved sessions
-- **Enhanced Tooling**: `git_status`, `git_diff`, and `list_symbols` (Python) for better situational awareness.
-- **Context Management**: `/add <path>` to pin files and **Automatic History Summarization** for long conversations.
-- **Advanced UX**: Syntax highlighting for code blocks and **Side-by-Side Diff Previews** for code edits.
-- **Safety & Governance**: `--dry-run` and `--read-only` modes, plus a session **Token/Cost Tracker**.
-- **Extensibility**: Support for **Local Tool Plugins** in `.apsara/tools/`.
-- **Production Readiness**: Session logging in `.apsara/logs/` and `/bug` command for diagnostics.
+## Requirements
 
-## Setup
+- Python 3.10 or newer
+- `git` on your PATH (for the `git_status` / `git_diff` tools)
+- An API key from a model provider, or a local Ollama install
 
-For a step-by-step local run guide, see [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RUN_PROJECT.md). For private tester handoff and launch prep, see [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/ALPHA_TESTING.md). For the shortest possible tester setup, see [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/TESTER_QUICKSTART.md). For a shareable alpha summary, see [RELEASE_NOTES_ALPHA.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/RELEASE_NOTES_ALPHA.md).
+## Install
 
-1. Install dependencies:
+```bash
+pipx install apsara-agentic
+```
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+Or, if you'd rather install through npm (it wraps the same Python package):
 
-   To install the local CLI as an `apsara` command in your active Python environment:
+```bash
+npm install -g apsara-cli
+```
 
-   ```bash
-   pip install -e .
-   ```
+## Quickstart
 
-2. Configure `.env`:
+```bash
+apsara login
+```
 
-   ```env
-   PROJECT_NAME=Apsara Agentic API
-   API_V1_STR=/api/v1
-   DEBUG=true
-   SQLALCHEMY_DATABASE_URI=postgresql://user:password@localhost:5432/dbname
-   AGENT_WORKSPACE_ROOT=.
-   AGENT_ENABLE_BASH_TOOL=false
-   AGENT_ALLOWED_COMMANDS=pwd,ls,find,rg,cat,sed,head,tail,wc
-   AGENT_MAX_FILE_SIZE_BYTES=1000000
-   ```
-
-3. Run the application:
-
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-
-4. Open the API docs:
-
-   - Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
-   - ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
-## Authentication
-
-Protected agent routes require an `X-User-Id` header containing the UUID of an existing user in the database.
-
-## Local CLI
-
-The project includes a local CLI that runs the agent directly against a workspace on your machine.
-
-Project-first flow:
+Pick a provider (OpenAI, Anthropic, Google, Groq, Mistral, DeepSeek, or local
+Ollama) and paste your own API key. It's verified immediately and stored in
+`~/.apsara/credentials.json` with owner-only permissions. Nothing is sent to an
+Apsara server — there isn't one.
 
 ```bash
 cd /path/to/your/project
 apsara init
 ```
 
-That command initializes a local `.apsara/config.toml`, updates `.gitignore` with Apsara local artifacts, and opens chat in the current project by default. After that, you can usually just run:
+That creates `.apsara/config.toml`, adds Apsara's local artifacts to
+`.gitignore`, and opens chat in the current project. After that:
 
 ```bash
 apsara chat
 ```
 
-Optional global config file:
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `apsara chat` | Interactive session in the current workspace |
+| `apsara run "<instruction>"` | One-shot instruction, then exit |
+| `apsara init` | Set up `.apsara/` in this project and start chatting |
+| `apsara sessions` | List saved sessions for a workspace |
+| `apsara mcp` | List configured MCP servers and verify they connect |
+| `apsara doctor` | Check environment, config, tools, and credentials |
+| `apsara login` / `logout` | Manage stored provider keys |
+| `apsara --version` | Print the installed version |
+
+Run `apsara <command> --help` for the full flag list.
+
+## Tools
+
+The agent works through a workspace-scoped tool sandbox. Every path is resolved
+inside the workspace root; attempts to escape it fail.
+
+**Reading** — `read_file`, `read_file_lines`, `glob_search`, `search_files`,
+`list_project_structure`, `list_symbols` (Python), `git_status`, `git_diff`
+
+**Writing** — `edit_file`, `replace_file_lines`, `write_to_file`,
+`create_directory`, `move_file`, `delete_file`
+
+**Commands** — `run_bash_command`, off by default; see below.
+
+`edit_file` is the primary editing tool: it replaces an exact snippet of text
+and refuses ambiguous or missing matches, so an edit can't silently land in the
+wrong place after earlier changes shift the file. `replace_file_lines` still
+exists for the rare case with no unique text to match on.
+
+Every write shows a diff preview and asks for approval. In the prompt, `Enter`
+approves, `n` rejects, `a` approves the rest of the session, `v` shows the full
+patch, and `e` opens it in `$EDITOR`.
+
+### Command execution
+
+The bash tool is disabled by default. Enable it with an explicit allowlist:
+
+```bash
+apsara chat --allow-bash --allowed-commands pytest,npm,git,rg
+```
+
+Commands are parsed and checked against the allowlist — including every stage of
+a pipe or `&&` chain — and redirections that would write outside the workspace
+are rejected.
+
+## MCP servers
+
+Apsara is an MCP client, so it can use any Model Context Protocol server:
+filesystem, git, GitHub, databases, browser automation, or your own internal
+tools. Declare servers in `.apsara/config.toml`:
 
 ```toml
-# ~/.apsara/config.toml
+# Launched as a subprocess over stdio
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+# Reached over streamable HTTP
+[mcp_servers.internal]
+url = "https://mcp.example.com/v1"
+headers = { Authorization = "Bearer ${MCP_TOKEN}" }
+timeout = 30
+```
+
+`$VAR` and `${VAR}` are expanded from the environment, so tokens stay out of the
+config file. Set `enabled = false` to keep a server defined but switched off.
+
+Their tools appear to the agent as `mcp__<server>__<tool>` and cannot collide
+with the built-ins. Servers connect once per session, and a server that fails to
+start is reported and skipped rather than taking the session down.
+
+Check your setup any time:
+
+```bash
+apsara mcp
+```
+
+## Trust
+
+Two things can arrive with a repository rather than from you: local plugins in
+`.apsara/tools/*.py` and MCP server definitions in `.apsara/config.toml`. Both
+execute code, so Apsara asks before running either one, showing what it's about
+to execute. Approvals are recorded per project in `~/.apsara/trust.json`, keyed
+by a digest of the code — if an approved file changes, you're asked again.
+
+`--auto-approve` does **not** cover this. That flag waives confirmation for file
+writes; it is not consent to execute a project's code.
+
+## Configuration
+
+Settings resolve in this order: CLI flags → project `.apsara/config.toml` →
+global `~/.apsara/config.toml` → `.env`.
+
+```toml
 [defaults]
-workspace = "/absolute/path/to/your/project"
+workspace = "."
 model = "gpt-4o"
 session = "default"
 stateless = false
 allow_bash = false
-allowed_commands = ["pwd", "rg", "pytest"]
+allowed_commands = ["pytest", "rg"]
 max_file_size = 1000000
 auto_approve = false
 color = true
@@ -94,88 +161,64 @@ color = true
 [ui]
 welcome_title = "Welcome to Apsara Agentic"
 welcome_subtitle = "A focused terminal coding assistant"
-powered_by = "Powered by Apsara\nDeveloped by Bondeth"
 welcome_animation = true
-welcome_frame_delay_ms = 22
-```
-
-Run one instruction:
-
-```bash
-apsara run "Summarize this codebase" --workspace /path/to/project
-```
-
-Open an interactive session:
-
-```bash
-apsara chat --workspace /path/to/project --session main
-```
-
-Initialize the current project and open chat immediately:
-
-```bash
-cd /path/to/project
-apsara init
-```
-
-List saved sessions for a workspace:
-
-```bash
-apsara sessions --workspace /path/to/project
-```
-
-Run an environment readiness check:
-
-```bash
-apsara doctor --workspace /path/to/project --model gpt-4o
-```
-
-If you want the doctor command to attempt a real model call after the offline checks pass:
-
-```bash
-apsara doctor --workspace /path/to/project --model gpt-4o --live
 ```
 
 Useful flags:
 
-- `--config /path/to/config.toml` to override the default global config path
-- `--allow-bash --allowed-commands pwd,rg,pytest` to opt into local non-interactive command execution
-- `--auto-approve` to skip confirmation prompts for writes and commands
-- `--no-color` to disable colored terminal output
+- `--workspace <path>` — the directory the agent may access
+- `--model <name>` — any model LiteLLM can route to
+- `--read-only` — disable every destructive tool
+- `--dry-run` — preview changes without touching disk
+- `--auto-approve` — skip write confirmations
+- `--stateless` — don't load or save session history
+- `--config <path>` — use a specific config file
 
-By default, the CLI saves session history under `.apsara-cli/sessions/` inside the workspace. Use `--stateless` to disable that. In chat mode, slash commands like `/help`, `/details`, `/history`, `/tools`, `/model`, `/session`, and `/save` are available. Internal planning steps and tool chatter are hidden from the main conversation by default so the final response stays clean; use `/details` to inspect the latest hidden activity when you want it. File writes, line replacements, and local commands ask for confirmation unless you explicitly use `--auto-approve`; in the interactive approval flow, `Enter` approves, `n` rejects, and `a` approves the rest of the session. For code edits, Apsara shows a diff preview before approval, `v` opens a fuller patch preview in the terminal, and `e` opens the proposed patch in your `$EDITOR` or `$VISUAL`. The CLI also trims older conversation turns automatically when a request gets too large, while keeping the full session history on disk. `apsara init` creates a project-local `.apsara/config.toml` and opens chat in the current folder by default. The `doctor` command checks Python support, config loading, workspace access, session storage writability, tool availability, likely credential env vars for the selected model, and optionally a real live model probe.
+## Sessions
 
-The CLI automatically loads `.env` files from the workspace root and the current working directory before it runs. Explicitly exported shell variables still take precedence.
+Conversations are saved as JSON under `.apsara-cli/sessions/` in the workspace —
+local files, no database. Long conversations are summarized and trimmed
+automatically to stay within the model's context budget, while the full history
+stays on disk.
 
-The chat welcome banner is customizable through the `[ui]` section of the config file. Animation is enabled by default for interactive terminals and automatically turns off in CI or non-interactive sessions.
+In chat, slash commands include `/help`, `/details`, `/history`, `/tools`,
+`/model`, `/session`, `/add <path>`, `/save`, and `/bug`.
 
-## API Surface
+## Extending with local plugins
 
-- `GET /`
-- `GET /api/v1/health`
-- `POST /api/v1/agent/{conversation_id}/run`
+Drop a Python file in `.apsara/tools/` that exports `METADATA` and `run()`:
 
-## Project Structure
+```python
+METADATA = {
+    "name": "ticket_lookup",
+    "description": "Fetch a ticket summary by id.",
+    "parameters": {
+        "type": "object",
+        "properties": {"ticket_id": {"type": "string"}},
+        "required": ["ticket_id"],
+    },
+}
 
-```text
-src/
-├── api/
-│   └── v1/
-│       ├── api.py
-│       └── endpoints/
-│           ├── agent.py
-│           └── health.py
-├── core/
-│   └── config.py
-├── db/
-│   ├── base.py
-│   ├── base_class.py
-│   └── session.py
-├── models/
-├── schemas/
-└── services/
-    └── agent/
-alembic/
-.env
-requirements.txt
+def run(ticket_id: str) -> str:
+    return f"Ticket {ticket_id}: ..."
 ```
+
+You'll be asked to approve it the first time it loads. For anything you'd want
+to share across projects or teams, prefer an MCP server.
+
+## Development
+
+```bash
+git clone https://github.com/RithyBondeth/Apsara-Agentic-API.git
+cd Apsara-Agentic-API/apsara-agentic-cli
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+Release steps are in [RELEASING.md](RELEASING.md). Local run notes are in
+[RUN_PROJECT.md](RUN_PROJECT.md), and tester setup is in
+[TESTER_QUICKSTART.md](TESTER_QUICKSTART.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

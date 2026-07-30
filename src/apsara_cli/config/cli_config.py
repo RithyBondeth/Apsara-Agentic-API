@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10+
+except ModuleNotFoundError:  # pragma: no cover - tomllib is stdlib only on 3.11+
     import tomli as tomllib
 
 
@@ -81,7 +82,9 @@ class CliConfig:
     exists: bool
     defaults: CliDefaults
     ui: CliUi
-    theme: CliTheme = CliTheme()
+    theme: CliTheme = field(default_factory=CliTheme)
+    mcp_servers: list = field(default_factory=list)
+    mcp_errors: list = field(default_factory=list)
 
 
 def _optional_str(value: Any, field_name: str) -> Optional[str]:
@@ -116,6 +119,73 @@ def _optional_string_list(value: Any, field_name: str) -> Optional[list[str]]:
             f"Config field '{field_name}' must be a list of strings."
         )
     return value
+
+
+def _expand(value: str) -> str:
+    """Expand $VAR / ${VAR} so secrets can live in the environment, not the file."""
+    return os.path.expandvars(value)
+
+
+def _optional_string_map(value: Any, field_name: str) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise ValueError(f"Config field '{field_name}' must be a table of string values.")
+    return {k: _expand(v) for k, v in value.items()}
+
+
+def parse_mcp_servers(raw: Any) -> tuple[list, list[str]]:
+    """Parse the `[mcp_servers]` table into McpServerConfig objects.
+
+    Returns (servers, errors). A malformed entry is reported and skipped rather
+    than raising, so one bad server does not make the whole config unloadable.
+    """
+    from apsara_cli.engine.mcp_client import McpServerConfig
+
+    servers: list = []
+    errors: list[str] = []
+
+    if raw is None:
+        return servers, errors
+    if not isinstance(raw, dict):
+        errors.append("Config section 'mcp_servers' must be a table.")
+        return servers, errors
+
+    for name, entry in raw.items():
+        label = f"mcp_servers.{name}"
+        if not isinstance(entry, dict):
+            errors.append(f"Config section '{label}' must be a table.")
+            continue
+        try:
+            args_raw = _optional_string_list(entry.get("args"), f"{label}.args") or []
+            timeout = entry.get("timeout")
+            if timeout is not None and not isinstance(timeout, (int, float)):
+                raise ValueError(f"Config field '{label}.timeout' must be a number.")
+
+            command = _optional_str(entry.get("command"), f"{label}.command")
+            url = _optional_str(entry.get("url"), f"{label}.url")
+            cwd = _optional_str(entry.get("cwd"), f"{label}.cwd")
+            enabled = _optional_bool(entry.get("enabled"), f"{label}.enabled")
+
+            servers.append(
+                McpServerConfig(
+                    name=name,
+                    command=_expand(command) if command else None,
+                    args=[_expand(arg) for arg in args_raw],
+                    env=_optional_string_map(entry.get("env"), f"{label}.env"),
+                    cwd=_expand(cwd) if cwd else None,
+                    url=_expand(url) if url else None,
+                    headers=_optional_string_map(entry.get("headers"), f"{label}.headers"),
+                    enabled=True if enabled is None else enabled,
+                    timeout=float(timeout) if timeout is not None else 30.0,
+                )
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    return servers, errors
 
 
 def project_config_path(base_dir: Path) -> Path:
@@ -251,4 +321,14 @@ def load_cli_config(
         content_width=_optional_int(theme_raw.get("content_width"), "ui.theme.content_width"),
     )
 
-    return CliConfig(path=path, exists=True, defaults=defaults, ui=ui, theme=theme)
+    mcp_servers, mcp_errors = parse_mcp_servers(parsed.get("mcp_servers"))
+
+    return CliConfig(
+        path=path,
+        exists=True,
+        defaults=defaults,
+        ui=ui,
+        theme=theme,
+        mcp_servers=mcp_servers,
+        mcp_errors=mcp_errors,
+    )

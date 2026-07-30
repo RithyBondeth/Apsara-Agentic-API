@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Set
 
+from apsara_cli.config import trust
 from apsara_cli.config.defaults import settings
 
 
@@ -19,6 +20,10 @@ class ToolSecurityError(Exception):
 
 
 ConfirmationCallback = Callable[[str, Dict[str, Any]], bool]
+# Asked before executing code that came from the workspace. Deliberately
+# separate from ConfirmationCallback: --auto-approve means "don't ask before
+# writing files", which is much weaker consent than "run this repo's code".
+TrustCallback = Callable[[str, Dict[str, Any]], bool]
 
 _workspace_root_override: ContextVar[Optional[Path]] = ContextVar(
     "workspace_root_override", default=None
@@ -41,6 +46,32 @@ _dry_run_override: ContextVar[Optional[bool]] = ContextVar(
 _read_only_override: ContextVar[Optional[bool]] = ContextVar(
     "read_only_override", default=None
 )
+_trust_callback_override: ContextVar[Optional[TrustCallback]] = ContextVar(
+    "trust_callback_override", default=None
+)
+# Set once per session (not per turn) so MCP servers are spawned once and stay
+# connected. ContextVars propagate down the call stack, so the per-turn runtime
+# context does not need to thread it through.
+_mcp_manager_override: ContextVar[Optional[Any]] = ContextVar(
+    "mcp_manager_override", default=None
+)
+
+
+@contextmanager
+def mcp_manager_context(manager: Optional[Any]) -> Iterator[None]:
+    """Make an McpManager visible to tool discovery and dispatch."""
+    if manager is None:
+        yield
+        return
+    token = _mcp_manager_override.set(manager)
+    try:
+        yield
+    finally:
+        _mcp_manager_override.reset(token)
+
+
+def get_mcp_manager() -> Optional[Any]:
+    return _mcp_manager_override.get()
 MAX_CONFIRMATION_FILE_BYTES = 200_000
 MAX_CONFIRMATION_DIFF_PREVIEW_LINES = 80
 MAX_CONFIRMATION_DIFF_FULL_LINES = 240
@@ -55,6 +86,7 @@ def agent_runtime_context(
     confirmation_callback: Optional[ConfirmationCallback] = None,
     dry_run: Optional[bool] = None,
     read_only: Optional[bool] = None,
+    trust_callback: Optional[TrustCallback] = None,
 ) -> Iterator[None]:
     workspace_token = None
     bash_token = None
@@ -63,6 +95,7 @@ def agent_runtime_context(
     confirmation_token = None
     dry_run_token = None
     read_only_token = None
+    trust_token = None
 
     try:
         if workspace_root is not None:
@@ -81,8 +114,12 @@ def agent_runtime_context(
             dry_run_token = _dry_run_override.set(dry_run)
         if read_only is not None:
             read_only_token = _read_only_override.set(read_only)
+        if trust_callback is not None:
+            trust_token = _trust_callback_override.set(trust_callback)
         yield
     finally:
+        if trust_token is not None:
+            _trust_callback_override.reset(trust_token)
         if read_only_token is not None:
             _read_only_override.reset(read_only_token)
         if dry_run_token is not None:
@@ -134,35 +171,115 @@ def _read_only() -> bool:
     return False
 
 
+def request_workspace_trust(
+    key: str,
+    digest: str,
+    payload: Dict[str, Any],
+) -> bool:
+    """Gate execution of workspace-supplied code behind a recorded approval.
+
+    Returns True only if this exact content was approved before, or the user
+    approves it now. With no trust callback installed there is no one to ask,
+    so the answer is no — silently running a cloned repo's code is the exact
+    failure this guards against.
+    """
+    workspace = _workspace_root()
+    if trust.is_trusted(workspace, key, digest):
+        return True
+
+    callback = _trust_callback_override.get()
+    if callback is None:
+        return False
+
+    if not callback("trust_workspace_code", {**payload, "key": key, "digest": digest}):
+        return False
+
+    trust.record_trust(workspace, key, digest)
+    return True
+
+
+# Loading a plugin executes it, and the registry is rebuilt on every LLM request
+# and every tool call — so cache by content and only re-exec when it changes.
+_plugin_cache: dict[str, tuple[str, list]] = {}
+
+
 def _load_local_plugins() -> list[dict[str, Any]]:
     """
     Load custom tools from .apsara/tools/*.py in the workspace.
     Returns a list of tuples (metadata_dict, execution_callable).
+
+    Each file must be approved by the user before it is executed; see
+    request_workspace_trust.
     """
-    plugins = []
-    tools_dir = _workspace_root() / ".apsara" / "tools"
+    plugins: list = []
+    workspace = _workspace_root()
+    tools_dir = workspace / ".apsara" / "tools"
     if not tools_dir.is_dir():
         return plugins
 
-    for py_file in tools_dir.glob("*.py"):
-        if py_file.name.startswith("__"):
+    candidates = sorted(
+        py_file
+        for py_file in tools_dir.glob("*.py")
+        if not py_file.name.startswith("__")
+    )
+    if not candidates:
+        return plugins
+
+    sources: list[tuple[Path, str, str]] = []
+    for py_file in candidates:
+        try:
+            source = py_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            print(f"Warning: Failed to read local plugin {py_file.name}: {exc}")
             continue
-        
+        sources.append((py_file, source, trust.digest_text(source)))
+
+    cache_key = str(workspace)
+    combined_digest = trust.digest_text(
+        "".join(f"{py_file.name}:{digest}" for py_file, _, digest in sources)
+    )
+    cached = _plugin_cache.get(cache_key)
+    if cached is not None and cached[0] == combined_digest:
+        return list(cached[1])
+
+    for py_file, source, digest in sources:
+        try:
+            relative = py_file.relative_to(workspace)
+        except ValueError:
+            relative = py_file
+
+        if not request_workspace_trust(
+            f"plugin:{relative}",
+            digest,
+            {
+                "kind": "plugin",
+                "display_path": str(relative),
+                "path": str(py_file),
+                "source_preview": source[:1200],
+                "line_count": source.count("\n") + 1,
+            },
+        ):
+            print(
+                f"Skipped untrusted local plugin {py_file.name}. "
+                "Run `apsara chat` in this project to review and approve it."
+            )
+            continue
+
         try:
             module_name = f"apsara_plugin_{py_file.stem}"
             spec = importlib.util.spec_from_file_location(module_name, py_file)
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                
+
                 metadata = getattr(module, "METADATA", None)
                 run_func = getattr(module, "run", None)
-                
+
                 if metadata and callable(run_func):
                     # Ensure name is set in metadata
                     if "name" not in metadata:
                         metadata["name"] = py_file.stem
-                    
+
                     # Wrap in tool definition format if only function part provided
                     if "type" not in metadata:
                         tool_def = {
@@ -171,12 +288,13 @@ def _load_local_plugins() -> list[dict[str, Any]]:
                         }
                     else:
                         tool_def = metadata
-                        
+
                     plugins.append((tool_def, run_func))
         except Exception as exc:
             # We don't want a single bad plugin to crash the whole agent
             print(f"Warning: Failed to load local plugin {py_file.name}: {exc}")
-            
+
+    _plugin_cache[cache_key] = (combined_digest, list(plugins))
     return plugins
 
 
@@ -783,6 +901,104 @@ def replace_file_lines(
         return _format_exception("Error replacing lines", exc)
 
 
+def edit_file(
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> str:
+    """Replace an exact snippet of text in a file.
+
+    Preferred over replace_file_lines: line numbers go stale as soon as an
+    earlier edit shifts them, and a stale range silently rewrites the wrong
+    region. Matching on the text itself fails loudly instead.
+    """
+    try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+
+        if not old_string:
+            return (
+                "Error editing file: old_string must not be empty. "
+                "Use write_to_file to create a file or replace its entire contents."
+            )
+        if old_string == new_string:
+            return "Error editing file: old_string and new_string are identical."
+
+        resolved_path = _resolve_path(path, must_exist=True)
+        if not resolved_path.is_file():
+            return f"Error editing file: '{path}' is not a file."
+
+        file_size = resolved_path.stat().st_size
+        if file_size > _max_file_size_bytes():
+            return (
+                "Error editing file: "
+                f"'{path}' exceeds {_max_file_size_bytes()} bytes."
+            )
+
+        original_content = resolved_path.read_text(encoding="utf-8")
+
+        occurrences = original_content.count(old_string)
+        if occurrences == 0:
+            return (
+                f"Error editing file: old_string was not found in '{path}'. "
+                "It must match the file byte-for-byte, including indentation and "
+                "trailing whitespace. Re-read the file and copy the text exactly."
+            )
+        if occurrences > 1 and not replace_all:
+            return (
+                f"Error editing file: old_string appears {occurrences} times in "
+                f"'{path}'. Include more surrounding context so the match is unique, "
+                "or pass replace_all=true to change every occurrence."
+            )
+
+        updated_content = original_content.replace(
+            old_string, new_string, -1 if replace_all else 1
+        )
+        display_path = _display_path(resolved_path)
+        diff_preview, diff_full, diff_editor, diff_truncated = _build_text_diff(
+            original_content,
+            updated_content,
+            display_path,
+        )
+
+        if not _confirm_action(
+            "edit_file",
+            {
+                "path": str(resolved_path),
+                "display_path": display_path,
+                "occurrences": occurrences,
+                "replace_all": replace_all,
+                "original_preview": old_string[:800],
+                "replacement_preview": new_string[:800],
+                "diff_preview": diff_preview,
+                "diff_full": diff_full,
+                "diff_editor": diff_editor,
+                "diff_truncated": diff_truncated,
+            },
+        ):
+            return (
+                f"Error editing file: update to '{resolved_path}' was not approved."
+            )
+
+        replaced = occurrences if replace_all else 1
+        plural = "s" if replaced != 1 else ""
+
+        if _dry_run():
+            return (
+                f"[Dry Run] Successfully replaced {replaced} occurrence{plural} "
+                f"in {resolved_path} (simulated)."
+            )
+
+        resolved_path.write_text(updated_content, encoding="utf-8")
+
+        return (
+            f"Successfully replaced {replaced} occurrence{plural} in {resolved_path}."
+        )
+    except Exception as exc:
+        return _format_exception("Error editing file", exc)
+
+
 def git_status() -> str:
     """Get the current git status of the workspace (short format)."""
     try:
@@ -1007,8 +1223,39 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             },
         ),
         _tool_definition(
+            "edit_file",
+            "Edit a file by replacing an exact snippet of text. This is the preferred "
+            "way to modify an existing file. old_string must match the file exactly, "
+            "including indentation and whitespace, and must be unique unless "
+            "replace_all is true — include a few surrounding lines to make it unique. "
+            "The edit fails loudly if the text is not found, so it is safe to use "
+            "after earlier edits have shifted the file.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": "The file path to update.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "Exact existing text to replace, copied verbatim from the file.",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Text to write in its place. Use an empty string to delete the snippet.",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence instead of requiring a unique match. Defaults to false.",
+                },
+            },
+            ["path", "old_string", "new_string"],
+        ),
+        _tool_definition(
             "replace_file_lines",
-            "Replace specific lines of code inside a file within the configured workspace.",
+            "Replace a range of lines in a file by line number. Prefer edit_file: line "
+            "numbers become stale as soon as an earlier edit shifts them. Use this only "
+            "when the target genuinely has no unique text to match on, and always "
+            "re-read the file with read_file_lines immediately beforehand.",
             {
                 "path": {
                     "type": "string",
@@ -1077,6 +1324,10 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             )
         )
 
+    manager = _mcp_manager_override.get()
+    if manager is not None:
+        tools.extend(manager.tool_definitions())
+
     return tools
 
 
@@ -1088,6 +1339,7 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "search_files": search_files,
         "glob_search": glob_search,
         "list_project_structure": list_project_structure,
+        "edit_file": edit_file,
         "replace_file_lines": replace_file_lines,
         "create_directory": create_directory,
         "delete_file": delete_file,
@@ -1106,6 +1358,17 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
     if _bash_enabled():
         registry["run_bash_command"] = run_bash_command
     return registry
+
+
+async def execute_tool_async(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Dispatch a tool call, routing MCP tools to their server.
+
+    Built-in tools stay synchronous; only remote calls need to await.
+    """
+    manager = _mcp_manager_override.get()
+    if manager is not None and manager.has_tool(tool_name):
+        return await manager.call(tool_name, arguments)
+    return execute_tool(tool_name, arguments)
 
 
 AGENT_TOOLS = get_agent_tools()

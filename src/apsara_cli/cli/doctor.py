@@ -24,13 +24,66 @@ def render_doctor_result(ui, result: "DoctorCheckResult") -> None:
         ui.error(f"[{result.name}] {result.detail}")
 
 
+def check_mcp_servers(options, config) -> list:
+    """Report configured MCP servers and whether they're approved to run.
+
+    Deliberately does not connect: doctor is a read-only diagnostic, and
+    connecting would launch subprocesses. `apsara mcp` does that on request.
+    """
+    from apsara_cli.config import trust as trust_store
+
+    results = []
+
+    for message in getattr(config, "mcp_errors", []) or []:
+        results.append(DoctorCheckResult("mcp-config", "fail", message))
+
+    servers = list(getattr(config, "mcp_servers", []) or [])
+    if not servers:
+        results.append(DoctorCheckResult(
+            "mcp", "warn",
+            "No MCP servers configured. Add an [mcp_servers.<name>] section to "
+            ".apsara/config.toml to connect external tools.",
+        ))
+        return results
+
+    trusted = trust_store.list_trusted(options.workspace_root)
+    for server in servers:
+        label = f"mcp:{server.name}"
+        if not server.enabled:
+            results.append(DoctorCheckResult(label, "warn", f"'{server.name}' is disabled in config."))
+            continue
+
+        problem = server.validate()
+        if problem:
+            results.append(DoctorCheckResult(label, "fail", problem))
+            continue
+
+        entry = trusted.get(f"mcp:{server.name}")
+        digest = trust_store.digest_text(server.trust_digest_source())
+        if isinstance(entry, dict) and entry.get("sha256") == digest:
+            results.append(DoctorCheckResult(
+                label, "pass", f"'{server.name}' ({server.transport}) is configured and approved."
+            ))
+        else:
+            results.append(DoctorCheckResult(
+                label, "warn",
+                f"'{server.name}' ({server.transport}) is configured but not yet approved. "
+                "Run `apsara mcp` to review and approve it.",
+            ))
+
+    return results
+
+
 def run_workspace_checks(options, config, args) -> list:
     results = []
 
-    if sys.version_info >= (3, 9):
+    if sys.version_info >= (3, 10):
         results.append(DoctorCheckResult("python", "pass", f"Python {sys.version.split()[0]} is supported."))
     else:
-        results.append(DoctorCheckResult("python", "fail", f"Python {sys.version.split()[0]} is below the required 3.9+."))
+        results.append(DoctorCheckResult("python", "fail", f"Python {sys.version.split()[0]} is below the required 3.10+."))
+
+    from apsara_cli import __version__
+    results.append(DoctorCheckResult("version", "pass", f"Apsara {__version__}."))
 
     # Check for git
     try:
@@ -137,6 +190,8 @@ def run_workspace_checks(options, config, args) -> list:
                 results.append(DoctorCheckResult("bash-tool", "pass", f"Bash tool is enabled and command '{default_command}' succeeded."))
         else:
             results.append(DoctorCheckResult("bash-tool", "warn", "Bash tool is disabled. Use --allow-bash if you want command execution."))
+
+    results.extend(check_mcp_servers(options, config))
 
     provider, env_vars, note = detect_model_credentials(options.model)
     if env_vars is None:

@@ -1,194 +1,137 @@
-# How To Run Apsara Agentic
+# Running Apsara Agentic from source
 
-This guide shows how to run the project step by step.
+For installing the published package instead, see [README.md](README.md). This
+guide is for working on the CLI itself.
 
-## 1. Go to the project folder
+## 1. Clone and enter the package
 
 ```bash
-cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-cli"
+git clone https://github.com/RithyBondeth/Apsara-Agentic-API.git
+cd Apsara-Agentic-API/apsara-agentic-cli
 ```
 
-## 2. Create and activate a virtual environment
+## 2. Create a virtual environment
+
+Python 3.10 or newer is required.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-If you already created `.venv`, just run:
+On Windows, activate with `.venv\Scripts\activate`.
+
+## 3. Install in editable mode
 
 ```bash
-source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
-## 3. Install dependencies
+This installs the runtime dependencies and the `apsara` command, pointed at your
+working copy — edits take effect without reinstalling.
+
+If you don't want the console script, the module form works too:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python -m apsara_cli.cli.parser --help
 ```
 
-Optional: install the CLI command:
+## 4. Add a provider key
 
 ```bash
-python3 -m pip install -e .
+apsara login
 ```
 
-If `pip install -e .` fails because of old packaging tools, upgrade them first:
-
-```bash
-python3 -m ensurepip --upgrade
-python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install -e .
-```
-
-If you still do not have the `apsara` command, you can always use:
-
-```bash
-python3 -m app.cli
-```
-
-## 4. Configure the environment
-
-Edit `.env` in the project root:
+Keys are stored in `~/.apsara/credentials.json` (owner-only). Alternatively, put
+provider variables in a `.env` file at the workspace root or export them — an
+explicitly exported variable always wins over the stored key.
 
 ```env
-PROJECT_NAME=Apsara Agentic API
-API_V1_STR=/api/v1
-DEBUG=true
-SQLALCHEMY_DATABASE_URI=postgresql://user:password@localhost:5432/dbname
-OPENAI_API_KEY=your_openai_api_key
+OPENAI_API_KEY=sk-...
 AGENT_WORKSPACE_ROOT=.
 AGENT_ENABLE_BASH_TOOL=false
 AGENT_ALLOWED_COMMANDS=pwd,ls,find,rg,cat,sed,head,tail,wc
 AGENT_MAX_FILE_SIZE_BYTES=1000000
 ```
 
-Important:
-
-- `OPENAI_API_KEY` is required for the CLI and agent model calls.
-- The CLI now auto-loads `.env`, so you do not need to export the key manually.
-- `SQLALCHEMY_DATABASE_URI` is required for the API server and database-backed routes.
-
-## 5. Run the local CLI first
-
-This is the easiest way to confirm the project works.
-
-Recommended project-first flow:
+## 5. Check the environment
 
 ```bash
-cd /path/to/your/project
-apsara init
+apsara doctor
 ```
 
-That initializes the folder and starts chat immediately. If `apsara` is not installed yet, keep using the module form below.
+This validates the Python version, git and ripgrep availability, config
+loading, workspace access, session storage, the tool list, MCP server status,
+and whether credentials for the selected model are present. Add `--live` to make
+a real model call as a final check (this spends tokens).
 
-Run the doctor command:
+## 6. Run it
 
 ```bash
-python3 -m app.cli doctor --workspace .
+cd /path/to/some/project
+apsara init      # sets up .apsara/ and opens chat
 ```
 
-Or, if `apsara` is installed:
+Or without initializing:
 
 ```bash
-apsara doctor --workspace .
+apsara chat --workspace /path/to/some/project
+apsara run "Summarize this codebase" --workspace /path/to/some/project
 ```
 
-If you want a real live model check, run:
+## 7. Run the tests
 
 ```bash
-python3 -m app.cli doctor --workspace . --model gpt-5.4-mini --live
+python -m pytest
 ```
 
-Start the interactive coding assistant:
+The suite is fully offline — no network and no real model calls. MCP tests
+launch a small in-process server over stdio, so they exercise the real
+transport.
+
+## 8. Try an MCP server
+
+Add one to the project's `.apsara/config.toml`:
+
+```toml
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+Then verify it connects:
 
 ```bash
-python3 -m app.cli chat --workspace . --model gpt-5.4-mini
+apsara mcp
 ```
 
-Or:
+You'll be asked to approve the server the first time, since launching it runs
+code that came from the project rather than from you.
+
+## Troubleshooting
+
+**`apsara: command not found`** — the virtual environment isn't active, or the
+editable install didn't finish. Re-run step 3.
+
+**`Python 3.10+ is required`** — check `python3 --version`. On macOS the system
+`python3` is often 3.9; install a newer one (e.g. `brew install python@3.13`)
+and create the venv with that interpreter.
+
+**Old packaging tools break `pip install -e .`** —
 
 ```bash
-apsara chat --workspace . --model gpt-5.4-mini
+python -m pip install --upgrade pip setuptools wheel
 ```
 
-Once a project has been initialized, you can usually just do:
+**A local plugin or MCP server won't load** — it needs approval. Run
+`apsara chat` in that project once and approve it when prompted; the decision is
+recorded in `~/.apsara/trust.json`.
 
-```bash
-apsara chat
-```
+## Related docs
 
-Run a one-shot prompt:
-
-```bash
-python3 -m app.cli run "Describe this project" --workspace . --model gpt-5.4-mini
-```
-
-## 6. Run the FastAPI server
-
-Make sure PostgreSQL is running and the database in `.env` exists.
-
-Apply migrations:
-
-```bash
-alembic upgrade head
-```
-
-Start the API server:
-
-```bash
-python3 -m uvicorn app.main:app --reload
-```
-
-Or use the helper script:
-
-```bash
-./run-dev.sh
-```
-
-## 7. Open the app endpoints
-
-After the server starts, open:
-
-- Root: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
-- Health: [http://127.0.0.1:8000/api/v1/health](http://127.0.0.1:8000/api/v1/health)
-- Swagger Docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- ReDoc: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-
-## 8. If the CLI shows `quota exceeded`
-
-That usually means:
-
-- your API key is being read correctly
-- but the OpenAI API account does not have available billing or credits
-
-Fix:
-
-1. Add billing or prepaid credits to your OpenAI API account.
-2. Confirm the key belongs to the correct API project.
-3. Retry:
-
-```bash
-python3 -m app.cli doctor --workspace . --model gpt-5.4-mini --live
-python3 -m app.cli chat --workspace . --model gpt-5.4-mini
-```
-
-## 9. Recommended first run order
-
-Use this order if you want the smoothest setup:
-
-1. Activate `.venv`
-2. Install dependencies
-3. Add `OPENAI_API_KEY` to `.env`
-4. Run `python3 -m app.cli doctor --workspace .`
-5. Run `python3 -m app.cli chat --workspace . --model gpt-5.4-mini`
-6. Start PostgreSQL
-7. Run `alembic upgrade head`
-8. Run `python3 -m uvicorn app.main:app --reload`
-
-## 10. Files you may want to check
-
-- Project guide: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/README.md)
-- CLI entrypoint: [src/cli.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/cli.py)
-- App config: [src/core/config.py](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/src/core/config.py)
-- Development runner: [run-dev.sh](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-cli/run-dev.sh)
+- Project guide: [README.md](README.md)
+- Release process: [RELEASING.md](RELEASING.md)
+- Tester setup: [TESTER_QUICKSTART.md](TESTER_QUICKSTART.md)
+- Alpha handoff: [ALPHA_TESTING.md](ALPHA_TESTING.md)
+- CLI entry point: `src/apsara_cli/cli/parser.py`
