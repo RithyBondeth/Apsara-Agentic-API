@@ -209,16 +209,18 @@ to share across projects or teams, prefer an MCP server.
 ## Development
 
 ```bash
-git clone https://github.com/RithyBondeth/Apsara-Agentic-API.git
-cd Apsara-Agentic-API
+git clone https://github.com/RithyBondeth/Apsara-Agentic-Cli.git
+cd Apsara-Agentic-Cli
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-Release steps are in [RELEASING.md](https://github.com/RithyBondeth/Apsara-Agentic-API/blob/main/RELEASING.md). Local run notes are in
-[RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-API/blob/main/RUN_PROJECT.md), and tester setup is in
-[TESTER_QUICKSTART.md](https://github.com/RithyBondeth/Apsara-Agentic-API/blob/main/TESTER_QUICKSTART.md).
+Local run notes are in
+[RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/RUN_PROJECT.md),
+and tester setup is in
+[TESTER_QUICKSTART.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/TESTER_QUICKSTART.md).
+Maintainers: see `RELEASING.md` in the repository for the publish process.
 
 ## License
 
-MIT — see [LICENSE](https://github.com/RithyBondeth/Apsara-Agentic-API/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/LICENSE).

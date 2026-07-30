@@ -49,7 +49,7 @@ Optional but recommended:
 1. Clone or open the project:
 
 ```bash
-cd Apsara-Agentic-API/apsara-agentic-cli
+cd Apsara-Agentic-Cli/apsara-agentic-cli
 ```
 
 1. Create and activate a virtual environment:

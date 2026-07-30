@@ -11,7 +11,7 @@ Keep the version in `pyproject.toml` and `../apsara-cli-npm/package.json` in syn
 ## 0. Pre-flight
 
 ```bash
-cd Apsara-Agentic-API
+cd Apsara-Agentic-Cli
 python -m pip install -e ".[dev,release]"
 python -m pytest            # all tests green
 apsara doctor               # environment sane
