@@ -58,6 +58,7 @@ apsara chat
 | `apsara init` | Set up `.apsara/` in this project and start chatting |
 | `apsara sessions` | List saved sessions for a workspace |
 | `apsara mcp` | List configured MCP servers and verify they connect |
+| `apsara trust` | Review or revoke approvals for this project's plugins and MCP servers |
 | `apsara doctor` | Check environment, config, tools, and credentials |
 | `apsara login` / `logout` | Manage stored provider keys |
 | `apsara --version` | Print the installed version |
@@ -152,6 +153,13 @@ by a digest of the code — if an approved file changes, you're asked again.
 
 `--auto-approve` does **not** cover this. That flag waives confirmation for file
 writes; it is not consent to execute a project's code.
+
+Review what you've approved, or take it back:
+
+```bash
+apsara trust           # list approvals for this project
+apsara trust --reset   # revoke them all
+```
 
 ## Configuration
 
