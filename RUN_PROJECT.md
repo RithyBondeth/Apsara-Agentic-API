@@ -7,7 +7,7 @@ guide is for working on the CLI itself.
 
 ```bash
 git clone https://github.com/RithyBondeth/Apsara-Agentic-API.git
-cd Apsara-Agentic-API/apsara-agentic-cli
+cd Apsara-Agentic-API
 ```
 
 ## 2. Create a virtual environment

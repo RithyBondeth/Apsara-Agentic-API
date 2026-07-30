@@ -106,3 +106,22 @@ def test_wrap_long_line():
     assert len(body_lines) > 1
     for line in body_lines:
         assert len(line) <= 44  # small tolerance for indent
+
+
+# ── is_tool_error ─────────────────────────────────────────────────────────────
+
+def test_is_tool_error_matches_leading_marker():
+    from apsara_cli.shared.text import is_tool_error
+
+    assert is_tool_error("Error reading file: nope")
+    assert is_tool_error("error: lowercase variant")
+    assert is_tool_error("  Error: leading whitespace")
+
+
+def test_is_tool_error_ignores_embedded_mentions():
+    from apsara_cli.shared.text import is_tool_error
+
+    assert not is_tool_error("log line 4: Error: connection refused")
+    assert not is_tool_error("def handle_error(): pass")
+    assert not is_tool_error("")
+    assert not is_tool_error(None)

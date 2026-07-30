@@ -2,6 +2,19 @@ import re
 import textwrap
 from typing import Any
 
+# Tools signal failure by returning a string that *starts* with "Error".
+# Substring matching is wrong: reading a log file or a source file that merely
+# contains the text "Error:" would otherwise be counted as a failed tool call,
+# and three of those in a row abort a perfectly healthy turn.
+_TOOL_ERROR_PREFIXES = ("Error", "error")
+
+
+def is_tool_error(result: Any) -> bool:
+    """True if a tool result string reports a failure."""
+    if not isinstance(result, str):
+        return False
+    return result.lstrip().startswith(_TOOL_ERROR_PREFIXES)
+
 
 def truncate_text(text: str, max_lines: int = 16, max_chars: int = 1200) -> str:
     if len(text) > max_chars:

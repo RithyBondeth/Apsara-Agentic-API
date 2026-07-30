@@ -1,11 +1,20 @@
 name: CI
 
 on:
+  # Run on every branch push, not just the default branch — release prep happens
+  # on working branches (e.g. private-alpha-*), and those need to be validated
+  # across the whole support matrix before they are tagged.
   push:
-    branches: [main, master]
+    branches: ["**"]
+    tags-ignore: ["**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  # NOTE: no Windows job yet. Several tests shell out to POSIX commands
+  # (run_bash_command("ls"/"pwd")) and assert POSIX file modes, so a Windows
+  # runner would fail on test assumptions rather than on real defects. Making
+  # the suite platform-clean is tracked separately.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -29,3 +38,26 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build and validate the distribution
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Verify the built wheel installs and runs
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/apsara --version
+          /tmp/verify/bin/apsara --help

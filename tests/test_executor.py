@@ -208,3 +208,37 @@ def test_distinct_tool_calls_are_not_treated_as_a_loop():
 
     assert not any(e["type"] == "blocked" for e in events)
     assert events[-1]["type"] == "final_answer"
+
+
+# ── tool error detection ──────────────────────────────────────────────────────
+
+def test_file_containing_the_word_error_is_not_a_tool_failure():
+    """Reading a log file must not count toward the consecutive-error abort."""
+    log_contents = "2026-01-01 WARN retrying\n2026-01-01 Error: connection refused\n"
+    scripts = [
+        [_tool_call_event(name="read_file", arguments=f'{{"path": "log{i}.txt"}}', call_id=f"c{i}")]
+        for i in range(4)
+    ] + [[_final_event("The log shows a connection error.")]]
+
+    fake, _ = _scripted_llm(scripts)
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value=log_contents)):
+        events = _run([{"role": "user", "content": "read the logs"}])
+
+    assert not any(e["type"] == "blocked" for e in events), (
+        "tool results merely containing 'Error:' must not trip the error abort"
+    )
+    assert events[-1]["type"] == "final_answer"
+
+
+def test_real_tool_errors_still_abort():
+    fake, state = _scripted_llm([
+        [_tool_call_event(name="read_file", arguments=f'{{"path": "x{i}.txt"}}', call_id=f"c{i}")]
+        for i in range(6)
+    ])
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="Error reading file: nope")):
+        events = _run([{"role": "user", "content": "read"}])
+
+    assert any(e["type"] == "blocked" for e in events)
+    assert state["calls"] <= 4, "must abort after 3 consecutive real errors"

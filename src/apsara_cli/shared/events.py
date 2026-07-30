@@ -4,7 +4,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from apsara_cli.shared.ui import ConsoleUI
 
-from apsara_cli.shared.text import truncate_text
+from apsara_cli.shared.text import is_tool_error, truncate_text
 
 
 def _error_suggestion(message: str) -> Optional[str]:
@@ -128,7 +128,7 @@ def _tool_spinner_label(tool_name: str, arguments: dict[str, Any]) -> str:
 
 def _tool_result_summary(tool_name: str, result: str) -> tuple[bool, str]:
     """Return (success, short summary) for a tool result."""
-    is_error = result.startswith("Error") or result.startswith("error")
+    is_error = is_tool_error(result)
     if is_error:
         short = result.split("\n")[0][:60]
         return False, short

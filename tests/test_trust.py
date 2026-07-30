@@ -251,3 +251,84 @@ def test_corrupt_store_is_not_fatal(tmp_path, isolated_trust_store):
 def test_store_is_owner_only(tmp_path, isolated_trust_store):
     trust.record_trust(tmp_path, "plugin:a.py", trust.digest_text("x"))
     assert isolated_trust_store.stat().st_mode & 0o077 == 0
+
+
+# ── apsara trust command ──────────────────────────────────────────────────────
+
+class _Defaults:
+    workspace = None
+
+
+class _Config:
+    defaults = _Defaults()
+    theme = None
+    path = "/tmp/none"
+    exists = False
+
+
+class _Args:
+    def __init__(self, workspace=None, reset=False):
+        self.workspace = workspace
+        self.reset = reset
+        self.color = False
+
+
+def test_trust_command_lists_nothing_when_empty(tmp_path, capsys):
+    from apsara_cli.cli.trust_cli import trust_command
+
+    rc = trust_command(_Args(workspace=str(tmp_path)), _Config())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No workspace code has been approved" in out
+
+
+def test_trust_command_lists_approvals(tmp_path, capsys):
+    from apsara_cli.cli.trust_cli import trust_command
+
+    trust.record_trust(tmp_path, "plugin:.apsara/tools/lint.py", trust.digest_text("a"))
+    trust.record_trust(tmp_path, "mcp:github", trust.digest_text("b"))
+
+    rc = trust_command(_Args(workspace=str(tmp_path)), _Config())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert ".apsara/tools/lint.py" in out
+    assert "github" in out
+    assert "plugin" in out and "mcp" in out
+
+
+def test_trust_reset_revokes_everything(tmp_path, capsys):
+    from apsara_cli.cli.trust_cli import trust_command
+
+    digest = trust.digest_text("a")
+    trust.record_trust(tmp_path, "plugin:x.py", digest)
+    assert trust.is_trusted(tmp_path, "plugin:x.py", digest)
+
+    rc = trust_command(_Args(workspace=str(tmp_path), reset=True), _Config())
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Revoked 1 approval" in out
+    assert not trust.is_trusted(tmp_path, "plugin:x.py", digest)
+
+
+def test_trust_reset_on_empty_workspace_is_not_an_error(tmp_path, capsys):
+    from apsara_cli.cli.trust_cli import trust_command
+
+    rc = trust_command(_Args(workspace=str(tmp_path), reset=True), _Config())
+    assert rc == 0
+    assert "No approvals recorded" in capsys.readouterr().out
+
+
+def test_trust_is_scoped_to_the_named_workspace(tmp_path, capsys):
+    from apsara_cli.cli.trust_cli import trust_command
+
+    other = tmp_path / "other"
+    other.mkdir()
+    digest = trust.digest_text("a")
+    trust.record_trust(tmp_path, "plugin:mine.py", digest)
+    trust.record_trust(other, "plugin:theirs.py", digest)
+
+    trust_command(_Args(workspace=str(tmp_path), reset=True), _Config())
+    assert not trust.is_trusted(tmp_path, "plugin:mine.py", digest)
+    assert trust.is_trusted(other, "plugin:theirs.py", digest), (
+        "resetting one workspace must not touch another"
+    )

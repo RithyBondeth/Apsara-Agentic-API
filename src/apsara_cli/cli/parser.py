@@ -87,6 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_parser.add_argument("--no-color", dest="color", action="store_false",
                             help="Disable colored terminal output.")
 
+    trust_parser = subparsers.add_parser(
+        "trust", help="Review or revoke approvals for this project's plugins and MCP servers."
+    )
+    trust_parser.add_argument("--workspace", default=None,
+                              help="Workspace root whose approvals should be listed.")
+    trust_parser.add_argument("--reset", action="store_true", default=False,
+                              help="Revoke every approval recorded for the workspace.")
+    trust_parser.add_argument("--color", dest="color", action="store_true", default=None,
+                              help="Force colored terminal output.")
+    trust_parser.add_argument("--no-color", dest="color", action="store_false",
+                              help="Disable colored terminal output.")
+
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
 
@@ -125,6 +137,9 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "mcp":
         from apsara_cli.cli.mcp_cli import mcp_status
         return await mcp_status(args, config)
+    if args.command == "trust":
+        from apsara_cli.cli.trust_cli import trust_command
+        return trust_command(args, config)
     if args.command == "login":
         from apsara_cli.cli.auth_cli import login
         return await login()

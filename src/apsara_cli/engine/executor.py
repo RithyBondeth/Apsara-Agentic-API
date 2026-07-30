@@ -3,6 +3,7 @@ import os
 from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream
 from apsara_cli.engine.tools import execute_tool_async, get_mcp_manager
+from apsara_cli.shared.text import is_tool_error
 
 DEFAULT_MAX_STEPS = 25
 # One invocation repeated this many times in a turn means the agent is cycling.
@@ -145,7 +146,7 @@ async def run_agent_stream(
 
                 tool_result_str = await execute_tool_async(tool_name, arguments)
 
-                if "Error:" in tool_result_str:
+                if is_tool_error(tool_result_str):
                     consecutive_errors += 1
                 else:
                     consecutive_errors = 0
