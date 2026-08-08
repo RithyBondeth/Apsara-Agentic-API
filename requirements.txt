@@ -1,9 +1,13 @@
-fastapi[standard]>=0.110.0
+# Runtime dependencies for the Apsara Agentic CLI.
+# Kept in sync with [project.dependencies] in pyproject.toml.
+# Prefer `pip install .` (or `pip install -e .`) which reads pyproject.toml directly.
 pydantic-settings>=2.2.1
 python-dotenv>=1.0.1
-sqlalchemy>=2.0.29
-psycopg2-binary>=2.9.9
-alembic>=1.13.1
 openai>=1.16.0
 litellm>=1.35.0
-tomli>=2.0.1
+httpx>=0.27.0
+mcp>=2.0.0
+tomli>=2.0.1; python_version < "3.11"
+rich>=13.7.0
+prompt_toolkit>=3.0.0
+pygments>=2.17.0

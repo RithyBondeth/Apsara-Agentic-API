@@ -9,12 +9,19 @@ Date: `2026-04-07`
 This alpha release introduces the first polished local CLI experience for Apsara by Bondeth.
 
 The focus of this release is:
+
 - local coding assistant workflows
 - safer code-edit review
 - better terminal presentation
 - faster tester onboarding
 
 ## Highlights
+
+### Default Model
+
+- OpenCode Zen's `opencode/big-pickle` is the default model
+- `apsara login` supports OpenCode Zen and stores its key locally
+- other LiteLLM-compatible models remain selectable with `--model`
 
 ### Branded CLI Experience
 
@@ -54,6 +61,7 @@ The focus of this release is:
 ## Recommended Test Areas
 
 Please focus alpha feedback on:
+
 - first-run setup
 - CLI readability and overall UX
 - response organization
@@ -82,7 +90,7 @@ Recommended audience:
 
 ## Related Docs
 
-- Tester quickstart: [TESTER_QUICKSTART.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/TESTER_QUICKSTART.md)
-- Alpha testing guide: [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/ALPHA_TESTING.md)
-- Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md)
-- Main README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/README.md)
+- Tester quickstart: [TESTER_QUICKSTART.md](TESTER_QUICKSTART.md)
+- Alpha testing guide: [ALPHA_TESTING.md](ALPHA_TESTING.md)
+- Run guide: [RUN_PROJECT.md](RUN_PROJECT.md)
+- Main README: [README.md](README.md)

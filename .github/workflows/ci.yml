@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  # Run on every branch push, not just the default branch — release prep happens
+  # on working branches (e.g. private-alpha-*), and those need to be validated
+  # across the whole support matrix before they are tagged.
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # NOTE: no Windows job yet. Several tests shell out to POSIX commands
+  # (run_bash_command("ls"/"pwd")) and assert POSIX file modes, so a Windows
+  # runner would fail on test assumptions rather than on real defects. Making
+  # the suite platform-clean is tracked separately.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: python -m pytest
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build and validate the distribution
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Verify the built wheel installs and runs
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/apsara --version
+          /tmp/verify/bin/apsara --help

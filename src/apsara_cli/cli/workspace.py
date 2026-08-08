@@ -1,0 +1,108 @@
+import argparse
+import os
+from pathlib import Path
+from typing import Optional
+
+from apsara_cli.cli.options import resolve_value, resolve_workspace
+from apsara_cli.cli.session import get_sessions_dir, list_sessions
+from apsara_cli.shared.ui import ConsoleUI
+
+DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
+[defaults]
+# workspace = "."
+# model = "opencode/big-pickle"
+# auto_approve = false
+
+# Let the agent verify its own work. Without a test runner on the allowlist it
+# can write code but never run it, so it cannot catch its own mistakes.
+# @verify expands to the common test/build tools (pytest, npm, go, cargo,
+# make, ...); @read and @git are also available. Every command still needs
+# your approval at run time unless you pass --auto-approve.
+# allow_bash = true
+# allowed_commands = ["@verify", "@git"]
+# bash_timeout = 120
+
+[ui]
+# welcome_title = "Apsara Agentic"
+
+# ── MCP servers ──────────────────────────────────────────────────────────────
+# Connect external tools through the Model Context Protocol. Each server is
+# launched (stdio) or reached (http) on demand, and you approve it once before
+# it runs. Check them any time with `apsara mcp`.
+#
+# Launched as a subprocess:
+# [mcp_servers.filesystem]
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+#
+# Reached over HTTP — keep secrets in the environment, not in this file:
+# [mcp_servers.internal]
+# url = "https://mcp.example.com/v1"
+# headers = { Authorization = "Bearer ${MCP_TOKEN}" }
+"""
+
+DEFAULT_INSTRUCTIONS_TEMPLATE = """# Team Coding Standards
+- Use functional programming patterns where possible.
+- Ensure all new functions have type hints.
+- Use 'pytest' for testing.
+- Follow PEP 8 style guidelines.
+"""
+
+async def init_workspace(args: argparse.Namespace, config: object) -> int:
+    ui = ConsoleUI(use_color=True, auto_approve=True)
+    workspace_value = resolve_value(args.workspace, None, ".")
+    workspace_root = resolve_workspace(str(workspace_value))
+    
+    ui.info(f"Initializing Apsara in {workspace_root}...")
+    
+    apsara_dir = workspace_root / ".apsara"
+    apsara_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create config.toml
+    config_file = apsara_dir / "config.toml"
+    if not config_file.exists() or getattr(args, "force", False):
+        config_file.write_text(DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+        ui.success(f"Created {config_file.relative_to(workspace_root)}")
+    else:
+        ui.info(f"Config already exists at {config_file.relative_to(workspace_root)}")
+
+    # Create instructions.md
+    inst_file = apsara_dir / "instructions.md"
+    if not inst_file.exists():
+        inst_file.write_text(DEFAULT_INSTRUCTIONS_TEMPLATE, encoding="utf-8")
+        ui.success(f"Created {inst_file.relative_to(workspace_root)} (Edit this for team standards)")
+
+    # Ensure .gitignore exists and includes .apsara/logs and sessions
+    gitignore = workspace_root / ".gitignore"
+    ignore_entry = "\n# Apsara artifacts\n.apsara/logs/\n.apsara/bugs/\n.apsara-cli/\n"
+    if gitignore.exists():
+        content = gitignore.read_text(encoding="utf-8")
+        if ".apsara" not in content:
+            with gitignore.open("a", encoding="utf-8") as f:
+                f.write(ignore_entry)
+            ui.success("Updated .gitignore with Apsara entries.")
+    else:
+        gitignore.write_text(ignore_entry, encoding="utf-8")
+        ui.success("Created .gitignore with Apsara entries.")
+
+    if not getattr(args, "no_chat", False):
+        from apsara_cli.cli.chat import chat_loop
+        # Reload config for the chat loop
+        from apsara_cli.config.cli_config import load_cli_config
+        new_config = load_cli_config(str(config_file), str(workspace_root))
+        return await chat_loop(args, new_config)
+    
+    return 0
+
+def print_sessions(args: argparse.Namespace, config: object) -> int:
+    workspace_value = resolve_value(args.workspace, None, ".")
+    workspace_root = resolve_workspace(str(workspace_value))
+    sessions = list_sessions(workspace_root)
+    if not sessions:
+        print(f"No sessions found in {get_sessions_dir(workspace_root)}")
+        return 0
+
+    print(f"\nSessions in {workspace_root}:")
+    for session_path in sessions:
+        print(f"  - {session_path.stem}")
+    return 0

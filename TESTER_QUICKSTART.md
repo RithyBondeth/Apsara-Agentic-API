@@ -1,97 +1,86 @@
-# Apsara by Bondeth Tester Quickstart
+# Apsara Agentic: Tester Quickstart 🚀
 
-This is the shortest path for an alpha tester to try Apsara locally.
+Welcome to the Apsara alpha test! Follow these steps to get the AI coding agent running in your local workspace.
 
-## 1. Open the project
+## 1. Installation
 
-```bash
-cd "/Users/bondeth/Projects/Apsara Agentic/apsara-agentic-api"
-```
-
-## 2. Create and activate a virtual environment
+Ensure you have **Python 3.9+** and **Git** installed.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# Clone the repository (if you haven't)
+git clone https://github.com/your-repo/apsara-agentic.git
+cd apsara-agentic/apsara-agentic-cli
+
+# Install the package in editable mode
+pip install -e .
 ```
 
-## 3. Install dependencies
+## 2. Choose a Provider & Add Your API Key
+
+Apsara is **bring-your-own-key**: you pick a model provider and use your own API
+key. Apsara never sends your key to any Apsara server — it's stored locally.
 
 ```bash
-python3 -m pip install -r requirements.txt
+# Pick a provider and paste your key
+apsara login
 ```
 
-## 4. Add your OpenAI API key to `.env`
+You'll get a menu of providers (OpenCode Zen, OpenAI, Anthropic, Google, Groq,
+Mistral, DeepSeek, and local Ollama). OpenCode Zen with Big Pickle is the
+default. Choose one, paste that provider's API key when
+prompted (input is hidden), and Apsara verifies it and stores it securely in
+`~/.apsara/credentials.json` (owner-only, `chmod 600`). Ollama is local and
+needs no key.
 
-```env
-OPENAI_API_KEY=your_openai_api_key
-```
+Run `apsara logout` at any time to clear all stored keys.
 
-## 5. Run the CLI health check
+### Alternative: environment variables
+
+Instead of `apsara login`, you can export the provider's key yourself (or put it
+in a project `.env`). An explicitly-set environment variable always takes
+precedence over a stored key:
 
 ```bash
-python3 -m app.cli doctor --workspace .
+export OPENCODE_API_KEY="your-key"  # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 ```
 
-## 6. Start Apsara
+Big Pickle is free for a limited period. OpenCode states that submitted data
+may be used to improve the model during that period, so do not test it with
+confidential repositories.
+
+Run `apsara doctor` to confirm your provider and key are detected.
+
+## 3. Initialize your Project
+
+Go to the project you want to work on and initialize Apsara.
 
 ```bash
-python3 -m app.cli init --workspace . --model gpt-5.4-mini
-```
-
-If the `apsara` command is installed, testers can also use:
-
-```bash
+cd /path/to/your/work/project
 apsara init
 ```
 
-## 7. Try these prompts
+This will:
+- Create `.apsara/config.toml` for your local settings.
+- Create `.apsara/instructions.md` for **Team Standards** (edit this to tell the agent how you like your code formatted).
+- Update your `.gitignore` to keep Apsara logs and sessions private.
 
-Prompt 1:
+## 4. Start Chatting
 
-```text
-Describe this project.
+```bash
+apsara chat
 ```
 
-Prompt 2:
+### Useful Slash Commands:
+- `/help` - Show all commands.
+- `/add <path>` - Pin a file to the context.
+- `/status` - Check token usage and session cost.
+- `/bug` - If the agent gets stuck, run this to save diagnostic logs.
+- `/details` - See the agent's hidden thought process.
 
-```text
-Find the main CLI file and summarize what it does.
-```
+## 5. Safety Tips
+- Apsara will **always ask for confirmation** before writing files or running commands.
+- Use `apsara chat --dry-run` to see what it *would* do without touching your files.
+- Use `apsara chat --read-only` if you just want it to explain the code.
 
-Prompt 3:
-
-```text
-Suggest one small improvement to the CLI UI and implement it.
-```
-
-## 8. Test the edit review flow
-
-When Apsara proposes a code change:
-- `Enter` approves
-- `n` rejects
-- `a` approves the rest of the session
-- `v` shows a fuller diff in the terminal
-- `e` opens the patch in your editor
-
-## 9. Useful chat commands
-
-```text
-/details
-/clear
-```
-
-## 10. If something goes wrong
-
-Please send:
-- the command you ran
-- the prompt you asked
-- the full error message
-- a screenshot or terminal copy if possible
-
-## 11. More detailed docs
-
-- Alpha release notes: [RELEASE_NOTES_ALPHA.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RELEASE_NOTES_ALPHA.md)
-- Alpha testing guide: [ALPHA_TESTING.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/ALPHA_TESTING.md)
-- Run guide: [RUN_PROJECT.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/RUN_PROJECT.md)
-- Main README: [README.md](/Users/bondeth/Projects/Apsara%20Agentic/apsara-agentic-api/README.md)
+---
+**Happy Coding!** Please share your `.apsara/bugs/` folders if you encounter any weird behavior.
