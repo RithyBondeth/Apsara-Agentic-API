@@ -11,15 +11,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  # NOTE: no Windows job yet. Several tests shell out to POSIX commands
-  # (run_bash_command("ls"/"pwd")) and assert POSIX file modes, so a Windows
-  # runner would fail on test assumptions rather than on real defects. Making
-  # the suite platform-clean is tracked separately.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -38,6 +35,22 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install and test portable core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pytest tests/test_runtime.py tests/test_checkpoints.py tests/test_history.py tests/test_session.py tests/test_ui_markdown.py tests/test_professional_features.py tests/test_bash_safety.py tests/test_workspace.py
+          apsara --version
+          apsara --help
 
   package:
     runs-on: ubuntu-latest
@@ -61,3 +74,9 @@ jobs:
           /tmp/verify/bin/pip install dist/*.whl
           /tmp/verify/bin/apsara --version
           /tmp/verify/bin/apsara --help
+          /tmp/verify/bin/pip check
+
+      - name: Audit installed dependencies
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit

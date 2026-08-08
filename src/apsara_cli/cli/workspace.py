@@ -5,7 +5,7 @@ from typing import Optional
 
 from apsara_cli.cli.options import resolve_value, resolve_workspace
 from apsara_cli.cli.session import get_sessions_dir, list_sessions
-from apsara_cli.shared.ui import ConsoleUI
+from apsara_cli.shared.ui import ConsoleUI, default_use_color
 
 DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
 [defaults]
@@ -49,7 +49,13 @@ DEFAULT_INSTRUCTIONS_TEMPLATE = """# Team Coding Standards
 """
 
 async def init_workspace(args: argparse.Namespace, config: object) -> int:
-    ui = ConsoleUI(use_color=True, auto_approve=True)
+    config_defaults = getattr(config, "defaults", None)
+    use_color = bool(resolve_value(
+        getattr(args, "color", None),
+        getattr(config_defaults, "color", None),
+        default_use_color(),
+    ))
+    ui = ConsoleUI(use_color=use_color, auto_approve=True)
     workspace_value = resolve_value(args.workspace, None, ".")
     workspace_root = resolve_workspace(str(workspace_value))
     
@@ -72,17 +78,21 @@ async def init_workspace(args: argparse.Namespace, config: object) -> int:
         inst_file.write_text(DEFAULT_INSTRUCTIONS_TEMPLATE, encoding="utf-8")
         ui.success(f"Created {inst_file.relative_to(workspace_root)} (Edit this for team standards)")
 
-    # Ensure .gitignore exists and includes .apsara/logs and sessions
+    # Keep transient journals, snapshots, reports, and sessions out of Git.
     gitignore = workspace_root / ".gitignore"
-    ignore_entry = "\n# Apsara artifacts\n.apsara/logs/\n.apsara/bugs/\n.apsara-cli/\n"
+    ignore_lines = [
+        ".apsara/logs/", ".apsara/bugs/", ".apsara/runs/",
+        ".apsara/checkpoints/", ".apsara/reports/", ".apsara-cli/",
+    ]
     if gitignore.exists():
         content = gitignore.read_text(encoding="utf-8")
-        if ".apsara" not in content:
+        missing = [line for line in ignore_lines if line not in content.splitlines()]
+        if missing:
             with gitignore.open("a", encoding="utf-8") as f:
-                f.write(ignore_entry)
+                f.write("\n# Apsara artifacts\n" + "\n".join(missing) + "\n")
             ui.success("Updated .gitignore with Apsara entries.")
     else:
-        gitignore.write_text(ignore_entry, encoding="utf-8")
+        gitignore.write_text("# Apsara artifacts\n" + "\n".join(ignore_lines) + "\n", encoding="utf-8")
         ui.success("Created .gitignore with Apsara entries.")
 
     if not getattr(args, "no_chat", False):

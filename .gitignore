@@ -44,3 +44,7 @@ venv.bak/
 
 # Per-session diagnostic logs written by ConsoleUI (keep .apsara/tools and config tracked)
 .apsara/logs/
+.apsara/runs/
+.apsara/checkpoints/
+.apsara/reports/
+.apsara/bugs/

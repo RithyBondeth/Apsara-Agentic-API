@@ -104,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     trust_parser.add_argument("--no-color", dest="color", action="store_false",
                               help="Disable colored terminal output.")
 
+    eval_parser = subparsers.add_parser("eval", help="Score recorded agent runs against a JSON regression suite.")
+    eval_parser.add_argument("suite", help="Path to an evaluation suite JSON file.")
+    eval_parser.add_argument("--workspace", default=None, help="Workspace containing .apsara/runs.")
+
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
 
@@ -145,6 +149,14 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "trust":
         from apsara_cli.cli.trust_cli import trust_command
         return trust_command(args, config)
+    if args.command == "eval":
+        from pathlib import Path
+        from apsara_cli.engine.evals import run_suite
+        workspace = Path(args.workspace or ".").resolve()
+        results = run_suite(Path(args.suite).resolve(), workspace)
+        for result in results:
+            print(f"{'PASS' if result.passed else 'FAIL'} {result.name}: {'; '.join(result.checks)}")
+        return 0 if all(result.passed for result in results) else 1
     if args.command == "login":
         from apsara_cli.cli.auth_cli import login
         return await login()

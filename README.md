@@ -60,6 +60,7 @@ apsara chat
 | `apsara mcp` | List configured MCP servers and verify they connect |
 | `apsara trust` | Review or revoke approvals for this project's plugins and MCP servers |
 | `apsara doctor` | Check environment, config, tools, and credentials |
+| `apsara eval suite.json` | Score recorded runs against regression expectations |
 | `apsara login` / `logout` | Manage stored provider keys |
 | `apsara --version` | Print the installed version |
 
@@ -70,13 +71,20 @@ Run `apsara <command> --help` for the full flag list.
 The agent works through a workspace-scoped tool sandbox. Every path is resolved
 inside the workspace root; attempts to escape it fail.
 
-**Reading** — `read_file`, `read_file_lines`, `glob_search`, `search_files`,
-`list_project_structure`, `list_symbols` (Python), `git_status`, `git_diff`
+**Reading** — `read_file`, `parallel_read_files`, `read_file_lines`, `glob_search`,
+`search_files`, `repository_map`, `find_symbol`, `list_project_structure`,
+`list_symbols`, `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
 
 **Writing** — `edit_file`, `replace_file_lines`, `write_to_file`,
 `create_directory`, `move_file`, `delete_file`
 
-**Commands** — `run_bash_command`, off by default; see below.
+**Commands** — `run_bash_command` plus cancellable background processes via
+`start_process`, `process_output`, `list_processes`, and `stop_process`; off by
+default, see below.
+
+Before every file mutation Apsara creates a recoverable checkpoint under
+`.apsara/checkpoints/`. Use `/undo` for the latest edit, `/checkpoints` to list
+snapshots, or `/undo <id>` to restore a specific one.
 
 `edit_file` is the primary editing tool: it replaces an exact snippet of text
 and refuses ambiguous or missing matches, so an edit can't silently land in the
@@ -141,6 +149,8 @@ config file. Set `enabled = false` to keep a server defined but switched off.
 Their tools appear to the agent as `mcp__<server>__<tool>` and cannot collide
 with the built-ins. Servers connect once per session, and a server that fails to
 start is reported and skipped rather than taking the session down.
+Read-like MCP tools can run normally; tools that appear to mutate external state
+show their arguments and require approval. `--read-only` blocks those actions.
 
 Check your setup any time:
 
@@ -197,6 +207,13 @@ submitted data may be used to improve the model during that period, so choose a
 different provider for confidential repositories. `--model` and the config
 file can still select any supported LiteLLM model.
 
+For provider resilience, set a comma-separated fallback chain. Apsara switches
+only when a request fails before emitting output:
+
+```bash
+export APSARA_FALLBACK_MODELS="openai/gpt-5-mini,anthropic/claude-sonnet-4-5"
+```
+
 Useful flags:
 
 - `--workspace <path>` — the directory the agent may access
@@ -220,8 +237,14 @@ the current usage against both. Override it with `APSARA_INPUT_TOKEN_BUDGET` if
 you want to trade cost for memory, and cap the agent's per-turn tool calls with
 `APSARA_MAX_STEPS`.
 
-In chat, slash commands include `/help`, `/details`, `/history`, `/tools`,
-`/model`, `/session`, `/add <path>`, `/save`, and `/bug`.
+Each turn also writes an append-only event trace and typed run state beneath
+`.apsara/runs/`. `/report` exports the latest run as Markdown. Durable project
+facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
+`/memory add <note>` to manage them.
+
+In chat, `/help` lists the complete command surface, including `/details`,
+`/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,
+`/stop`, `/undo`, `/memory`, `/report`, `/save`, and `/bug`.
 
 ## Extending with local plugins
 
@@ -245,6 +268,34 @@ def run(ticket_id: str) -> str:
 You'll be asked to approve it the first time it loads. For anything you'd want
 to share across projects or teams, prefer an MCP server.
 
+Optionally place a same-named JSON manifest beside the plugin, for example
+`.apsara/tools/ticket_lookup.json`:
+
+```json
+{
+  "name": "ticket_lookup",
+  "description": "Fetch a ticket summary by id",
+  "version": "1.0.0",
+  "enabled": true,
+  "permissions": ["network"]
+}
+```
+
+Invalid manifests are rejected, disabled plugins are skipped, and manifest
+changes invalidate the recorded trust digest.
+
+## Evaluation
+
+Recorded runs make agent behavior reproducible without paying for another model
+call. An evaluation suite references run IDs and expected state/tools:
+
+```json
+{"cases":[{"name":"edit smoke","run_id":"abc123","expect":{"state":"completed","tools":["edit_file"],"max_tool_calls":10}}]}
+```
+
+Run it with `apsara eval suite.json --workspace .`. The command exits non-zero
+when a case fails, so it can be used in CI.
+
 ## Development
 
 ```bash
@@ -256,8 +307,9 @@ python -m pytest
 
 Local run notes are in
 [RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/RUN_PROJECT.md),
-and tester setup is in
-[TESTER_QUICKSTART.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/TESTER_QUICKSTART.md).
+tester setup is in
+[TESTER_QUICKSTART.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/TESTER_QUICKSTART.md),
+and the runtime design is in [`docs/AGENT_RUNTIME.md`](docs/AGENT_RUNTIME.md).
 Maintainers: see `RELEASING.md` in the repository for the publish process.
 
 ## License

@@ -20,13 +20,15 @@ _ALL_PROVIDERS = _KEY_PROVIDERS + ["ollama"]
 _TOP_LEVEL = [
     "/help", "/details", "/clear", "/history", "/tools", "/add", "/bug",
     "/status", "/model", "/models", "/key", "/session", "/save",
-    "/sessions", "/exit", "/quit",
+    "/sessions", "/checkpoints", "/undo", "/processes", "/logs", "/stop",
+    "/report", "/memory", "/exit", "/quit",
 ]
 
 _SUB_COMMANDS: dict[str, list[str]] = {
     "/key": ["list", "set", "remove", *[f"set {p}" for p in _KEY_PROVIDERS], *[f"remove {p}" for p in _KEY_PROVIDERS]],
     "/models": list(_ALL_PROVIDERS),
     "/sessions": ["clear"],
+    "/memory": ["show", "add"],
 }
 
 

@@ -189,6 +189,23 @@ def describe_action(
         cwd = payload.get("cwd", "")
         return (f"Run command in {cwd}: {command}", None, None, None, None, None)
 
+    if action == "start_process":
+        return (f"Start background process: {payload.get('command', '')}", None, None, None, None, None)
+
+    if action == "stop_process":
+        return (f"Stop background process {payload.get('process_id', '')}?", None, None, None, None, None)
+
+    if action == "undo_checkpoint":
+        return (f"Restore checkpoint {payload.get('checkpoint_id', 'latest')}?", None, None, None, None, None)
+
+    if action == "remember_project_note":
+        return ("Save this note to project memory?", str(payload.get("note", "")), None, None, None, None)
+
+    if action == "mcp_tool_call":
+        import json
+        arguments = json.dumps(payload.get("arguments", {}), ensure_ascii=False, indent=2)
+        return (f"Allow external MCP action {payload.get('tool', '')}?", arguments, None, None, None, None)
+
     if action == "trust_workspace_code":
         path = payload.get("display_path") or payload.get("path", "<unknown>")
         if payload.get("kind") == "mcp":

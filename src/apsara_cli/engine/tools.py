@@ -6,13 +6,15 @@ import os
 import shlex
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, Iterator, Optional, Set
 
 from apsara_cli.config import trust
 from apsara_cli.config.defaults import settings
+from apsara_cli.shared.types import ToolRisk
 
 
 class ToolSecurityError(Exception):
@@ -180,6 +182,19 @@ def _read_only() -> bool:
     return False
 
 
+def classify_tool_risk(tool_name: str) -> ToolRisk:
+    """Stable permission category used by journals, policies, and future UIs."""
+    if tool_name.startswith("mcp__"):
+        return ToolRisk.EXTERNAL
+    if tool_name in {"delete_file"}:
+        return ToolRisk.DESTRUCTIVE
+    if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "move_file", "create_directory", "undo_last_checkpoint", "remember_project_note"}:
+        return ToolRisk.WRITE
+    if tool_name in {"run_bash_command", "start_process", "stop_process"}:
+        return ToolRisk.EXECUTE
+    return ToolRisk.READ
+
+
 def request_workspace_trust(
     key: str,
     digest: str,
@@ -234,24 +249,41 @@ def _load_local_plugins() -> list[dict[str, Any]]:
     if not candidates:
         return plugins
 
-    sources: list[tuple[Path, str, str]] = []
+    sources: list[tuple[Path, str, str, dict[str, Any]]] = []
     for py_file in candidates:
         try:
             source = py_file.read_text(encoding="utf-8")
         except Exception as exc:
             print(f"Warning: Failed to read local plugin {py_file.name}: {exc}")
             continue
-        sources.append((py_file, source, trust.digest_text(source)))
+        manifest: dict[str, Any] = {}
+        manifest_path = py_file.with_suffix(".json")
+        if manifest_path.exists():
+            try:
+                import json
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    raise ValueError("manifest must be a JSON object")
+                permissions = manifest.get("permissions", [])
+                if not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions):
+                    raise ValueError("permissions must be a list of strings")
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"Warning: Invalid plugin manifest {manifest_path.name}: {exc}")
+                continue
+        if manifest.get("enabled") is False:
+            continue
+        digest_source = source + "\n" + repr(sorted(manifest.items()))
+        sources.append((py_file, source, trust.digest_text(digest_source), manifest))
 
     cache_key = str(workspace)
     combined_digest = trust.digest_text(
-        "".join(f"{py_file.name}:{digest}" for py_file, _, digest in sources)
+        "".join(f"{py_file.name}:{digest}" for py_file, _, digest, _ in sources)
     )
     cached = _plugin_cache.get(cache_key)
     if cached is not None and cached[0] == combined_digest:
         return list(cached[1])
 
-    for py_file, source, digest in sources:
+    for py_file, source, digest, manifest in sources:
         try:
             relative = py_file.relative_to(workspace)
         except ValueError:
@@ -285,18 +317,21 @@ def _load_local_plugins() -> list[dict[str, Any]]:
                 run_func = getattr(module, "run", None)
 
                 if metadata and callable(run_func):
-                    # Ensure name is set in metadata
-                    if "name" not in metadata:
-                        metadata["name"] = py_file.stem
-
+                    metadata = dict(metadata)
                     # Wrap in tool definition format if only function part provided
-                    if "type" not in metadata:
+                    if "type" in metadata:
+                        tool_def = dict(metadata)
+                        function = dict(tool_def.get("function", {}))
+                        tool_def["function"] = function
+                    else:
+                        function = metadata
                         tool_def = {
                             "type": "function",
-                            "function": metadata
+                            "function": function,
                         }
-                    else:
-                        tool_def = metadata
+                    function.setdefault("name", manifest.get("name", py_file.stem))
+                    if manifest.get("description"):
+                        function["description"] = manifest["description"]
 
                     plugins.append((tool_def, run_func))
         except Exception as exc:
@@ -404,6 +439,17 @@ def _confirm_action(action: str, payload: Dict[str, Any]) -> bool:
     return callback(action, payload)
 
 
+def _checkpoint(paths: list[Path], label: str) -> Optional[str]:
+    if _dry_run():
+        return None
+    try:
+        from apsara_cli.engine.checkpoints import create_checkpoint
+
+        return create_checkpoint(_workspace_root(), paths, label)
+    except Exception:
+        return None
+
+
 def read_file(path: str) -> str:
     try:
         resolved_path = _resolve_path(path, must_exist=True)
@@ -421,6 +467,23 @@ def read_file(path: str) -> str:
             return file_handle.read()
     except Exception as exc:
         return _format_exception("Error reading file", exc)
+
+
+def parallel_read_files(paths: list[str]) -> str:
+    """Read up to eight independent files concurrently, preserving input order."""
+    selected = paths[:8]
+    if not selected:
+        return "Error: At least one path is required."
+    with ThreadPoolExecutor(max_workers=min(4, len(selected))) as pool:
+        # ContextVars do not cross thread boundaries automatically. Give every
+        # worker its own context copy so workspace and file-size restrictions
+        # remain identical to a normal, single-file read.
+        futures = [
+            pool.submit(copy_context().run, read_file, path)
+            for path in selected
+        ]
+        contents = [future.result() for future in futures]
+    return "\n\n".join(f"===== {path} =====\n{content}" for path, content in zip(selected, contents))
 
 
 def read_file_lines(path: str, start_line: int, end_line: int) -> str:
@@ -501,6 +564,7 @@ def delete_file(path: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully deleted {display} (simulated)"
 
+        _checkpoint([resolved_path], f"Before deleting {display}")
         resolved_path.unlink()
         return f"Deleted: {display}"
     except Exception as exc:
@@ -539,6 +603,7 @@ def move_file(src: str, dest: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully moved {display_src} → {display_dest} (simulated)"
 
+        _checkpoint([resolved_src, resolved_dest], f"Before moving {display_src} to {display_dest}")
         resolved_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(resolved_src), str(resolved_dest))
         return f"Moved: {display_src} → {display_dest}"
@@ -611,6 +676,7 @@ def write_to_file(path: str, content: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully wrote to {resolved_path} (simulated)"
 
+        _checkpoint([resolved_path], f"Before writing {display_path}")
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.write(content)
@@ -620,10 +686,12 @@ def write_to_file(path: str, content: str) -> str:
 
 
 def _extract_command_names(command: str) -> list[str]:
-    """Return every command name in a pipeline/chain.
+    """Return every executable name in a pipeline/chain.
 
     Splits on |, ||, &&, ; and a single & (background) so that a second
-    command hidden behind a separator can't slip past the allowlist.
+    command hidden behind a separator can't slip past the allowlist. Python's
+    ``-m`` target is also an executable boundary: allowing ``python`` must not
+    silently allow ``python -m pip`` when ``pip`` itself is not approved.
     """
     import re
     segments = re.split(r"\|\|?|&&?|;", command)
@@ -637,7 +705,19 @@ def _extract_command_names(command: str) -> list[str]:
         except ValueError:
             tokens = seg.split()
         if tokens:
-            names.append(tokens[0])
+            name = tokens[0]
+            names.append(name)
+            executable = PurePath(name).name.lower()
+            if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+                try:
+                    module_index = tokens.index("-m") + 1
+                except ValueError:
+                    continue
+                if module_index >= len(tokens):
+                    continue
+                module = tokens[module_index].split(".", 1)[0]
+                if module:
+                    names.append(module)
     return names
 
 
@@ -761,11 +841,14 @@ def run_bash_command(command: str) -> str:
             timeout=timeout_seconds,
             cwd=str(_workspace_root()),
         )
-        return (
+        output = (
             f"STDOUT:\n{result.stdout}\n"
             f"STDERR:\n{result.stderr}\n"
             f"EXIT CODE: {result.returncode}"
         )
+        if result.returncode != 0:
+            return f"Error: Command exited with code {result.returncode}.\n{output}"
+        return output
     except subprocess.TimeoutExpired:
         return (
             f"Error: Command timed out after {_bash_timeout()} seconds. "
@@ -773,6 +856,52 @@ def run_bash_command(command: str) -> str:
         )
     except Exception as exc:
         return _format_exception("Error executing command", exc)
+
+
+def start_process(command: str) -> str:
+    """Start an allowlisted command in the background and return its id."""
+    if not _bash_enabled():
+        return "Error: The bash tool is disabled by configuration."
+    if _read_only():
+        return "Error: Background processes are disabled in read-only mode."
+    validation_error = _validate_bash_command(command)
+    if validation_error:
+        return f"Error: {validation_error}"
+    if not _confirm_action("start_process", {"command": command, "cwd": str(_workspace_root())}):
+        return f"Error: Background command '{command}' was not approved."
+    if _dry_run():
+        return f"[Dry Run] Would start background process: {command}"
+    from apsara_cli.engine.processes import PROCESS_MANAGER
+    item = PROCESS_MANAGER.start(command, _workspace_root())
+    return f"Started process {item.process_id}: {command}"
+
+
+def list_processes() -> str:
+    from apsara_cli.engine.processes import PROCESS_MANAGER
+    items = PROCESS_MANAGER.list(_workspace_root())
+    return "\n".join(f"{p.process_id}  {p.status}  {p.command}" for p in items) or "No background processes."
+
+
+def process_output(process_id: str, lines: int = 100) -> str:
+    from apsara_cli.engine.processes import PROCESS_MANAGER
+    item = PROCESS_MANAGER.get(process_id)
+    if item is None or item.cwd != _workspace_root():
+        return f"Error: Process '{process_id}' not found."
+    output = list(item.output)[-max(1, min(lines, 1000)):]
+    return f"STATUS: {item.status}\n" + ("\n".join(output) or "No output yet.")
+
+
+def stop_process(process_id: str) -> str:
+    if _read_only():
+        return "Error: Process control is disabled in read-only mode."
+    from apsara_cli.engine.processes import PROCESS_MANAGER
+    item = PROCESS_MANAGER.get(process_id)
+    if item is None or item.cwd != _workspace_root():
+        return f"Error: Process '{process_id}' not found."
+    if not _confirm_action("stop_process", {"process_id": process_id, "command": item.command}):
+        return "Error: Stopping the process was not approved."
+    PROCESS_MANAGER.stop(process_id)
+    return f"Stopped process {process_id}."
 
 
 def search_files(pattern: str, root_dir: str = ".") -> str:
@@ -926,6 +1055,7 @@ def replace_file_lines(
                 f"{start_line} to {end_line} in {resolved_path} (simulated)."
             )
 
+        _checkpoint([resolved_path], f"Before replacing lines in {display_path}")
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.writelines(prefix)
             if replacement_content:
@@ -1031,6 +1161,7 @@ def edit_file(
                 f"in {resolved_path} (simulated)."
             )
 
+        _checkpoint([resolved_path], f"Before editing {display_path}")
         resolved_path.write_text(updated_content, encoding="utf-8")
 
         return (
@@ -1079,6 +1210,70 @@ def git_diff(staged: bool = False) -> str:
         return _format_exception("Error getting git diff", exc)
 
 
+def _git_read(args: list[str], timeout: int = 20) -> str:
+    try:
+        result = subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout, cwd=str(_workspace_root()))
+        if result.returncode != 0:
+            return f"Error running git {' '.join(args)}: {result.stderr.strip()}"
+        return result.stdout or "No output."
+    except Exception as exc:
+        return _format_exception("Error running git", exc)
+
+
+def git_log(limit: int = 20, path: str = "") -> str:
+    args = ["log", f"-{max(1, min(limit, 100))}", "--date=short", "--pretty=format:%h %ad %an %s"]
+    if path:
+        resolved = _resolve_path(path, must_exist=True)
+        args.extend(["--", str(resolved.relative_to(_workspace_root()))])
+    return _git_read(args)
+
+
+def git_show(revision: str = "HEAD") -> str:
+    if not revision or revision.startswith("-") or not all(c.isalnum() or c in "._/-" for c in revision):
+        return "Error: Invalid revision."
+    return _git_read(["show", "--stat", "--oneline", "--decorate", revision])
+
+
+def git_blame(path: str, start_line: int = 1, end_line: int = 0) -> str:
+    resolved = _resolve_path(path, must_exist=True)
+    relative = str(resolved.relative_to(_workspace_root()))
+    args = ["blame", "--date=short"]
+    if end_line:
+        args.extend(["-L", f"{max(1, start_line)},{max(start_line, end_line)}"])
+    args.extend(["--", relative])
+    return _git_read(args)
+
+
+def list_workspace_checkpoints() -> str:
+    """List recoverable snapshots created before file mutations."""
+    from apsara_cli.engine.checkpoints import list_checkpoints
+
+    checkpoints = list_checkpoints(_workspace_root())
+    if not checkpoints:
+        return "No checkpoints available."
+    return "\n".join(
+        f"{item['id']}  {item.get('label', '')}  ({len(item.get('files', []))} files)"
+        for item in checkpoints
+    )
+
+
+def undo_last_checkpoint(checkpoint_id: str = "") -> str:
+    """Restore a checkpoint, defaulting to the most recent snapshot."""
+    if _read_only():
+        return "Error: Undo is disabled in read-only mode."
+    from apsara_cli.engine.checkpoints import restore_checkpoint
+
+    try:
+        result = restore_checkpoint(_workspace_root(), checkpoint_id or None)
+    except FileNotFoundError as exc:
+        return f"Error: {exc}"
+    changed = result["restored"] + result["removed"]
+    return (
+        f"Restored checkpoint {result['id']} ({result['label']}). "
+        f"Updated {len(changed)} file(s): {', '.join(changed) or 'none'}."
+    )
+
+
 def list_symbols(path: str) -> str:
     """List functions, classes, and important definitions in a source file.
     Currently supports Python (.py) files."""
@@ -1112,6 +1307,35 @@ def list_symbols(path: str) -> str:
         return f"Error parsing Python file: {exc}"
     except Exception as exc:
         return _format_exception("Error listing symbols", exc)
+
+
+def repository_map(max_files: int = 200) -> str:
+    """Summarize languages, manifests, files, and important symbols."""
+    from apsara_cli.engine.intelligence import repository_map as build_map
+    return build_map(_workspace_root(), max(1, min(max_files, 1000)))
+
+
+def find_symbol(query: str) -> str:
+    """Find symbol definitions across supported source languages."""
+    from apsara_cli.engine.intelligence import find_symbol as search_symbols
+    return search_symbols(_workspace_root(), query)
+
+
+def read_project_memory() -> str:
+    from apsara_cli.engine.memory import read_memory
+    return read_memory(_workspace_root()) or "No project memory recorded."
+
+
+def remember_project_note(note: str) -> str:
+    if _read_only():
+        return "Error: Project memory writes are disabled in read-only mode."
+    if not note.strip():
+        return "Error: Memory note cannot be empty."
+    if not _confirm_action("remember_project_note", {"note": note}):
+        return "Error: Project memory update was not approved."
+    from apsara_cli.engine.memory import add_memory
+    path = add_memory(_workspace_root(), note)
+    return f"Saved project memory to {_display_path(path)}."
 
 
 def _tool_definition(
@@ -1169,6 +1393,12 @@ def get_agent_tools() -> list[Dict[str, Any]]:
                 },
             },
             ["path", "start_line", "end_line"],
+        ),
+        _tool_definition(
+            "parallel_read_files",
+            "Read up to eight independent workspace files concurrently.",
+            {"paths": {"type": "array", "items": {"type": "string"}, "maxItems": 8}},
+            ["paths"],
         ),
         _tool_definition(
             "glob_search",
@@ -1332,6 +1562,9 @@ def get_agent_tools() -> list[Dict[str, Any]]:
                 }
             },
         ),
+        _tool_definition("git_log", "Show recent commit history, optionally for one path.", {"limit": {"type": "integer"}, "path": {"type": "string"}}),
+        _tool_definition("git_show", "Show a revision summary and patch.", {"revision": {"type": "string"}}),
+        _tool_definition("git_blame", "Show line authorship for a file or line range.", {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, ["path"]),
         _tool_definition(
             "list_symbols",
             "List classes and functions in a source file. Currently supports Python (.py) files.",
@@ -1342,6 +1575,34 @@ def get_agent_tools() -> list[Dict[str, Any]]:
                 }
             },
             ["path"],
+        ),
+        _tool_definition(
+            "list_workspace_checkpoints",
+            "List automatic snapshots created before this agent changed files.",
+            {},
+        ),
+        _tool_definition(
+            "undo_last_checkpoint",
+            "Restore an automatic file checkpoint. Omit checkpoint_id to undo the latest mutation.",
+            {"checkpoint_id": {"type": "string", "description": "Optional checkpoint id."}},
+        ),
+        _tool_definition(
+            "repository_map",
+            "Build a compact multi-language repository map with manifests and symbols.",
+            {"max_files": {"type": "integer", "description": "Maximum source files to include."}},
+        ),
+        _tool_definition(
+            "find_symbol",
+            "Find matching class, function, type, interface, or enum definitions across the repository.",
+            {"query": {"type": "string", "description": "Case-insensitive symbol name fragment."}},
+            ["query"],
+        ),
+        _tool_definition("read_project_memory", "Read persistent workspace-specific notes.", {}),
+        _tool_definition(
+            "remember_project_note",
+            "Save a durable workspace fact or convention for future agent turns.",
+            {"note": {"type": "string", "description": "Concise fact or convention to remember."}},
+            ["note"],
         ),
     ]
 
@@ -1364,6 +1625,12 @@ def get_agent_tools() -> list[Dict[str, Any]]:
                 ["command"],
             )
         )
+        tools.extend([
+            _tool_definition("start_process", "Start an allowlisted long-running command in the background.", {"command": {"type": "string"}}, ["command"]),
+            _tool_definition("list_processes", "List background processes for this workspace.", {}),
+            _tool_definition("process_output", "Read recent output and status from a background process.", {"process_id": {"type": "string"}, "lines": {"type": "integer"}}, ["process_id"]),
+            _tool_definition("stop_process", "Stop a background process.", {"process_id": {"type": "string"}}, ["process_id"]),
+        ])
 
     manager = _mcp_manager_override.get()
     if manager is not None:
@@ -1376,6 +1643,7 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
     registry: Dict[str, Callable[..., str]] = {
         "read_file": read_file,
         "read_file_lines": read_file_lines,
+        "parallel_read_files": parallel_read_files,
         "write_to_file": write_to_file,
         "search_files": search_files,
         "glob_search": glob_search,
@@ -1387,7 +1655,16 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "move_file": move_file,
         "git_status": git_status,
         "git_diff": git_diff,
+        "git_log": git_log,
+        "git_show": git_show,
+        "git_blame": git_blame,
         "list_symbols": list_symbols,
+        "list_workspace_checkpoints": list_workspace_checkpoints,
+        "undo_last_checkpoint": undo_last_checkpoint,
+        "repository_map": repository_map,
+        "find_symbol": find_symbol,
+        "read_project_memory": read_project_memory,
+        "remember_project_note": remember_project_note,
     }
 
     # Register local workspace plugins
@@ -1398,6 +1675,12 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
 
     if _bash_enabled():
         registry["run_bash_command"] = run_bash_command
+        registry.update({
+            "start_process": start_process,
+            "list_processes": list_processes,
+            "process_output": process_output,
+            "stop_process": stop_process,
+        })
     return registry
 
 
@@ -1408,6 +1691,20 @@ async def execute_tool_async(tool_name: str, arguments: Dict[str, Any]) -> str:
     """
     manager = _mcp_manager_override.get()
     if manager is not None and manager.has_tool(tool_name):
+        remote_name = tool_name.rsplit("__", 1)[-1].lower()
+        read_prefixes = ("get", "list", "read", "search", "find", "lookup", "fetch", "status", "describe")
+        described = manager.describe_tool(tool_name) if hasattr(manager, "describe_tool") else None
+        annotated_read_only = getattr(described, "read_only", None)
+        is_read = annotated_read_only is True or (
+            annotated_read_only is None and remote_name.startswith(read_prefixes)
+        )
+        if _read_only() and not is_read:
+            return f"Error: MCP tool '{tool_name}' is not allowed in read-only mode."
+        if not is_read and not _confirm_action(
+            "mcp_tool_call",
+            {"tool": tool_name, "arguments": arguments, "risk": "external"},
+        ):
+            return f"Error: MCP tool '{tool_name}' was not approved."
         return await manager.call(tool_name, arguments)
     return execute_tool(tool_name, arguments)
 

@@ -1,8 +1,8 @@
 # Apsara by Bondeth Alpha Release Notes
 
-Version: `0.1.0-alpha`
+Version: `0.1.0`
 
-Date: `2026-04-07`
+Date: `2026-08-08`
 
 ## Overview
 
@@ -36,6 +36,8 @@ The focus of this release is:
 - hidden internal tool chatter by default
 - `/details` to inspect hidden activity on demand
 - local session history with trimming for oversized requests
+- typed run state, durable redacted journals, run reports, and evaluation suites
+- planning and verification gates for multi-step coding tasks
 
 ### Safer Code Editing
 
@@ -43,6 +45,10 @@ The focus of this release is:
 - diff preview before code changes are applied
 - `v` to inspect a fuller diff in the terminal
 - `e` to open the proposed patch in `$EDITOR` or `$VISUAL`
+- workspace-scoped parallel reads with context isolation
+- checkpoints and undo support for agent edits
+- process-group cleanup for background commands
+- nested interpreter validation so `python -m pip` cannot bypass the command allowlist
 
 ### Local CLI Workflow
 
@@ -51,6 +57,9 @@ The focus of this release is:
 - `chat`, `run`, and `sessions` commands
 - automatic `.env` loading for local use
 - workspace-scoped tools and optional allowlisted bash execution
+- repository maps, symbol search, project memory, git tools, and MCP governance
+- background process management and bounded output capture
+- model fallback support and JSON plugin manifests
 
 ### Tester Support
 
@@ -72,9 +81,8 @@ Please focus alpha feedback on:
 ## Known Alpha Limitations
 
 - live model usage still depends on the tester's own API key, billing, and rate limits
-- the `apsara` shell command may still be less reliable than `python3 -m app.cli` on older packaging setups
-- automated test coverage is still limited
-- this is ready for private alpha testing, not a wide public launch
+- OpenCode currently warns against sending confidential code to Big Pickle
+- this remains an alpha release; users should review proposed changes and keep Git backups
 
 ## Suggested Launch Positioning
 

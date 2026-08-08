@@ -41,6 +41,12 @@ def test_extract_still_splits_double_ampersand():
     assert _extract_command_names("cd /tmp && ls") == ["cd", "ls"]
 
 
+def test_extract_checks_python_module_as_nested_command():
+    assert _extract_command_names("python3 -m pip install --user pytest") == [
+        "python3", "pip"
+    ]
+
+
 # ── Bypass vectors rejected (validator level, no context needed) ───────────────
 
 def test_process_substitution_blocked():
@@ -105,3 +111,27 @@ def test_run_bash_allows_normal_pipeline(tmp_path):
         result = run_bash_command("cat a.txt | grep foo")
     assert "foo" in result
     assert "EXIT CODE: 0" in result
+
+
+def test_python_module_cannot_bypass_allowlist(tmp_path):
+    with agent_runtime_context(
+        workspace_root=tmp_path,
+        enable_bash=True,
+        allowed_commands={"python3", "pytest"},
+        confirmation_callback=lambda action, payload: True,
+    ):
+        result = run_bash_command("python3 -m pip install --user pytest")
+    assert result.startswith("Error")
+    assert "pip" in result
+
+
+def test_nonzero_command_is_reported_as_error(tmp_path):
+    with agent_runtime_context(
+        workspace_root=tmp_path,
+        enable_bash=True,
+        allowed_commands={"ls"},
+        confirmation_callback=lambda action, payload: True,
+    ):
+        result = run_bash_command("ls definitely-not-present")
+    assert result.startswith("Error: Command exited with code")
+    assert "EXIT CODE:" in result

@@ -377,6 +377,16 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("/sessions", "", "List all saved sessions"),
         ("/sessions", "clear [name]", "Delete all sessions, or one by name"),
     ]),
+    ("Workspace", [
+        ("/checkpoints", "", "List automatic file snapshots"),
+        ("/undo", "[checkpoint-id]", "Restore the latest or selected snapshot"),
+        ("/memory", "show", "Show persistent project memory"),
+        ("/memory", "add <note>", "Remember project context for future turns"),
+        ("/report", "[path]", "Export the latest run as Markdown"),
+        ("/processes", "", "List background commands"),
+        ("/logs", "<process-id>", "Show recent background-process output"),
+        ("/stop", "<process-id>", "Stop a background process"),
+    ]),
     ("Diagnostics", [
         ("/tools", "", "Show enabled tools with descriptions"),
         ("/bug", "", "Save logs + session state for a bug report"),
@@ -437,6 +447,61 @@ def handle_chat_command(
 
     if command_text == "/details":
         ui.show_hidden_events()
+        return True, current_model
+
+    if command_text == "/checkpoints":
+        from apsara_cli.engine.tools import list_workspace_checkpoints
+        with agent_runtime_context(workspace_root=options.workspace_root):
+            ui.info(list_workspace_checkpoints())
+        return True, current_model
+
+    if command_text == "/undo" or command_text.startswith("/undo "):
+        from apsara_cli.engine.tools import undo_last_checkpoint
+        checkpoint_id = command_text[len("/undo"):].strip()
+        if not ui.confirm_action("undo_checkpoint", {"checkpoint_id": checkpoint_id or "latest"}):
+            ui.info("Undo cancelled.")
+            return True, current_model
+        with agent_runtime_context(workspace_root=options.workspace_root, read_only=options.read_only):
+            result = undo_last_checkpoint(checkpoint_id)
+        (ui.error if result.startswith("Error:") else ui.success)(result)
+        return True, current_model
+
+    if command_text == "/memory" or command_text == "/memory show":
+        from apsara_cli.engine.memory import read_memory
+        content = read_memory(options.workspace_root)
+        ui.info(content or "No project memory recorded.")
+        return True, current_model
+
+    if command_text.startswith("/memory add "):
+        note = command_text[len("/memory add "):].strip()
+        if not note:
+            ui.error("Usage: /memory add <note>")
+            return True, current_model
+        from apsara_cli.engine.memory import add_memory
+        path = add_memory(options.workspace_root, note)
+        ui.success(f"Saved project memory to {path}")
+        return True, current_model
+
+    if command_text == "/report" or command_text.startswith("/report "):
+        from apsara_cli.engine.reports import export_latest_report
+        raw_path = command_text[len("/report"):].strip()
+        try:
+            path = export_latest_report(options.workspace_root, Path(raw_path) if raw_path else None)
+            ui.success(f"Exported run report to {path}")
+        except (FileNotFoundError, ValueError) as exc:
+            ui.error(str(exc))
+        return True, current_model
+
+    if command_text == "/processes" or command_text.startswith("/logs ") or command_text.startswith("/stop "):
+        from apsara_cli.engine.tools import list_processes, process_output, stop_process
+        with agent_runtime_context(workspace_root=options.workspace_root, read_only=options.read_only):
+            if command_text == "/processes":
+                result = list_processes()
+            elif command_text.startswith("/logs "):
+                result = process_output(command_text[len("/logs "):].strip())
+            else:
+                result = stop_process(command_text[len("/stop "):].strip())
+        (ui.error if result.startswith("Error:") else ui.info)(result)
         return True, current_model
 
     if command_text == "/clear":

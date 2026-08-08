@@ -122,6 +122,7 @@ class McpTool:
     remote_name: str
     local_name: str
     definition: dict[str, Any]
+    read_only: Optional[bool] = None
 
 
 @dataclass
@@ -148,6 +149,12 @@ def _tool_to_definition(server: str, tool: Any) -> McpTool:
 
     description = (getattr(tool, "description", None) or f"{tool.name} (via {server})").strip()
     description = f"[{server}] {description}"
+    annotations = getattr(tool, "annotations", None)
+    read_only = None
+    if annotations is not None:
+        read_only = getattr(annotations, "read_only_hint", None)
+        if read_only is None:
+            read_only = getattr(annotations, "readOnlyHint", None)
 
     return McpTool(
         server=server,
@@ -161,6 +168,7 @@ def _tool_to_definition(server: str, tool: Any) -> McpTool:
                 "parameters": schema,
             },
         },
+        read_only=read_only,
     )
 
 

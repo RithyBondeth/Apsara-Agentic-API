@@ -1,12 +1,7 @@
 # Releasing Apsara Agentic
 
-Two artifacts ship together and **must be released in this order** (the npm
-package installs the PyPI package, so PyPI has to exist first):
-
-1. `apsara-agentic` → PyPI (the Python CLI, source of truth)
-2. `apsara-cli` → npm (the thin launcher in `../apsara-cli-npm`)
-
-Keep the version in `pyproject.toml` and `../apsara-cli-npm/package.json` in sync.
+Apsara ships as the `apsara-agentic` Python package and is installed with
+`pipx`. There is no npm launcher to coordinate or maintain.
 
 ## 0. Pre-flight
 
@@ -14,15 +9,17 @@ Keep the version in `pyproject.toml` and `../apsara-cli-npm/package.json` in syn
 cd Apsara-Agentic-Cli
 python -m pip install -e ".[dev,release]"
 python -m pytest            # all tests green
-apsara doctor               # environment sane
+apsara doctor --live        # environment and selected provider are healthy
+git diff --check
 ```
 
 ## 1. Build & validate the Python package
 
 ```bash
-rm -rf dist build
 python -m build             # builds sdist + wheel into dist/
 twine check dist/*          # validates metadata + README render
+python -m pip_audit         # no known dependency advisories
+shasum -a 256 dist/*        # save these hashes in the GitHub release
 ```
 
 Sanity-check that the wheel contains only `apsara_cli/**` and the right entry
@@ -32,7 +29,11 @@ point (`apsara = apsara_cli.cli:main`).
 
 ```bash
 twine upload --repository testpypi dist/*
-pipx run --spec "apsara-agentic==<version>" --index-url https://test.pypi.org/simple/ apsara --help
+python -m venv /tmp/apsara-testpypi
+/tmp/apsara-testpypi/bin/pip install --extra-index-url https://pypi.org/simple \
+  --index-url https://test.pypi.org/simple apsara-agentic==<version>
+/tmp/apsara-testpypi/bin/apsara --version
+/tmp/apsara-testpypi/bin/apsara --help
 ```
 
 ## 3. Publish to PyPI
@@ -44,33 +45,47 @@ Requires a PyPI account with an API token (set `TWINE_USERNAME=__token__` and
 twine upload dist/*
 ```
 
-## 4. Tag the release
+Verify from a new environment before tagging:
+
+```bash
+python -m venv /tmp/apsara-pypi
+/tmp/apsara-pypi/bin/pip install apsara-agentic==<version>
+/tmp/apsara-pypi/bin/apsara doctor --no-live --no-color
+```
+
+## 4. Tag and announce the release
 
 ```bash
 git tag -a v<version> -m "Apsara Agentic v<version>"
 git push origin v<version>
 ```
 
-## 5. Publish the npm launcher
-
-Only after the PyPI package is live (the npm postinstall runs
-`pip install apsara-agentic==<version>`):
+Create a GitHub release from the tag. Attach the wheel, source archive, and
+SHA-256 checksums. Then verify the public install path:
 
 ```bash
-cd ../apsara-cli-npm
-npm pack --dry-run          # confirm only bin/, scripts/, README.md, package.json ship
-npm publish --access public
+pipx install apsara-agentic
+apsara --version
+apsara doctor --no-live
 ```
 
-## Verify the published chain
+## Rollback
 
-```bash
-pipx install apsara-agentic && apsara --help     # PyPI path
-npm install -g apsara-cli && apsara --help        # npm path (installs from PyPI)
-```
+PyPI release files are immutable. Do not attempt to overwrite a broken
+version.
+
+1. Yank the affected version on PyPI so new installers do not select it.
+2. Mark the GitHub release as withdrawn and put the reason at the top.
+3. Revert the release commit on a new branch.
+4. Fix and publish a higher patch version.
+5. Un-yank only if the original files are proven safe and compatible.
+
+Rollback immediately if installation fails, credentials are exposed, workspace
+boundaries can be crossed, background processes survive shutdown, or the live
+provider probe fails consistently.
 
 ## Notes
 
 - `dist/` and `build/` are gitignored; never commit build artifacts.
-- To test the npm wrapper against a local/unpublished CLI, set `APSARA_PY_SPEC`
-  (see `../apsara-cli-npm/README.md`).
+- Publish PyPI before deploying website copy that advertises the public `pipx`
+  command.
