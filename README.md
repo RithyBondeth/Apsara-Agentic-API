@@ -32,8 +32,8 @@ npm install -g apsara-cli
 apsara login
 ```
 
-Pick a provider (OpenAI, Anthropic, Google, Groq, Mistral, DeepSeek, or local
-Ollama) and paste your own API key. It's verified immediately and stored in
+Pick a provider (OpenCode Zen, OpenAI, Anthropic, Google, Groq, Mistral,
+DeepSeek, or local Ollama) and paste your own API key. It's verified immediately and stored in
 `~/.apsara/credentials.json` with owner-only permissions. Nothing is sent to an
 Apsara server — there isn't one.
 
@@ -86,6 +86,11 @@ exists for the rare case with no unique text to match on.
 Every write shows a diff preview and asks for approval. In the prompt, `Enter`
 approves, `n` rejects, `a` approves the rest of the session, `v` shows the full
 patch, and `e` opens it in `$EDITOR`.
+
+In the full-screen interface, approvals and diff review stay inside Apsara as a
+keyboard-driven overlay (`Enter`/`y` approve, `n`/`Esc` reject, `a` always,
+`v` toggles the full patch, and arrows scroll). Resumed sessions restore their
+saved user and final-assistant messages directly into the transcript.
 
 ### Command execution
 
@@ -169,7 +174,7 @@ global `~/.apsara/config.toml` → `.env`.
 ```toml
 [defaults]
 workspace = "."
-model = "gpt-4o"
+model = "opencode/big-pickle"
 session = "default"
 stateless = false
 allow_bash = false
@@ -184,6 +189,13 @@ welcome_title = "Welcome to Apsara Agentic"
 welcome_subtitle = "A focused terminal coding assistant"
 welcome_animation = true
 ```
+
+The default is `opencode/big-pickle`, called through OpenCode Zen's
+OpenAI-compatible endpoint. Set `OPENCODE_API_KEY`, or choose OpenCode during
+`apsara login`. Big Pickle is free for a limited period; OpenCode states that
+submitted data may be used to improve the model during that period, so choose a
+different provider for confidential repositories. `--model` and the config
+file can still select any supported LiteLLM model.
 
 Useful flags:
 

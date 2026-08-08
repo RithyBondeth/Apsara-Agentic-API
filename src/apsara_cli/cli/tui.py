@@ -14,20 +14,15 @@ picker) stay fully inline this way: they call ui.print_line()/read_single_key()
 like any other command, and nothing ever leaves the running Application or
 erases the screen.
 
-A few blocking, synchronous calls genuinely need the real terminal (getpass
-for API keys, in particular, since masked input has no inline equivalent
-here). Those are safe to run as-is: whatever slash command or tool
-confirmation triggers them runs synchronously inside a background task
-(`_handle_submission`, or engine/tools.py calling `execute_tool()` directly
-without `await`), so the outer Application's event loop is never
-concurrently polling the terminal at that moment -- there is no real
-contention to arbitrate. We mark those stretches as "passthrough" (real
-terminal I/O, via `_run_passthrough`) and force a full repaint of the outer
-app when they finish.
+Agent turns run on a worker thread so synchronous tool-approval callbacks can
+wait while prompt-toolkit keeps painting and operating a native review overlay.
+The passthrough path remains only as a defensive fallback for blocking console
+calls made before the full-screen application is attached.
 """
 
 import asyncio
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +38,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
+    ConditionalContainer,
     DynamicContainer,
     Float,
     FloatContainer,
@@ -61,6 +57,7 @@ from prompt_toolkit.layout.processors import (
     Transformation,
 )
 from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import Frame
 
 from apsara_cli.cli.chat import (
     _save_api_key_to_env,
@@ -74,7 +71,7 @@ from apsara_cli.cli.input import SlashCompleter
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.session import load_session_messages, sanitize_session_name
 from apsara_cli.engine.models import format_context_window, is_key_available, lookup_model
-from apsara_cli.shared.ui import ConsoleUI, Theme
+from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
 
 # Accent / chrome colors (ANSI truecolor), kept in one place.
 _ACCENT = "38;2;96;150;250"      # blue left-bar / user accent
@@ -96,6 +93,23 @@ class TuiConsoleUI(ConsoleUI):
         self._spinner_frame = ""
         self._spinner_tick = 0
         self._spinner_task: Optional[asyncio.Task] = None
+        self.sidebar_visible = True
+        self.native_confirmation_handler = None
+
+    def content_width(self, fallback: Optional[int] = None) -> int:
+        """Size transcript panels to the pane, not the whole terminal."""
+        from apsara_cli.shared.ui import terminal_width
+
+        columns = terminal_width()
+        if self.app is not None:
+            try:
+                columns = self.app.output.get_size().columns
+            except Exception:
+                pass
+        sidebar_width = 35 if self.sidebar_visible else 0
+        available = columns - sidebar_width - 6
+        preferred = fallback or self.theme.content_width
+        return max(16, min(preferred, max(16, available)))
 
     def attach(self, app: Application) -> None:
         self.app = app
@@ -129,35 +143,13 @@ class TuiConsoleUI(ConsoleUI):
         self._invalidate()
 
     def stream_text_start(self) -> None:
-        if self._passthrough or self.app is None:
-            super().stream_text_start()
-            return
-        self._stop_spinner_tick()
-        # The base-class "+ Thought: <elapsed>" marker writes through our
-        # overridden print_line, straight into the transcript buffer.
-        self._print_thought_marker()
-        self.lines.append("")
-        self.lines.append("  ")
-        self._invalidate()
+        super().stream_text_start()
 
     def stream_text_chunk(self, chunk: str) -> None:
-        if self._passthrough or self.app is None:
-            super().stream_text_chunk(chunk)
-            return
-        if not self.lines:
-            self.lines.append("")
-        color = self.theme.body
-        parts = chunk.split("\n")
-        self.lines[-1] += self.style(parts[0], color) if parts[0] else ""
-        for extra in parts[1:]:
-            self.lines.append(f"  {self.style(extra, color)}" if extra else "  ")
-        self._invalidate()
+        super().stream_text_chunk(chunk)
 
     def stream_text_end(self) -> None:
-        if self._passthrough or self.app is None:
-            super().stream_text_end()
-            return
-        self._invalidate()
+        super().stream_text_end()
 
     def redraw_block(self, prev_line_count: int, new_lines: list[str]) -> None:
         """Splice the transcript buffer in place instead of touching real
@@ -215,14 +207,17 @@ class TuiConsoleUI(ConsoleUI):
     # ── Transcript panels (used by the submit handler) ────────────────────
 
     def append_user_message(self, text: str) -> None:
-        """A user turn: a left-accent-bordered panel."""
+        """A user turn with an explicit role label and quiet accent rail."""
         bar = self.style("▌", _ACCENT)
         self.lines.append("")
+        self.lines.append(
+            f"  {self.style('❯', '1', _ACCENT)} {self.style('You', '1', '38;2;210;220;242')}"
+        )
         for raw in text.split("\n"):
-            self.lines.append(f"  {bar} {self.style(raw, '1', '38;2;225;230;242')}")
+            self.lines.append(f"  {bar} {self.style(raw, '38;2;225;230;242')}")
         self._invalidate()
 
-    # ── Blocking, real-terminal calls (confirmations, key entry, picker) ──
+    # ── Native confirmation bridge + defensive terminal fallback ─────────
 
     def read_single_key(self) -> str:
         was = self._passthrough
@@ -233,6 +228,8 @@ class TuiConsoleUI(ConsoleUI):
             self._passthrough = was
 
     def confirm_action(self, action: str, payload: dict) -> bool:
+        if self.native_confirmation_handler is not None and not self._passthrough:
+            return bool(self.native_confirmation_handler(action, payload))
         return self._run_passthrough(lambda: super(TuiConsoleUI, self).confirm_action(action, payload))
 
     def prompt_confirmation_choice(self, **kwargs: Any) -> str:
@@ -440,9 +437,9 @@ def _chat_text(ui: TuiConsoleUI) -> ANSI:
 
 
 def _status_left(options: Any) -> ANSI:
-    return ANSI(
-        f" \x1b[{_C_WORKSPACE}m⌂\x1b[0m \x1b[{_DIMTXT}m{options.workspace_root}\x1b[0m"
-    )
+    workspace = Path(options.workspace_root)
+    label = _shorten_path(workspace.name or str(workspace), width=26)
+    return ANSI(f" \x1b[{_C_WORKSPACE}m⌂\x1b[0m \x1b[{_DIMTXT}m{label}\x1b[0m")
 
 
 def _status_right(ui: TuiConsoleUI, current_model: str) -> ANSI:
@@ -454,9 +451,71 @@ def _status_right(ui: TuiConsoleUI, current_model: str) -> ANSI:
         pct = f" ({min(100, int(total / entry.context_window * 100))}%)"
     right = (
         f"\x1b[{_DIMTXT}m{tok}{pct}\x1b[0m   "
+        f"\x1b[1;38;2;210;216;228mctrl+b\x1b[0m \x1b[{_DIMTXT}mdetails\x1b[0m   "
         f"\x1b[1;38;2;210;216;228mctrl+p\x1b[0m \x1b[{_DIMTXT}mcommands\x1b[0m "
     )
     return ANSI(right)
+
+
+def _approval_text(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
+    """Content for the native tool-approval review overlay."""
+    lines: list[str] = [
+        f"{ui.style('Approve this action?', '1', '38;2;247;200;100')}",
+        ui.style(str(approval.get("title", "Action requires approval")), "1", _C_VALUE),
+        "",
+    ]
+    content = (
+        approval.get("full")
+        if approval.get("show_full") and approval.get("full")
+        else approval.get("preview")
+    )
+    if content:
+        for raw in str(content).splitlines():
+            if raw.startswith(("+++", "---", "@@")):
+                color = "38;2;140;191;255"
+            elif raw.startswith("+"):
+                color = "38;2;152;224;171"
+            elif raw.startswith("-"):
+                color = "38;2;255;168;168"
+            else:
+                color = "38;2;205;211;222"
+            lines.append(ui.style(raw, color))
+    else:
+        lines.append(ui.style("No content preview is available for this action.", _DIMTXT))
+    return ANSI("\n".join(lines))
+
+
+def _approval_footer(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
+    hints = [
+        ui.style("enter/y", "1", "38;2;120;200;150") + ui.dim(" approve"),
+        ui.style("n/esc", "1", "38;2;235;110;100") + ui.dim(" reject"),
+        ui.style("a", "1", "38;2;140;180;255") + ui.dim(" always"),
+    ]
+    if approval.get("full") and approval.get("full") != approval.get("preview"):
+        label = "preview" if approval.get("show_full") else "full diff"
+        hints.append(ui.style("v", "1", "38;2;190;150;250") + ui.dim(f" {label}"))
+    hints.append(ui.dim("↑↓ scroll"))
+    return ANSI("  ".join(hints))
+
+
+def _restore_history(ui: TuiConsoleUI, history: list[dict[str, Any]]) -> None:
+    """Restore user and final-assistant messages without exposing tool internals."""
+    turns = sum(1 for message in history if message.get("role") == "user")
+    ui.lines.extend([
+        "",
+        f"  {ui.style('↺', '38;2;130;210;160')} "
+        f"{ui.style(f'Resumed {turns} prior turn' + ('s' if turns != 1 else ''), '1', _C_VALUE)}",
+        f"  {ui.dim('Saved conversation restored below')}",
+    ])
+    for message in history:
+        role = message.get("role")
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            ui.append_user_message(content)
+        elif role == "assistant" and not message.get("tool_calls"):
+            ui.assistant(content)
 
 
 async def tui_loop(args: object, config: object) -> int:
@@ -480,7 +539,9 @@ async def tui_loop(args: object, config: object) -> int:
     # First run (nothing to resume) opens on the OpenCode-style welcome
     # screen: centered logo with the message box directly below it. The
     # split chat/sidebar layout takes over on the first submission.
-    state = {"model": options.model, "welcome": not history}
+    state = {"model": options.model, "welcome": not history, "busy": False}
+    sidebar_state = {"visible": terminal_width() >= 110}
+    ui.sidebar_visible = sidebar_state["visible"]
 
     # /models runs as a NATIVE in-app picker in the TUI (not the blocking
     # stdin-reading pick_model, which can't work while the Application owns
@@ -502,29 +563,32 @@ async def tui_loop(args: object, config: object) -> int:
     kp_yesno = Condition(lambda: keyprompt["mode"] == "yesno")
     kp_any = Condition(lambda: keyprompt["mode"] is not None)
 
-    from apsara_cli.cli.banner import banner_taglines, logo_width, small_logo_line, styled_logo_lines
-    from apsara_cli.shared.ui import terminal_width
+    approval: dict[str, Any] = {
+        "active": False,
+        "title": "",
+        "preview": "",
+        "full": "",
+        "show_full": False,
+        "result": "reject",
+        "event": None,
+        "is_trust": False,
+    }
+    approval_active = Condition(lambda: approval["active"])
 
+    from apsara_cli.cli.banner import banner_taglines, logo_width, small_logo_line, styled_logo_lines
     _subtitle, _powered = banner_taglines(config)
 
-    # The transcript always opens with the banner (logo + description +
-    # credit), so the chat view keeps it after the welcome screen hands
-    # over (and on resumed sessions).
-    pane_w = max(44, terminal_width() - 35)  # chat pane = terminal - sidebar - sep
-    ui.lines.append("")
-    if pane_w >= logo_width() + 4:
-        ui.lines.extend(styled_logo_lines(ui, max((pane_w - logo_width()) // 2, 2)))
-    else:
-        ui.lines.append(" " * max((pane_w - 11) // 2, 2) + small_logo_line(ui))
-    ui.lines.append("")
-    ui.lines.append(
-        " " * max((pane_w - len(_subtitle)) // 2, 2) + ui.style(_subtitle, "38;2;168;172;205")
-    )
-    ui.lines.append(
-        " " * max((pane_w - len(_powered)) // 2, 2) + ui.style(_powered, "38;2;200;166;110")
-    )
-    # No 'resumed N prior turns' line here — the sidebar's Session section
-    # already shows the turn/message counts and the resumed/new state.
+    # Keep branding on the welcome screen. Once chat starts, a compact
+    # session header gives the transcript maximum visual priority.
+    ui.lines.extend([
+        "",
+        (
+            f"  {ui.style('✦', '1', ui.theme.accent)} "
+            f"{ui.style('Apsara', '1', '38;2;225;230;242')}  "
+            f"{ui.dim('·')} {ui.dim(session_label)}"
+        ),
+        f"  {ui.dim('Type / for commands · ctrl+b toggles details')}",
+    ])
 
     # ── Layout ─────────────────────────────────────────────────────────────
 
@@ -579,9 +643,9 @@ async def tui_loop(args: object, config: object) -> int:
     )
     # ── Typing box (shared builder for the welcome and chat layouts) ──────
     # OpenCode-style: a rounded border, a blue accent bar on the inside-left
-    # edge, a placeholder while empty, and the 'Build · Model Provider' mode
+    # edge, a placeholder while empty, and the 'Build · Model' mode
     # line inside the box, under the text.
-    _placeholder = _PlaceholderProcessor('Ask anything... "What is the tech stack of this project?"')
+    _placeholder = _PlaceholderProcessor("Ask Apsara to build, explain, or debug…")
 
     def _make_input_box(input_height, width=None):
         control_window = Window(
@@ -589,7 +653,7 @@ async def tui_loop(args: object, config: object) -> int:
                 buffer=input_buffer,
                 input_processors=[
                     # Mask characters while entering an API key; hide the
-                    # "Ask anything..." placeholder during any key prompt.
+                    # regular placeholder during any key prompt.
                     ConditionalProcessor(PasswordProcessor(), kp_key),
                     ConditionalProcessor(_placeholder, ~kp_any),
                 ],
@@ -602,6 +666,25 @@ async def tui_loop(args: object, config: object) -> int:
             ),
             height=1,
         )
+        composer_hint = Window(
+            content=FormattedTextControl(
+                lambda: ANSI(
+                    ui.style("working…", "38;2;247;200;100")
+                    if state["busy"]
+                    else ui.style(
+                        "enter send · esc+enter newline"
+                        if terminal_width() >= 100
+                        else "enter send",
+                        _DIMTXT,
+                    )
+                ),
+                focusable=False,
+            ),
+            height=1,
+            align=WindowAlign.RIGHT,
+            dont_extend_width=True,
+        )
+        composer_meta = VSplit([mode_window, composer_hint], height=1)
 
         def _edge(left: str, right: str) -> VSplit:
             return VSplit([
@@ -610,7 +693,7 @@ async def tui_loop(args: object, config: object) -> int:
                 Window(width=1, char=right, style="class:inputborder"),
             ], height=1)
 
-        def _row(content: Window, height) -> VSplit:
+        def _row(content, height) -> VSplit:
             return VSplit([
                 Window(width=1, char="│", style="class:inputborder"),
                 Window(width=1, char="▌", style="class:accent"),
@@ -622,21 +705,25 @@ async def tui_loop(args: object, config: object) -> int:
         box = HSplit([
             _edge("╭", "╮"),
             _row(control_window, input_height),
-            _row(Window(char=" ", height=1), 1),  # breathing room above the mode line
-            _row(mode_window, 1),
+            _row(composer_meta, 1),
             _edge("╰", "╯"),
         ], width=width)
         return box, control_window
 
-    chat_box, chat_input_window = _make_input_box(3)
+    chat_box, chat_input_window = _make_input_box(2)
 
     # ── Chat layout: transcript + detail sidebar + boxed input + status bar ─
+    def _transcript_container():
+        if sidebar_state["visible"]:
+            return VSplit([
+                chat_window,
+                Window(width=1, char="│", style="class:sep"),
+                sidebar_window,
+            ])
+        return chat_window
+
     chat_root = HSplit([
-        VSplit([
-            chat_window,
-            Window(width=1, char="│", style="class:sep"),
-            sidebar_window,
-        ]),
+        DynamicContainer(_transcript_container),
         Window(height=1, char=" "),
         chat_box,
         status_bar,
@@ -675,7 +762,7 @@ async def tui_loop(args: object, config: object) -> int:
     _key = "1", "38;2;140;180;255"
     hints_ansi = ANSI(
         f"{ui.style('/', *_key)} {ui.style('commands', _DIMTXT)}   "
-        f"{ui.style('esc+enter', *_key)} {ui.style('newline', _DIMTXT)}   "
+        f"{ui.style('ctrl+p', *_key)} {ui.style('palette', _DIMTXT)}   "
         f"{ui.style('↑↓', *_key)} {ui.style('history', _DIMTXT)}"
     )
     hints_row = VSplit([
@@ -736,9 +823,38 @@ async def tui_loop(args: object, config: object) -> int:
         welcome_bar,
     ])
 
+    approval_window = Window(
+        content=FormattedTextControl(lambda: _approval_text(ui, approval), focusable=False),
+        wrap_lines=False,
+        always_hide_cursor=True,
+    )
+    approval_dialog = ConditionalContainer(
+        content=Frame(
+            HSplit([
+                approval_window,
+                Window(height=1, char=" "),
+                Window(
+                    FormattedTextControl(lambda: _approval_footer(ui, approval), focusable=False),
+                    height=1,
+                ),
+            ]),
+            title="Action review",
+            style="class:approval",
+        ),
+        filter=approval_active,
+    )
+    approval_scrim = ConditionalContainer(
+        content=Window(char=" ", style="class:overlay"),
+        filter=approval_active,
+    )
+
     body = FloatContainer(
         content=DynamicContainer(lambda: welcome_root if state["welcome"] else chat_root),
-        floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=16, scroll_offset=1))],
+        floats=[
+            Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=16, scroll_offset=1)),
+            Float(left=0, right=0, top=0, bottom=0, content=approval_scrim),
+            Float(left=4, right=4, top=2, bottom=2, content=approval_dialog),
+        ],
     )
 
     # ── Chat-pane scrolling: auto-follow the newest line, but let PageUp/
@@ -786,6 +902,10 @@ async def tui_loop(args: object, config: object) -> int:
         "placeholder": "fg:#5a616e",
         "sidebar": "bg:#0e1015",
         "statusbar": "bg:#12141a",
+        "overlay": "bg:#08090d",
+        "approval": "bg:#12151d fg:#e1e6f2",
+        "approval.border": "fg:#f0aa5a bg:#12151d",
+        "approval.label": "fg:#f0c878 bg:#12151d bold",
         "completion-menu.completion": "bg:#1c1f27 fg:#c8cede",
         "completion-menu.completion.current": "bg:#f7b76a fg:#1a1a1a",
     })
@@ -968,19 +1088,104 @@ async def tui_loop(args: object, config: object) -> int:
             ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
         return resolved
 
+    def _native_confirm(action: str, payload: dict[str, Any]) -> bool:
+        """Block only the agent worker while the main TUI operates the dialog."""
+        is_trust = action == "trust_workspace_code"
+        if ui.approve_all and not is_trust:
+            return True
+
+        title, preview, diff_preview, diff_full, _diff_editor, _path_hint = describe_action(
+            action, payload
+        )
+        done = threading.Event()
+        approval.update({
+            "active": True,
+            "title": title,
+            "preview": diff_preview or preview or "",
+            "full": diff_full or diff_preview or preview or "",
+            "show_full": False,
+            "result": "reject",
+            "event": done,
+            "is_trust": is_trust,
+        })
+        approval_window.vertical_scroll = 0
+        ui.stop_spinner()
+        ui._invalidate()
+        done.wait()
+
+        result = approval["result"]
+        if result == "always" and not is_trust:
+            ui.approve_all = True
+        ui.start_spinner("Apsara is working")
+        return result in {"approve", "always"}
+
     kb = KeyBindings()
 
-    @kb.add("c-c")
+    @kb.add("c-c", filter=~approval_active)
     def _interrupt(event) -> None:
         event.app.exit()
 
-    @kb.add("c-d")
+    @kb.add("c-d", filter=~approval_active)
     def _eof(event) -> None:
         event.app.exit()
 
-    @kb.add("escape", "enter", filter=~picker_active & ~kp_any)
+    @kb.add("escape", "enter", filter=~picker_active & ~kp_any & ~approval_active)
     def _newline(event) -> None:
         event.current_buffer.insert_text("\n")
+
+    # ── Native action-review overlay ──────────────────────────────────────
+    def _approval_resolve(result: str) -> None:
+        approval["result"] = result
+        approval["active"] = False
+        done = approval.get("event")
+        if done is not None:
+            done.set()
+        ui._invalidate()
+
+    @kb.add("enter", filter=approval_active, eager=True)
+    @kb.add("y", filter=approval_active, eager=True)
+    @kb.add("Y", filter=approval_active, eager=True)
+    def _approval_accept(event) -> None:
+        _approval_resolve("approve")
+
+    @kb.add("a", filter=approval_active, eager=True)
+    @kb.add("A", filter=approval_active, eager=True)
+    def _approval_always(event) -> None:
+        _approval_resolve("always")
+
+    @kb.add("n", filter=approval_active, eager=True)
+    @kb.add("N", filter=approval_active, eager=True)
+    @kb.add("q", filter=approval_active, eager=True)
+    @kb.add("escape", filter=approval_active, eager=True)
+    @kb.add("c-c", filter=approval_active, eager=True)
+    def _approval_reject(event) -> None:
+        _approval_resolve("reject")
+
+    @kb.add("v", filter=approval_active, eager=True)
+    @kb.add("V", filter=approval_active, eager=True)
+    def _approval_toggle_full(event) -> None:
+        if approval.get("full") and approval.get("full") != approval.get("preview"):
+            approval["show_full"] = not approval["show_full"]
+            approval_window.vertical_scroll = 0
+            ui._invalidate()
+
+    @kb.add("up", filter=approval_active, eager=True)
+    @kb.add("k", filter=approval_active, eager=True)
+    def _approval_scroll_up(event) -> None:
+        approval_window.vertical_scroll = max(approval_window.vertical_scroll - 1, 0)
+
+    @kb.add("down", filter=approval_active, eager=True)
+    @kb.add("j", filter=approval_active, eager=True)
+    def _approval_scroll_down(event) -> None:
+        approval_window.vertical_scroll += 1
+
+    @kb.add("pageup", filter=approval_active, eager=True)
+    def _approval_page_up(event) -> None:
+        approval_window.vertical_scroll = max(approval_window.vertical_scroll - 10, 0)
+
+    @kb.add("pagedown", filter=approval_active, eager=True)
+    def _approval_page_down(event) -> None:
+        approval_window.vertical_scroll += 10
 
     # ── /models picker navigation (only while the picker is open) ─────────
     @kb.add("up", filter=picker_active, eager=True)
@@ -1035,6 +1240,13 @@ async def tui_loop(args: object, config: object) -> int:
             input_buffer.insert_text("/")
         input_buffer.start_completion(select_first=False)
 
+    @kb.add("c-b")
+    def _toggle_sidebar(event) -> None:
+        """Show details on demand without permanently shrinking the chat."""
+        sidebar_state["visible"] = not sidebar_state["visible"]
+        ui.sidebar_visible = sidebar_state["visible"]
+        event.app.invalidate()
+
     @kb.add("pageup")
     def _scroll_up(event) -> None:
         ri = chat_window.render_info
@@ -1054,39 +1266,60 @@ async def tui_loop(args: object, config: object) -> int:
             follow["last_set"] = new_scroll
 
     async def _handle_submission(text: str) -> None:
-        ui.append_user_message(text)
+        try:
+            ui.append_user_message(text)
 
-        # /models needs the native async picker (not the blocking pick_model
-        # inside handle_chat_command, which can't read keys under the TUI).
-        if text == "/models" or text.startswith("/models "):
-            await _run_model_picker(text[len("/models"):].strip().lower())
-            return
+            # /models needs the native async picker (not the blocking pick_model
+            # inside handle_chat_command, which can't read keys under the TUI).
+            if text == "/models" or text.startswith("/models "):
+                await _run_model_picker(text[len("/models"):].strip().lower())
+                return
 
-        if text.startswith("/"):
-            keep, new_model = handle_chat_command(text, history, state["model"], options, config, ui)
-            state["model"] = new_model
-            if not keep:
-                app.exit()
-            return
+            if text.startswith("/"):
+                keep, new_model = handle_chat_command(
+                    text, history, state["model"], options, config, ui
+                )
+                state["model"] = new_model
+                if not keep:
+                    app.exit()
+                return
 
-        # execute_instruction drives begin_turn/finish_turn, which render the
-        # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.
-        new_history, _usage = await execute_instruction(text, state["model"], history, options, ui)
-        history[:] = new_history
+            # execute_instruction drives begin_turn/finish_turn, which render the
+            # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.
+            def _run_agent_turn():
+                return asyncio.run(
+                    execute_instruction(text, state["model"], list(history), options, ui)
+                )
 
-        save_if_needed(history, state["model"], options, ui)
-        ui._invalidate()
+            new_history, _usage = await asyncio.to_thread(_run_agent_turn)
+            history[:] = new_history
+            save_if_needed(history, state["model"], options, ui)
+        finally:
+            state["busy"] = False
+            ui._invalidate()
 
-    @kb.add("enter", filter=Condition(lambda: not input_buffer.complete_state) & ~picker_active & ~kp_any)
+    @kb.add(
+        "enter",
+        filter=(
+            Condition(lambda: not input_buffer.complete_state)
+            & ~picker_active
+            & ~kp_any
+            & ~approval_active
+        ),
+    )
     def _submit(event) -> None:
         text = input_buffer.text.strip()
         input_buffer.reset()
         if not text:
             return
+        if state["busy"]:
+            ui.warning("Apsara is still working. Wait for this turn to finish before sending another.")
+            return
         if state["welcome"]:
             # First message: swap the centered welcome for the chat layout.
             state["welcome"] = False
             event.app.layout.focus(chat_input_window)
+        state["busy"] = True
         event.app.create_background_task(_handle_submission(text))
 
     app = Application(
@@ -1102,6 +1335,10 @@ async def tui_loop(args: object, config: object) -> int:
         after_render=_after_render,
     )
     ui.attach(app)
+    ui.native_confirmation_handler = _native_confirm
+
+    if history:
+        _restore_history(ui, history)
 
     await app.run_async()
     return 0

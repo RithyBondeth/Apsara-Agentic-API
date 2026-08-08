@@ -2,6 +2,7 @@ import json
 import os
 from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream
+from apsara_cli.engine.models import DEFAULT_MODEL
 from apsara_cli.engine.tools import execute_tool_async, get_mcp_manager
 from apsara_cli.shared.text import is_tool_error
 
@@ -31,7 +32,7 @@ Analyze problems deeply, execute files or tools as requested to accomplish the g
 
 async def run_agent_stream(
     conversation_history: List[Dict[str, Any]],
-    model: str = "gpt-4o"
+    model: str = DEFAULT_MODEL
 ) -> AsyncGenerator[str, None]:
     """
     Core execution streaming loop for the agent.

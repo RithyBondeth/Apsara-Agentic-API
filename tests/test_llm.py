@@ -43,6 +43,28 @@ def test_call_llm_requires_auth():
     assert usage == {}
 
 
+def test_call_llm_routes_default_through_opencode(monkeypatch):
+    monkeypatch.setenv("OPENCODE_API_KEY", "zen-test-key")
+    request = {}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message="ok")],
+        usage=None,
+    )
+
+    async def fake_acompletion(**kwargs):
+        request.update(kwargs)
+        return response
+
+    with patch.object(litellm, "acompletion", fake_acompletion):
+        message, usage = _run(llm.call_llm([{"role": "user", "content": "hi"}]))
+
+    assert message == "ok"
+    assert usage == {}
+    assert request["model"] == "openai/big-pickle"
+    assert request["api_base"] == "https://opencode.ai/zen/v1"
+    assert request["api_key"] == "zen-test-key"
+
+
 def test_call_llm_stream_requires_auth():
     with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=False):
         events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))

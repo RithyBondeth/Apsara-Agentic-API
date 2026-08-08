@@ -18,6 +18,7 @@ from apsara_cli.engine.models import (
     models_for_provider,
     provider_env_var,
     providers_in_order,
+    resolve_litellm_request,
     validate_key_format,
 )
 from apsara_cli.shared.ui import ConsoleUI
@@ -64,10 +65,12 @@ async def _verify_key(model: str, env_var: str, api_key: str) -> tuple[Optional[
     previous = os.environ.get(env_var)
     os.environ[env_var] = api_key
     try:
+        resolved_model, provider_options = resolve_litellm_request(model)
         await litellm.acompletion(
-            model=model,
+            model=resolved_model,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1,
+            **provider_options,
         )
         return True, ""
     except litellm.AuthenticationError as exc:

@@ -74,13 +74,13 @@ def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
 
 
 def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> ResolvedOptions:
-    from apsara_cli.engine.models import resolve_model_id as _resolve_mid
+    from apsara_cli.engine.models import DEFAULT_MODEL, resolve_model_id as _resolve_mid
     from apsara_cli.cli.auth import get_active_default_model
     workspace = resolve_value(args.workspace, config_defaults.workspace, ".")
-    # Precedence: --model flag > config default > active provider's default > "llama".
+    # Precedence: --model flag > config default > active provider's default > Apsara default.
     _raw_model = resolve_value(args.model, config_defaults.model, None)
     if _raw_model is None:
-        _raw_model = get_active_default_model() or "llama"
+        _raw_model = get_active_default_model() or DEFAULT_MODEL
     model = _resolve_mid(str(_raw_model))  # expand short aliases at startup
     session = resolve_value(args.session, config_defaults.session, "default")
     stateless = bool(resolve_value(args.stateless, config_defaults.stateless, False))
@@ -150,6 +150,13 @@ def detect_model_credentials(model: str) -> tuple[str, Optional[list[str]], str]
         provider, model_name = raw_model.split("/", 1)
         provider = provider.lower()
     normalized_name = model_name.lower()
+
+    if provider == "opencode" or normalized_name == "big-pickle":
+        return (
+            "opencode",
+            ["OPENCODE_API_KEY"],
+            "OpenCode Zen model detected.",
+        )
 
     if provider in {"openai", "azure", "azure_openai"} or normalized_name.startswith(
         ("gpt-", "o1", "o3", "o4", "o5", "codex-", "text-embedding-")

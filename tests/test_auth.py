@@ -13,7 +13,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from apsara_cli.cli import auth
 from apsara_cli.engine import models
 
-_PROVIDER_ENV_VARS = ("OPENAI_API_KEY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+_PROVIDER_ENV_VARS = (
+    "OPENCODE_API_KEY",
+    "OPENAI_API_KEY",
+    "GROQ_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+)
 
 
 @pytest.fixture
@@ -39,14 +45,29 @@ def temp_creds(tmp_path, monkeypatch):
 
 def test_provider_helpers_consistent_with_registry():
     providers = models.providers_in_order()
+    assert providers[0] == "opencode"
     assert "openai" in providers
     assert "ollama" in providers
 
     # OpenAI is a keyed provider; ollama is local (no key).
     assert models.provider_env_var("openai") == "OPENAI_API_KEY"
+    assert models.provider_env_var("opencode") == "OPENCODE_API_KEY"
     assert models.provider_env_var("ollama") is None
     assert models.default_model_for_provider("openai") == "gpt-4o"
     assert models.default_model_for_provider("groq") == "groq/llama-3.3-70b-versatile"
+    assert models.default_model_for_provider("opencode") == models.DEFAULT_MODEL
+
+
+def test_big_pickle_alias_and_litellm_routing(monkeypatch):
+    monkeypatch.setenv("OPENCODE_API_KEY", "zen-test-key")
+
+    assert models.resolve_model_id("pickle") == models.DEFAULT_MODEL
+    model_id, options = models.resolve_litellm_request(models.DEFAULT_MODEL)
+    assert model_id == "openai/big-pickle"
+    assert options == {
+        "api_base": models.OPENCODE_API_BASE,
+        "api_key": "zen-test-key",
+    }
 
 
 # ── Credential store round-trips ──────────────────────────────────────────────

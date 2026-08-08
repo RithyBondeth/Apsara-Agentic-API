@@ -6,6 +6,7 @@ import json
 import asyncio
 from typing import Any, AsyncGenerator
 import litellm
+from apsara_cli.engine.models import DEFAULT_MODEL, resolve_litellm_request
 from apsara_cli.engine.tools import get_agent_tools
 
 import os as _os
@@ -20,10 +21,11 @@ DEFAULT_MAX_COMPLETION_TOKENS = 4096
 _RETRY_DELAYS = [5, 15, 30]
 
 
-def estimate_request_tokens(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> int:
+def estimate_request_tokens(messages: list[dict], model: str = DEFAULT_MODEL) -> int:
     try:
+        resolved_model, _provider_options = resolve_litellm_request(model)
         return litellm.token_counter(
-            model=model,
+            model=resolved_model,
             messages=messages,
             tools=get_agent_tools(),
             tool_choice="auto",
@@ -35,7 +37,7 @@ def estimate_request_tokens(messages: list[dict], model: str = "groq/llama-3.3-7
         )
 
 
-async def summarize_messages(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> str:
+async def summarize_messages(messages: list[dict], model: str = DEFAULT_MODEL) -> str:
     """
     Summarize a list of messages into a concise paragraph.
     """
@@ -52,10 +54,12 @@ async def summarize_messages(messages: list[dict], model: str = "groq/llama-3.3-
     ]
     
     try:
+        resolved_model, provider_options = resolve_litellm_request(model)
         response = await litellm.acompletion(
-            model=model,
+            model=resolved_model,
             messages=summary_messages,
             max_tokens=300,
+            **provider_options,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -73,7 +77,7 @@ def _is_malformed_tool_call(exc: Exception) -> bool:
     return "tool_use_failed" in text or "failed_generation" in text
 
 
-async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versatile") -> tuple[Any, Any]:
+async def call_llm(messages: list[dict], model: str = DEFAULT_MODEL) -> tuple[Any, Any]:
     """
     Send the conversation to LLM with configured tools via LiteLLM.
     Returns (Response Message Object, Usage Dictionary Object)
@@ -83,12 +87,14 @@ async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versat
         return {"error": f"No API key found for model '{model}'. Run 'apsara login' to add one."}, {}
 
     try:
+        resolved_model, provider_options = resolve_litellm_request(model)
         response = await litellm.acompletion(
-            model=model,
+            model=resolved_model,
             messages=messages,
             tools=get_agent_tools(),
             tool_choice="auto",
             max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+            **provider_options,
         )
         return response.choices[0].message, response.usage.model_dump() if response.usage else {}
     except Exception as e:
@@ -96,7 +102,7 @@ async def call_llm(messages: list[dict], model: str = "groq/llama-3.3-70b-versat
 
 
 async def call_llm_stream(
-    messages: list[dict], model: str = "groq/llama-3.3-70b-versatile"
+    messages: list[dict], model: str = DEFAULT_MODEL
 ) -> AsyncGenerator[dict, None]:
     """
     Streaming LLM call with automatic retry on rate-limit errors.
@@ -113,13 +119,15 @@ async def call_llm_stream(
 
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
+            resolved_model, provider_options = resolve_litellm_request(model)
             response = await litellm.acompletion(
-                model=model,
+                model=resolved_model,
                 messages=messages,
                 tools=get_agent_tools(),
                 tool_choice="auto",
                 max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
                 stream=True,
+                **provider_options,
             )
 
             content_parts: list[str] = []

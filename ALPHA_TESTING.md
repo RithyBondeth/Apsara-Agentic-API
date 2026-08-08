@@ -26,7 +26,7 @@ The goal is to answer:
 Start with 3 to 10 trusted testers who:
 
 - are comfortable using the terminal
-- can create an OpenAI API key with billing enabled
+- can create an OpenCode Zen API key
 - regularly work in local codebases
 - are willing to share screenshots and error messages
 
@@ -34,10 +34,14 @@ Start with 3 to 10 trusted testers who:
 
 Each tester should have:
 
-- Python 3.9 or newer
+- Python 3.10 or newer
 - a local terminal
-- an OpenAI API key with active billing
+- an OpenCode Zen API key
 - a repo or sample project they can safely test on
+
+Big Pickle is free for a limited period. OpenCode states that submitted data
+may be used to improve the model during that period, so testers should not use
+confidential repositories with the default model.
 
 Optional but recommended:
 
@@ -80,7 +84,7 @@ python3 -m app.cli
 1. Add the API key to `.env`:
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
+OPENCODE_API_KEY=your_opencode_zen_api_key
 ```
 
 1. Run the health check:
@@ -92,7 +96,7 @@ python3 -m app.cli doctor --workspace .
 1. Initialize the project and start the CLI:
 
 ```bash
-python3 -m app.cli init --workspace . --model gpt-5.4-mini
+apsara init --workspace .
 ```
 
 ## 5. First-Test Script
@@ -219,7 +223,7 @@ Before sharing with testers, confirm:
 
 - `.env` loading works
 - `python3 -m app.cli doctor --workspace .` works
-- `python3 -m app.cli chat --workspace . --model gpt-5.4-mini` works
+- `apsara chat --workspace .` works with the default `opencode/big-pickle` model
 - the welcome screen renders nicely
 - the loading animation appears while the agent is working
 - assistant responses are readable

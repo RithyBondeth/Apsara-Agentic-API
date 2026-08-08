@@ -221,9 +221,10 @@ def mode_line_parts(options: "ResolvedOptions", current_model: str) -> tuple[str
 def build_mode_line(ui: "ConsoleUI", options: "ResolvedOptions", current_model: str) -> str:
     """
     OpenCode-style mode line rendered under the input:
-    'Build · Big Pickle Zhipu' — mode accent-colored, model bold, provider dim.
+    'Build · Big Pickle' — mode accent-colored and model bold. Provider and
+    context details remain available in the optional details sidebar.
     """
-    mode, model_name, provider = mode_line_parts(options, current_model)
+    mode, model_name, _provider = mode_line_parts(options, current_model)
     mode_color = {
         "Dry-run": "38;2;247;200;100",
         "Read-only": "38;2;240;170;90",
@@ -234,8 +235,6 @@ def build_mode_line(ui: "ConsoleUI", options: "ResolvedOptions", current_model: 
         ui.dim("·"),
         ui.style(model_name, "1", "38;2;225;230;242"),
     ]
-    if provider:
-        parts.append(ui.dim(provider))
     return " ".join(parts)
 
 

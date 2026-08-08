@@ -10,7 +10,7 @@ from apsara_cli.shared.ui import ConsoleUI
 DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
 [defaults]
 # workspace = "."
-# model = "gpt-4o"
+# model = "opencode/big-pickle"
 # auto_approve = false
 
 # Let the agent verify its own work. Without a test runner on the allowlist it

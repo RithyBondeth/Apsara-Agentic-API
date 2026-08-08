@@ -17,6 +17,12 @@ The focus of this release is:
 
 ## Highlights
 
+### Default Model
+
+- OpenCode Zen's `opencode/big-pickle` is the default model
+- `apsara login` supports OpenCode Zen and stores its key locally
+- other LiteLLM-compatible models remain selectable with `--model`
+
 ### Branded CLI Experience
 
 - custom Apsara welcome screen

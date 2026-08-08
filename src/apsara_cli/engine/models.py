@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+DEFAULT_MODEL = "opencode/big-pickle"
+OPENCODE_API_BASE = "https://opencode.ai/zen/v1"
+
+
 @dataclass
 class ModelEntry:
     model_id: str           # LiteLLM model string, e.g. "groq/llama-3.3-70b-versatile"
@@ -33,6 +37,18 @@ class ModelEntry:
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 MODELS: list[ModelEntry] = [
+    # ── OpenCode Zen (free for a limited period) ─────────────────────────────
+    ModelEntry(
+        model_id=DEFAULT_MODEL,
+        display_name="Big Pickle",
+        provider="opencode",
+        tier="free",
+        context_window=200_000,
+        env_var="OPENCODE_API_KEY",
+        notes="Reasoning coding model; free temporarily (avoid confidential code)",
+        aliases=["big-pickle", "pickle"],
+    ),
+
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
     ModelEntry(
         model_id="groq/llama-3.3-70b-versatile",
@@ -224,6 +240,7 @@ def resolve_model_id(name: str) -> str:
 # (env_var → (expected_prefix_or_None, human_description))
 
 KEY_HINTS: dict[str, tuple[Optional[str], str]] = {
+    "OPENCODE_API_KEY":  (None,      "OpenCode Zen API key — no fixed prefix"),
     "OPENAI_API_KEY":     ("sk-",     "OpenAI keys start with  sk-"),
     "ANTHROPIC_API_KEY":  ("sk-ant-", "Anthropic keys start with  sk-ant-"),
     "GROQ_API_KEY":       ("gsk_",    "Groq keys start with  gsk_"),
@@ -231,6 +248,20 @@ KEY_HINTS: dict[str, tuple[Optional[str], str]] = {
     "MISTRAL_API_KEY":    (None,      "Mistral API key — no fixed prefix"),
     "DEEPSEEK_API_KEY":   ("sk-",     "DeepSeek keys start with  sk-"),
 }
+
+
+def resolve_litellm_request(model: str) -> tuple[str, dict[str, str]]:
+    """Return the LiteLLM model ID and provider-specific request options."""
+    canonical_model = resolve_model_id(model)
+    if canonical_model == DEFAULT_MODEL:
+        options = {
+            "api_base": os.environ.get("OPENCODE_API_BASE", OPENCODE_API_BASE),
+        }
+        api_key = os.environ.get("OPENCODE_API_KEY")
+        if api_key:
+            options["api_key"] = api_key
+        return "openai/big-pickle", options
+    return canonical_model, {}
 
 
 def validate_key_format(env_var: str, value: str) -> tuple[bool, str]:

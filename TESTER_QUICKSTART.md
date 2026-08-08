@@ -25,8 +25,9 @@ key. Apsara never sends your key to any Apsara server — it's stored locally.
 apsara login
 ```
 
-You'll get a menu of providers (OpenAI, Anthropic, Google, Groq, Mistral,
-DeepSeek, and local Ollama). Choose one, paste that provider's API key when
+You'll get a menu of providers (OpenCode Zen, OpenAI, Anthropic, Google, Groq,
+Mistral, DeepSeek, and local Ollama). OpenCode Zen with Big Pickle is the
+default. Choose one, paste that provider's API key when
 prompted (input is hidden), and Apsara verifies it and stores it securely in
 `~/.apsara/credentials.json` (owner-only, `chmod 600`). Ollama is local and
 needs no key.
@@ -40,8 +41,12 @@ in a project `.env`). An explicitly-set environment variable always takes
 precedence over a stored key:
 
 ```bash
-export OPENAI_API_KEY="sk-..."      # or ANTHROPIC_API_KEY, GROQ_API_KEY, etc.
+export OPENCODE_API_KEY="your-key"  # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 ```
+
+Big Pickle is free for a limited period. OpenCode states that submitted data
+may be used to improve the model during that period, so do not test it with
+confidential repositories.
 
 Run `apsara doctor` to confirm your provider and key are detected.
 

@@ -48,12 +48,16 @@ provider variables in a `.env` file at the workspace root or export them — an
 explicitly exported variable always wins over the stored key.
 
 ```env
-OPENAI_API_KEY=sk-...
+OPENCODE_API_KEY=your_opencode_zen_api_key
 AGENT_WORKSPACE_ROOT=.
 AGENT_ENABLE_BASH_TOOL=false
 AGENT_ALLOWED_COMMANDS=pwd,ls,find,rg,cat,sed,head,tail,wc
 AGENT_MAX_FILE_SIZE_BYTES=1000000
 ```
+
+`opencode/big-pickle` is the default model. It is free for a limited period,
+but OpenCode states that submitted data may be used to improve the model during
+that period; do not use it with confidential repositories.
 
 ## 5. Check the environment
 

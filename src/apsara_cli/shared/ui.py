@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from io import StringIO
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -251,6 +252,7 @@ class ConsoleUI:
         self._spinner_start_time: float = 0.0
         self._spinner_frame_index: int = 0
         self._spinner_color_index: int = 0
+        self._stream_buffer: list[str] = []
 
     def _ensure_log_file(self) -> None:
         if self._logging_attempted:
@@ -352,6 +354,39 @@ class ConsoleUI:
             print(f"  {left}{content}{right}")
 
     # ── Rich text renderer ────────────────────────────────────────────────────
+
+    def render_markdown_panel(self, text: str) -> None:
+        """Render a finished assistant response as Markdown in one panel."""
+        from rich import box
+        from rich.console import Console
+        from rich.markdown import Markdown
+        from rich.panel import Panel
+        from rich.text import Text
+
+        rendered = StringIO()
+        console = Console(
+            file=rendered,
+            force_terminal=self.use_color,
+            color_system="truecolor" if self.use_color else None,
+            width=self.content_width(),
+            legacy_windows=False,
+        )
+        body = text.strip() or "_No response content._"
+        panel = Panel(
+            Markdown(body, code_theme="monokai"),
+            title=Text("Apsara", style="bold rgb(225,230,242)"),
+            title_align="left",
+            border_style="rgb(80,100,140)",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            expand=True,
+        )
+        console.print(panel)
+
+        # Going through print_line makes this work in the classic terminal
+        # and in the prompt-toolkit transcript without separate renderers.
+        for line in rendered.getvalue().rstrip("\n").splitlines():
+            self.print_line(f"  {line}")
 
     def render_rich_text(self, text: str, typing_delay: float = 0.0) -> None:
         import re as _re
@@ -702,25 +737,19 @@ class ConsoleUI:
     def assistant(self, text: str) -> None:
         self._print_thought_marker()
         self.print_line()
-        self.render_rich_text(text, typing_delay=self.typing_delay)
+        self.render_markdown_panel(text)
 
     def stream_text_start(self) -> None:
-        self.stop_spinner()
-        self._print_thought_marker()
-        self.print_line()
-        sys.stdout.write("  ")
-        sys.stdout.flush()
+        self._stream_buffer = []
 
     def stream_text_chunk(self, chunk: str) -> None:
-        color = self.theme.body
-        segments = chunk.split("\n")
-        styled = [self.style(seg, color) if seg else "" for seg in segments]
-        sys.stdout.write("\n  ".join(styled))
-        sys.stdout.flush()
+        self._stream_buffer.append(chunk)
 
     def stream_text_end(self) -> None:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        text = "".join(self._stream_buffer)
+        self._stream_buffer = []
+        self.stop_spinner()
+        self.assistant(text)
 
     # ── Tool activity (inline compact) ───────────────────────────────────────
 
