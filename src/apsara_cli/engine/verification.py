@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shlex
@@ -97,12 +98,20 @@ def _configured_commands(workspace: Path, phase: str) -> list[VerificationComman
         raise ValueError(f"Invalid verification configuration in {path}: {exc}") from exc
 
 
-def _project_python(workspace: Path) -> str:
+def _pytest_command(workspace: Path) -> tuple[str, ...] | None:
     candidates = [
         workspace / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"),
         workspace / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"),
     ]
-    return str(next((path for path in candidates if path.is_file()), Path(sys.executable)))
+    project_python = next((path for path in candidates if path.is_file()), None)
+    if project_python is not None:
+        return (str(project_python), "-m", "pytest", "-q")
+    pytest_executable = shutil.which("pytest")
+    if pytest_executable:
+        return (pytest_executable, "-q")
+    if importlib.util.find_spec("pytest") is not None:
+        return (sys.executable, "-m", "pytest", "-q")
+    return None
 
 
 def detect_verification_commands(
@@ -115,14 +124,30 @@ def detect_verification_commands(
         return configured
 
     commands: list[VerificationCommand] = []
-    python_project = any(
-        (workspace / name).exists()
-        for name in ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini")
-    ) or (workspace / "tests").is_dir()
-    if python_project:
-        commands.append(
-            VerificationCommand("pytest", (_project_python(workspace), "-m", "pytest", "-q"))
+    pyproject = workspace / "pyproject.toml"
+    setup_cfg = workspace / "setup.cfg"
+    try:
+        pyproject_uses_pytest = pyproject.exists() and "[tool.pytest" in pyproject.read_text(
+            encoding="utf-8"
         )
+    except OSError:
+        pyproject_uses_pytest = False
+    try:
+        setup_uses_pytest = setup_cfg.exists() and "[tool:pytest]" in setup_cfg.read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        setup_uses_pytest = False
+    pytest_project = (
+        (workspace / "pytest.ini").exists()
+        or (workspace / "tests").is_dir()
+        or pyproject_uses_pytest
+        or setup_uses_pytest
+    )
+    if pytest_project:
+        pytest_command = _pytest_command(workspace)
+        if pytest_command is not None:
+            commands.append(VerificationCommand("pytest", pytest_command))
 
     package_json = workspace / "package.json"
     if package_json.exists():

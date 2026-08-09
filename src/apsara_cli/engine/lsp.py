@@ -7,9 +7,11 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 
 SERVER_COMMANDS: dict[str, tuple[tuple[str, ...], str]] = {
@@ -63,7 +65,7 @@ def _read(stream: Any) -> dict[str, Any]:
     return json.loads(stream.read(length).decode("utf-8"))
 
 
-def _read_with_timeout(stream: Any, timeout: int) -> dict[str, Any]:
+def _read_with_timeout(stream: Any, timeout: float) -> dict[str, Any]:
     result: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
 
     def worker() -> None:
@@ -74,7 +76,7 @@ def _read_with_timeout(stream: Any, timeout: int) -> dict[str, Any]:
 
     threading.Thread(target=worker, daemon=True).start()
     try:
-        ok, value = result.get(timeout=max(1, timeout))
+        ok, value = result.get(timeout=max(0.1, timeout))
     except queue.Empty as exc:
         raise TimeoutError("language server response timed out") from exc
     if not ok:
@@ -87,8 +89,12 @@ def _request(
 ) -> Any:
     assert process.stdin is not None and process.stdout is not None
     _send(process.stdin, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    deadline = time.monotonic() + max(1, timeout)
     while True:
-        message = _read_with_timeout(process.stdout, timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("language server request timed out")
+        message = _read_with_timeout(process.stdout, remaining)
         if message.get("id") != request_id:
             continue
         if message.get("error"):
@@ -108,9 +114,12 @@ def _location_lines(result: Any, workspace: Path) -> list[str]:
         if not isinstance(uri, str):
             continue
         parsed = urlparse(uri)
-        candidate = Path(unquote(parsed.path)).resolve() if parsed.scheme == "file" else None
-        if candidate is None:
+        if parsed.scheme != "file":
             continue
+        uri_path = url2pathname(parsed.path)
+        if parsed.netloc and parsed.netloc != "localhost":
+            uri_path = f"//{parsed.netloc}{uri_path}"
+        candidate = Path(uri_path).resolve()
         try:
             relative = candidate.relative_to(workspace)
         except ValueError:
@@ -180,8 +189,9 @@ def query_locations(
                 _send(process.stdin, {"jsonrpc": "2.0", "method": "exit", "params": {}})
         except Exception:
             pass
-        process.terminate()
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()

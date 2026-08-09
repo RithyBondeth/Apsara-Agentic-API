@@ -64,6 +64,15 @@ def test_verification_failure_is_not_reported_as_success(tmp_path):
     assert report.results[0].returncode == 3
 
 
+def test_plain_pyproject_does_not_imply_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'library-without-pytest'\nversion = '1.0.0'\n",
+        encoding="utf-8",
+    )
+
+    assert detect_verification_commands(tmp_path) == []
+
+
 def test_verify_project_requires_trust_and_then_runs(tmp_path):
     _write_verification_config(tmp_path, "print('ok')")
     with agent_runtime_context(workspace_root=tmp_path):
@@ -182,6 +191,23 @@ def test_lsp_capability_is_optional(monkeypatch, tmp_path):
     assert lsp.server_for_path(source) is None
     with pytest.raises(RuntimeError, match="No installed language server"):
         lsp.query_locations(tmp_path, source, line=1, column=1, operation="definition")
+
+
+def test_lsp_locations_decode_file_uris_once_and_filter_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "literal%20name.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 2\n", encoding="utf-8")
+    result = [
+        {"uri": source.as_uri(), "range": {"start": {"line": 2, "character": 4}}},
+        {"uri": outside.as_uri(), "range": {"start": {"line": 0, "character": 0}}},
+    ]
+
+    assert lsp._location_lines(result, workspace.resolve()) == [
+        "literal%20name.py:3:5 (lsp)"
+    ]
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git unavailable")
