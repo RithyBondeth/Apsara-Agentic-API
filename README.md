@@ -215,7 +215,6 @@ cannot change token limits, fallbacks, pricing paths, or provider endpoints.
 [defaults]
 workspace = "."
 model = "opencode/big-pickle"
-session = "default"
 stateless = false
 allow_bash = false
 allowed_commands = ["@verify", "@git"]
@@ -253,6 +252,8 @@ Useful flags:
 
 - `--workspace <path>` — the directory the agent may access
 - `--model <name>` — any model LiteLLM can route to
+- `--continue` / `-c` — resume the most recently updated saved conversation
+- `--session <name>` — open or create a specific named conversation
 - `--read-only` — disable every destructive tool
 - `--dry-run` — preview changes without touching disk
 - `--auto-approve` — skip workspace file-mutation confirmations only
@@ -265,6 +266,11 @@ Conversations are saved as JSON under `.apsara-cli/sessions/` in the workspace �
 local files, no database. Long conversations are summarized and trimmed
 automatically to stay within the model's context budget, while the full history
 stays on disk.
+
+Plain `apsara` starts a fresh saved conversation. Use `apsara --continue` (or
+`apsara -c`) to resume the most recently updated conversation, or
+`apsara --session <name>` to open a specific one. A configured `defaults.session`
+deliberately pins startup to that named conversation; omit it for fresh starts.
 
 The budget is derived from the selected model's context window, so a
 200k-window model gets a far larger working set than a 32k one. `/status` shows

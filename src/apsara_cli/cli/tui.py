@@ -149,7 +149,7 @@ class _ResponsiveCard:
     def __init__(self, role: str, text: str, timestamp: Optional[str] = None) -> None:
         self.role = role
         self.text = text
-        self.timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
+        self.timestamp = timestamp or datetime.now().strftime("%I:%M").lstrip("0")
         self.rendered_width: Optional[int] = None
         self.rendered_lines: list[str] = []
 
@@ -242,7 +242,7 @@ class TuiConsoleUI(ConsoleUI):
             lines.extend(card_line(line) for line in wrapped)
         lines.extend([
             card_line(),
-            card_line(f"you  {card.timestamp}", "38;2;132;136;146"),
+            card_line(f"you  {card.timestamp}", "2;38;2;112;116;126"),
             card_line(),
         ])
         return lines
@@ -1736,8 +1736,8 @@ async def tui_loop(args: object, config: object) -> int:
                     ui.warning("A provider key is required before this request can run.")
                     return
 
-            # execute_instruction drives begin_turn/finish_turn, which render the
-            # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.
+            # execute_instruction drives begin_turn/finish_turn, which renders
+            # the '+ Thought:' marker and preserves details for /details.
             def _run_agent_turn():
                 return turn_controller.run(
                     execute_instruction(text, state["model"], list(history), options, ui)

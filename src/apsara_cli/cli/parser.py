@@ -69,7 +69,20 @@ def _configure_output_streams() -> None:
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--workspace", default=None, help="Workspace root the agent is allowed to access.")
     subparser.add_argument("--model", default=None, help="Model name to send through LiteLLM.")
-    subparser.add_argument("--session", default=None, help="Session name for local conversation persistence.")
+    session_group = subparser.add_mutually_exclusive_group()
+    session_group.add_argument(
+        "--session",
+        default=None,
+        help="Open or create a specific named session.",
+    )
+    session_group.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        default=False,
+        help="Resume the most recently updated saved session.",
+    )
     subparser.add_argument("--stateless", dest="stateless", action="store_true", default=None,
                            help="Run without loading or saving local session history.")
     subparser.add_argument("--stateful", dest="stateless", action="store_false",

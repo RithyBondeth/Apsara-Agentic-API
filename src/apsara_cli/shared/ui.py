@@ -473,7 +473,9 @@ class ConsoleUI:
 
         rail = self.style("▌", "1", "38;2;104;205;220")
         foreground = "38;2;225;230;242"
-        timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
+        # Terminal cells cannot use a smaller font, so keep card metadata
+        # compact and faint instead of letting it compete with the message.
+        timestamp = timestamp or datetime.now().strftime("%I:%M").lstrip("0")
 
         def card_line(content: str = "") -> str:
             visual_width = Text.from_ansi(content).cell_len
@@ -494,7 +496,7 @@ class ConsoleUI:
         lines.append(card_line(" " * render_width))
         footer = f"apsara  {timestamp}"[:render_width].ljust(render_width)
         if self.use_color:
-            footer = self.style(footer, "38;2;132;136;146").replace(
+            footer = self.style(footer, "2", "38;2;112;116;126").replace(
                 "\033[0m", f"\033[0m\033[{PANEL_BACKGROUND_ANSI}m"
             )
         lines.extend([card_line(footer), card_line(" " * render_width)])
@@ -814,12 +816,9 @@ class ConsoleUI:
         return f"\n{bar} "
 
     def session_saved(self, session_path: Path) -> None:
-        # Show the shortest useful form of the path, not the full absolute one.
-        try:
-            display: Path | str = session_path.relative_to(Path.cwd())
-        except ValueError:
-            display = session_path
-        self.print_line(f"  {self.dim(f'  ↳ saved · {display}')}")
+        # Saving is routine and visible through /sessions; keep normal turns
+        # focused on the conversation.
+        return
 
     def calculate_session_cost(self) -> Optional[float]:
         """Known session cost, or None if any provider pricing is unknown."""
@@ -959,25 +958,9 @@ class ConsoleUI:
             add_usage(target, tokens)
         self._recalculate_session_cost()
 
-        st = self._session_total_tokens
-        session_short = f"{st / 1000:.1f}K" if st >= 1000 else str(st)
-        details = [f"in {p:,}", f"out {c:,}"]
-        if normalized["cached_tokens"]:
-            details.append(f"cached {normalized['cached_tokens']:,}")
-        if normalized["cache_creation_tokens"]:
-            details.append(f"cache write {normalized['cache_creation_tokens']:,}")
-        if normalized["reasoning_tokens"]:
-            details.append(f"reasoning {normalized['reasoning_tokens']:,}")
-        if normalized["estimated_input_tokens"]:
-            details.append(
-                f"~{normalized['estimated_input_tokens']:,} estimated input/unreported"
-            )
-        self.print_line(f"    {self.dim(' · '.join(details))}")
-        self.print_line(
-            f"    {self.dim(f'{t:,} tok · session {session_short} · {self.session_cost_label()}')}"
-        )
-        if self.rate_limit_label():
-            self.print_line(f"    {self.dim('limit · ' + self.rate_limit_label())}")
+        # Usage remains available in the sidebar and through /usage or /status.
+        # Printing it after every response makes the operational metadata more
+        # prominent than the answer itself.
 
     def record_interrupted_usage(self, estimated_tokens: int, model: str) -> None:
         """Persist an honest local estimate for a call cancelled mid-stream."""
@@ -1054,7 +1037,7 @@ class ConsoleUI:
         self._turn_started_at = time.monotonic()
 
     def finish_turn(self, model_label: Optional[str] = None, mode: str = "Build") -> None:
-        """OpenCode-style turn footer: '◼ Build · Big Pickle · 7.0s'."""
+        """Record turn details and surface only outcomes that need attention."""
         self.stop_spinner()
         self.latest_hidden_events = list(self.current_turn_hidden_events)
         count = len(self.latest_hidden_events)
@@ -1062,6 +1045,9 @@ class ConsoleUI:
         elapsed_text = _fmt_elapsed(time.monotonic() - self._turn_started_at)
 
         outcome = self._turn_outcome or "ok"
+        if outcome == "ok":
+            return
+
         if outcome == "error":
             square = self.style("◼", "38;2;220;100;100")
         elif outcome == "blocked":
@@ -1075,8 +1061,7 @@ class ConsoleUI:
         if count:
             plural = "s" if count != 1 else ""
             tail.append(f"{count} step{plural} · /details")
-        if outcome != "ok":
-            tail.append(outcome)
+        tail.append(outcome)
 
         self.print_line()
         self.print_line(
