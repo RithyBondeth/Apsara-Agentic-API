@@ -1,4 +1,5 @@
 """Tests for testable helpers in the chat surface (cli/chat.py)."""
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ class _RecordingUI:
 
     def __init__(self):
         self.lines: list[str] = []
+        self.log_file = None
 
     def _record(self, text=""):
         self.lines.append(str(text))
@@ -101,6 +103,17 @@ class _ChoiceUI(_RecordingUI):
 
     def read_single_key(self):
         return self.choice
+
+
+class _ConfirmUI(_RecordingUI):
+    def __init__(self, approved):
+        super().__init__()
+        self.approved = approved
+        self.confirmations = []
+
+    def confirm_action(self, action, payload):
+        self.confirmations.append((action, payload))
+        return self.approved
 
 
 @pytest.fixture
@@ -211,3 +224,59 @@ def test_help_renders_all_sections(key_env):
     for section in ("CONVERSATION", "MODELS & KEYS", "SESSION", "DIAGNOSTICS"):
         assert section in ui.text
     assert "/key" in ui.text
+
+
+def test_bug_command_creates_privacy_safe_bundle(key_env):
+    _keep, _model, ui = _run_cmd("/bug", key_env)
+
+    bundles = list((key_env.workspace_root / ".apsara" / "bugs").iterdir())
+    assert len(bundles) == 1
+    assert (bundles[0] / "manifest.json").is_file()
+    assert "content was omitted by default" in ui.text
+
+
+def test_bug_include_content_requires_explicit_confirmation(key_env):
+    ui = _ConfirmUI(False)
+    history = [{"role": "user", "content": "private source"}]
+
+    keep, model = chat.handle_chat_command(
+        "/bug --include-content",
+        history,
+        "groq/llama-3.3-70b-versatile",
+        key_env,
+        object(),
+        ui,
+    )
+
+    assert keep is True
+    assert model == "groq/llama-3.3-70b-versatile"
+    assert ui.confirmations == [("export_diagnostic_content", {"message_count": 1})]
+    assert "cancelled" in ui.text
+    assert not (key_env.workspace_root / ".apsara" / "bugs").exists()
+
+
+def test_bug_include_content_proceeds_after_confirmation(key_env):
+    ui = _ConfirmUI(True)
+    history = [{"role": "user", "content": "private reproduction"}]
+
+    chat.handle_chat_command(
+        "/bug --include-content",
+        history,
+        "groq/llama-3.3-70b-versatile",
+        key_env,
+        object(),
+        ui,
+    )
+
+    bundle = next((key_env.workspace_root / ".apsara" / "bugs").iterdir())
+    state = json.loads((bundle / "session_state.json").read_text(encoding="utf-8"))
+    assert state["privacy_mode"] == "content-included"
+    assert state["history"][0]["content"] == "private reproduction"
+    assert "Review every file before sharing" in ui.text
+
+
+def test_bug_command_rejects_unknown_arguments(key_env):
+    _keep, _model, ui = _run_cmd("/bug --raw", key_env)
+
+    assert "Usage: /bug [--include-content]" in ui.text
+    assert not (key_env.workspace_root / ".apsara" / "bugs").exists()

@@ -38,6 +38,8 @@ The focus of this release is:
 - local session history with trimming for oversized requests
 - typed run state, durable redacted journals, run reports, and evaluation suites
 - planning and verification gates for multi-step coding tasks
+- privacy-safe `/bug` bundles that omit content by default and always redact
+  recognizable credentials
 
 ### Safer Code Editing
 

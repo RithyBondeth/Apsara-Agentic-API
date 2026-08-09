@@ -203,6 +203,7 @@ What worked well:
 What felt confusing:
 Any error message:
 Did edit review feel safe:
+Diagnostic bundle path (review files before sharing):
 Would I use it again:
 Screenshot or terminal paste:
 ```
@@ -224,6 +225,10 @@ Before sharing with testers, confirm:
   file mutations
 - `/details` works
 - `/clear` works
+- `/bug` creates a metadata-only bundle and clearly asks the tester to review
+  its files before sharing
+- `/bug --include-content` requires confirmation and still redacts recognizable
+  credentials
 
 ## 10. Recommended Share Message
 

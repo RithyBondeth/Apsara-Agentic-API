@@ -316,6 +316,13 @@ In chat, `/help` lists the complete command surface, including `/details`,
 `/stop`, `/diff`, `/turns`, `/undo-turn`, `/undo`, `/usage`, `/memory`,
 `/report`, `/save`, and `/bug`.
 
+`/bug` creates a bounded, privacy-safe diagnostic bundle under
+`.apsara/bugs/`. Conversation, source, and tool payloads are omitted by default,
+and recognizable credentials are always redacted. Use
+`/bug --include-content` only when a reproduction needs content; it requires an
+explicit confirmation, and you should still review every generated file before
+sharing it.
+
 In the full-screen TUI, press `Ctrl+C` while a turn is running to cancel that
 turn without closing Apsara. Press it again while idle to exit.
 
