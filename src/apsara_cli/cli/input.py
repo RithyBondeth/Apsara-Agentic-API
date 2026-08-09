@@ -29,6 +29,7 @@ _SUB_COMMANDS: dict[str, list[str]] = {
     "/models": list(_ALL_PROVIDERS),
     "/sessions": ["clear"],
     "/memory": ["show", "add"],
+    "/bug": ["--include-content"],
 }
 
 

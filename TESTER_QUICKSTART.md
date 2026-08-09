@@ -77,7 +77,10 @@ apsara chat
 - `/help` - Show all commands.
 - `/add <path>` - Pin a file to the context.
 - `/status` - Check token usage and session cost.
-- `/bug` - If the agent gets stuck, run this to save diagnostic logs.
+- `/bug` - Save a privacy-safe diagnostic bundle with conversation and source
+  content omitted by default.
+- `/bug --include-content` - Include redacted conversation and tool content
+  after an explicit confirmation when a reproduction needs it.
 - `/details` - See hidden tool and planning activity.
 
 ## 5. Safety Tips
@@ -88,4 +91,6 @@ apsara chat
 - Use `apsara chat --read-only` if you just want it to explain the code.
 
 ---
-**Happy Coding!** Please share your `.apsara/bugs/` folders if you encounter any weird behavior.
+**Happy Coding!** If you encounter unusual behavior, run `/bug`, open the newly
+created bundle under `.apsara/bugs/`, and review every file before sharing that
+specific bundle. Do not share the entire `.apsara/bugs/` directory blindly.

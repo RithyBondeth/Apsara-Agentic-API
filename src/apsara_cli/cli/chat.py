@@ -2,9 +2,7 @@ from contextlib import asynccontextmanager
 from getpass import getpass
 import json
 import os
-import shutil
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -436,7 +434,7 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Diagnostics", [
         ("/tools", "", "Show enabled tools with descriptions"),
-        ("/bug", "", "Save logs + session state for a bug report"),
+        ("/bug", "[--include-content]", "Save a privacy-safe diagnostic bundle"),
         ("/exit", "", "Quit the chat session"),
     ]),
 ]
@@ -591,29 +589,38 @@ def handle_chat_command(
         ui.warning("Session cleared in memory")
         return True, current_model
 
-    if command_text == "/bug":
+    if command_text == "/bug" or command_text.startswith("/bug "):
+        argument = command_text[len("/bug"):].strip()
+        if argument not in {"", "--include-content"}:
+            ui.error("Usage: /bug [--include-content]")
+            return True, current_model
+        include_content = argument == "--include-content"
+        if include_content and not ui.confirm_action(
+            "export_diagnostic_content",
+            {"message_count": len(history)},
+        ):
+            ui.info("Diagnostic bundle cancelled.")
+            return True, current_model
         ui.info("Collecting diagnostic information for bug report...")
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            bug_dir = options.workspace_root / ".apsara" / "bugs" / f"bug_{timestamp}"
-            bug_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Save current session
-            state_file = bug_dir / "session_state.json"
-            state = {
-                "model": current_model,
-                "history": history,
-                "options": {k: str(v) for k, v in vars(options).items()},
-            }
-            with state_file.open("w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-            
-            # Copy logs
-            if ui.log_file and ui.log_file.exists():
-                shutil.copy2(ui.log_file, bug_dir / "session.log")
-            
+            from apsara_cli.engine.diagnostics import create_diagnostic_bundle
+
+            bug_dir = create_diagnostic_bundle(
+                options.workspace_root,
+                current_model,
+                history,
+                options,
+                ui.log_file,
+                include_content=include_content,
+            )
             ui.success(f"Bug report data collected in: {bug_dir}")
-            ui.info("Please share this directory with the development team.")
+            if include_content:
+                ui.warning(
+                    "Conversation and tool content is included. Review every file before sharing."
+                )
+            else:
+                ui.info("Conversation and source content was omitted by default.")
+            ui.info("Review the bundle files before sharing them with the development team.")
         except Exception as e:
             ui.error(f"Failed to collect bug report data: {e}")
         return True, current_model

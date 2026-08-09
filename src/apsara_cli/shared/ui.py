@@ -231,6 +231,18 @@ def describe_action(
     if action == "undo_turn":
         return (f"Roll back agent turn {payload.get('turn_id', 'latest')}?", None, None, None, None, None)
 
+    if action == "export_diagnostic_content":
+        count = payload.get("message_count", 0)
+        return (
+            "Include conversation and tool content in diagnostics?",
+            f"This bundle will include content from {count} message(s). "
+            "Recognizable credentials are still redacted, but you must review every file before sharing.",
+            None,
+            None,
+            None,
+            None,
+        )
+
     if action == "remember_project_note":
         return ("Save this note to project memory?", str(payload.get("note", "")), None, None, None, None)
 
