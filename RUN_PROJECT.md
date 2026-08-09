@@ -47,6 +47,8 @@ apsara
 The full-screen UI opens immediately with `opencode/big-pickle` selected. If its
 key is missing, Apsara requests it inline on the first prompt. You can keep it
 for the session or store it in `~/.apsara/credentials.json` (owner-only).
+Each plain launch starts a fresh saved conversation. Use `apsara --continue` to
+resume the latest one, or `apsara --session <name>` to open a named conversation.
 Alternatively, export the provider key or put it in a workspace `.env`; an
 explicitly exported variable always wins over stored credentials.
 

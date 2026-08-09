@@ -1,8 +1,30 @@
+import os
+import re
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.parser import _argv_with_default_command, build_parser
+from apsara_cli.cli.session import save_session_messages
+
+
+def _defaults(**overrides):
+    values = {
+        "workspace": None,
+        "model": None,
+        "session": None,
+        "stateless": None,
+        "allow_bash": None,
+        "allowed_commands": None,
+        "bash_timeout": None,
+        "max_file_size": None,
+        "auto_approve": None,
+        "color": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 def test_empty_command_line_defaults_to_interactive_chat():
@@ -35,6 +57,21 @@ def test_bare_interactive_options_are_attached_to_default_chat():
     assert args.read_only is True
 
 
+def test_bare_continue_option_is_attached_to_default_chat():
+    normalized = _argv_with_default_command(["--continue"])
+    args = build_parser().parse_args(normalized)
+
+    assert normalized == ["chat", "--continue"]
+    assert args.continue_session is True
+
+
+def test_continue_and_named_session_are_mutually_exclusive():
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["chat", "--continue", "--session", "work"])
+
+
 def test_global_config_stays_before_implicit_chat():
     normalized = _argv_with_default_command([
         "--config", "custom.toml", "--workspace", "/tmp/project"
@@ -54,19 +91,49 @@ def test_missing_global_config_value_is_left_for_argparse_to_reject():
 
 def test_interactive_start_uses_big_pickle_without_hidden_auth_default(tmp_path):
     args = build_parser().parse_args(["chat", "--workspace", str(tmp_path)])
-    defaults = SimpleNamespace(
-        workspace=None,
-        model=None,
-        session=None,
-        stateless=None,
-        allow_bash=None,
-        allowed_commands=None,
-        bash_timeout=None,
-        max_file_size=None,
-        auto_approve=None,
-        color=None,
-    )
-
-    options = resolve_runtime_options(args, defaults)
+    options = resolve_runtime_options(args, _defaults())
 
     assert options.model == "opencode/big-pickle"
+    assert re.fullmatch(r"session-\d{8}-\d{6}-[0-9a-f]{4}", options.session)
+
+
+def test_named_session_is_used_explicitly(tmp_path):
+    args = build_parser().parse_args([
+        "chat", "--workspace", str(tmp_path), "--session", "feature-work"
+    ])
+
+    options = resolve_runtime_options(args, _defaults())
+
+    assert options.session == "feature-work"
+
+
+def test_continue_uses_most_recent_saved_session(tmp_path):
+    older = save_session_messages(tmp_path, "older", "model", [])
+    newer = save_session_messages(tmp_path, "newer", "model", [])
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
+    args = build_parser().parse_args([
+        "chat", "--workspace", str(tmp_path), "--continue"
+    ])
+
+    options = resolve_runtime_options(args, _defaults())
+
+    assert options.session == "newer"
+
+
+def test_continue_without_saved_history_starts_fresh(tmp_path):
+    args = build_parser().parse_args([
+        "chat", "--workspace", str(tmp_path), "--continue"
+    ])
+
+    options = resolve_runtime_options(args, _defaults())
+
+    assert options.session.startswith("session-")
+
+
+def test_configured_session_remains_an_explicit_pin(tmp_path):
+    args = build_parser().parse_args(["chat", "--workspace", str(tmp_path)])
+
+    options = resolve_runtime_options(args, _defaults(session="pinned"))
+
+    assert options.session == "pinned"

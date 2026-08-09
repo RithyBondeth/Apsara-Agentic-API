@@ -193,6 +193,16 @@ def test_colored_answer_card_keeps_the_requested_width_on_dumb_terminals(monkeyp
     assert all(PANEL_BACKGROUND_ANSI in line for line in lines)
 
 
+def test_answer_card_timestamp_is_compact_and_faint():
+    ui = ConsoleUI(use_color=True, typing_delay=0)
+
+    lines = ui._markdown_card_lines("hello", width=36, timestamp="1:19")
+    footer = next(line for line in lines if "apsara" in line)
+
+    assert "apsara  1:19" in Text.from_ansi(footer).plain
+    assert "\033[2;" in footer
+
+
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
     ui.usage({
@@ -203,7 +213,8 @@ def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
     })
 
     assert ui.calculate_session_cost() == 0.0
-    assert "$0.0000 promo" in capsys.readouterr().out
+    assert ui.session_cost_label() == "$0.0000 promo"
+    assert capsys.readouterr().out == ""
 
 
 def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
@@ -216,9 +227,8 @@ def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
     })
 
     assert ui.calculate_session_cost() is None
-    output = capsys.readouterr().out
-    assert "provider billed" in output
-    assert "$0.0100" not in output
+    assert ui.session_cost_label() == "provider billed"
+    assert capsys.readouterr().out == ""
 
 
 def test_aggregated_usage_costs_each_model_without_double_counting(capsys):
@@ -246,7 +256,7 @@ def test_aggregated_usage_costs_each_model_without_double_counting(capsys):
     capsys.readouterr()
 
 
-def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
+def test_detailed_usage_and_rate_limits_are_recorded_silently_and_restorable(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
     ui.usage({
         "prompt_tokens": 100,
@@ -257,9 +267,10 @@ def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
         "rate_limits": {"remaining_requests": "9", "reset": "3s"},
         "apsara_model": "opencode/big-pickle",
     })
-    output = capsys.readouterr().out
-    assert "in 100 · out 30 · cached 40 · reasoning 10" in output
-    assert "9 requests left · reset 3s" in output
+    assert capsys.readouterr().out == ""
+    assert ui._session_prompt_tokens == 100
+    assert ui._session_completion_tokens == 30
+    assert ui.rate_limit_label() == "9 requests left · reset 3s"
 
     restored = ConsoleUI(use_color=False, typing_delay=0)
     restored.restore_usage(ui.usage_snapshot())
@@ -280,7 +291,38 @@ def test_unreported_usage_stays_separate_from_provider_totals(capsys):
     assert ui._session_total_tokens == 0
     assert ui._session_estimated_tokens == 900
     assert ui.usage_snapshot()["unreported_calls"] == 1
-    assert "~900 estimated input/unreported" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
+
+
+def test_successful_turn_metadata_is_recorded_without_a_footer(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.begin_turn()
+    ui.hide_event("tool", "read_file")
+
+    ui.finish_turn(model_label="Big Pickle", mode="Build")
+
+    assert capsys.readouterr().out == ""
+    assert [event.title for event in ui.latest_hidden_events] == ["read_file"]
+
+
+def test_non_successful_turn_still_surfaces_its_status(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.begin_turn()
+    ui.set_turn_outcome("blocked")
+
+    ui.finish_turn(model_label="Big Pickle", mode="Build")
+
+    output = capsys.readouterr().out
+    assert "Build" in output
+    assert "blocked" in output
+
+
+def test_session_save_is_silent_during_normal_turns(tmp_path, capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+
+    ui.session_saved(tmp_path / ".apsara-cli" / "sessions" / "default.json")
+
+    assert capsys.readouterr().out == ""
 
 
 def test_inline_approval_card_renders_diff_and_shortcuts():
