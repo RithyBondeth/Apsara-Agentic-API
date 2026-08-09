@@ -132,6 +132,29 @@ def test_aggregated_usage_costs_each_model_without_double_counting(capsys):
     capsys.readouterr()
 
 
+def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 30,
+        "total_tokens": 130,
+        "prompt_tokens_details": {"cached_tokens": 40},
+        "completion_tokens_details": {"reasoning_tokens": 10},
+        "rate_limits": {"remaining_requests": "9", "reset": "3s"},
+        "apsara_model": "opencode/big-pickle",
+    })
+    output = capsys.readouterr().out
+    assert "in 100 · out 30 · cached 40 · reasoning 10" in output
+    assert "9 requests left · reset 3s" in output
+
+    restored = ConsoleUI(use_color=False, typing_delay=0)
+    restored.restore_usage(ui.usage_snapshot())
+    assert restored._session_total_tokens == 130
+    assert restored._session_cached_tokens == 40
+    assert restored._session_reasoning_tokens == 10
+    assert restored.rate_limit_label() == "9 requests left · reset 3s"
+
+
 def test_native_approval_overlay_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     approval = {

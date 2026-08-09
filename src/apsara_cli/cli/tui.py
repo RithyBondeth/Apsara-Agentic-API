@@ -69,7 +69,7 @@ from apsara_cli.cli.chat import (
 )
 from apsara_cli.cli.input import SlashCompleter
 from apsara_cli.cli.options import resolve_runtime_options
-from apsara_cli.cli.session import load_session_messages, sanitize_session_name
+from apsara_cli.cli.session import load_session_messages, load_session_usage, sanitize_session_name
 from apsara_cli.engine.models import (
     format_context_window,
     is_key_available,
@@ -342,7 +342,17 @@ def _sidebar_text(
         f"{ui.style(f'/ {context_budget:,} context', _DIMTXT)}"
     )
     lines(f"   {ui.style(f'{total:,}', _C_VALUE)} {ui.style('session tokens', _DIMTXT)}")
+    lines(
+        f"   {ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', _DIMTXT)}"
+    )
+    if ui._session_cached_tokens or ui._session_cache_creation_tokens or ui._session_reasoning_tokens:
+        lines(
+            f"   {ui.style(f'cached {ui._session_cached_tokens:,} · cache write {ui._session_cache_creation_tokens:,}', _DIMTXT)}"
+        )
+        lines(f"   {ui.style(f'reasoning {ui._session_reasoning_tokens:,}', _DIMTXT)}")
     lines(f"   {ui.style(ui.session_cost_label(), '38;2;130;210;160')} {ui.style('cost', _DIMTXT)}")
+    if ui.rate_limit_label():
+        lines(f"   {ui.style(ui.rate_limit_label(), _DIMTXT)}")
     lines("")
 
     # Model: name, provider · tier, context window, key status.
@@ -559,6 +569,7 @@ async def tui_loop(args: object, config: object) -> int:
     history: list[dict[str, Any]] = []
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
     _refresh_context_usage(ui, history, options.model)
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
 
@@ -1351,9 +1362,9 @@ async def tui_loop(args: object, config: object) -> int:
 
             new_history, usage = await asyncio.to_thread(_run_agent_turn)
             history[:] = new_history
-            save_if_needed(history, state["model"], options, ui)
             if usage and usage.get("total_tokens") is not None:
                 ui.usage(usage)
+            save_if_needed(history, state["model"], options, ui)
         finally:
             state["busy"] = False
             ui._invalidate()

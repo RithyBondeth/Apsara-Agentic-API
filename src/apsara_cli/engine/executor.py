@@ -201,6 +201,9 @@ async def run_agent_stream(
                         full_content = event["content"]
                         tool_calls = event["tool_calls"]
                         usage = event["usage"]
+                        if event.get("rate_limits"):
+                            usage = dict(usage or {})
+                            usage["rate_limits"] = event["rate_limits"]
 
                     elif etype == "retry_notice":
                         yield json.dumps({"type": "status", "message": f"Provider busy — retrying in {event['delay']}s."})

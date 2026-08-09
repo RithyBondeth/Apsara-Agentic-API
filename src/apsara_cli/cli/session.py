@@ -38,11 +38,22 @@ def load_session_messages(workspace_root: Path, session_name: str) -> list[dict[
     return messages
 
 
+def load_session_usage(workspace_root: Path, session_name: str) -> dict[str, Any]:
+    """Load persisted usage; older session files transparently return empty usage."""
+    session_path = get_session_path(workspace_root, session_name)
+    if not session_path.exists():
+        return {}
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    usage = payload.get("usage", {})
+    return usage if isinstance(usage, dict) else {}
+
+
 def save_session_messages(
     workspace_root: Path,
     session_name: str,
     model: str,
     messages: list[dict[str, Any]],
+    usage: dict[str, Any] | None = None,
 ) -> Path:
     session_path = get_session_path(workspace_root, session_name)
     session_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,6 +64,7 @@ def save_session_messages(
         "model": model,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "messages": messages,
+        "usage": usage or {},
     }
     session_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return session_path

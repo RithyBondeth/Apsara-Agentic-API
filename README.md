@@ -247,6 +247,19 @@ agent turn. They measure session usage and context capacity, not an Apsara fee.
 Big Pickle and local models display `$0`; when Apsara does not have authoritative
 pricing metadata it displays `provider billed` instead of estimating a cost.
 
+Usage totals persist with named sessions and are restored when a session is
+reopened. The CLI separates input, output, cache-read, cache-write, and reasoning
+tokens when the provider reports those fields. Provider rate-limit counters and
+reset times also appear in `/status` and the TUI sidebar when available.
+
+For paid models, Apsara calculates a directional cost from provider-reported
+tokens and LiteLLM's maintained public list-price metadata. That metadata is
+cached under `~/.apsara/pricing.json` and refreshed in the background every 24
+hours. The UI marks these amounts as `list` because free quotas, negotiated
+rates, batching, regional pricing, taxes, and provider-side rounding can make
+the final invoice different. Missing pricing remains `provider billed`; Apsara
+never substitutes an invented rate.
+
 Each turn also writes an append-only event trace and typed run state beneath
 `.apsara/runs/`. `/report` exports the latest run as Markdown. Durable project
 facts live in the transparent `.apsara/memory.md` file; use `/memory show` and

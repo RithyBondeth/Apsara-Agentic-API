@@ -133,6 +133,21 @@ def test_call_llm_stream_aggregates_text_and_tool_calls():
     assert tool_call["function"]["arguments"] == '{"path":"a.txt"}'
 
 
+def test_rate_limit_headers_are_normalized_without_other_headers():
+    response = SimpleNamespace(_hidden_params={"additional_headers": {
+        "llm_provider-x-ratelimit-remaining-requests": "42",
+        "x-ratelimit-remaining-tokens": "9000",
+        "llm_provider-x-ratelimit-reset-requests": "2s",
+        "llm_provider-authorization": "secret",
+    }})
+
+    assert llm._rate_limits_from_response(response) == {
+        "remaining_requests": "42",
+        "remaining_tokens": "9000",
+        "reset": "2s",
+    }
+
+
 def test_call_llm_stream_retries_on_rate_limit():
     attempts = {"n": 0}
 

@@ -55,6 +55,23 @@ def test_save_and_load_roundtrip(tmp_path):
     assert "updated_at" in payload
 
 
+def test_usage_roundtrip_and_legacy_default(tmp_path):
+    assert session.load_session_usage(tmp_path, "missing") == {}
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cached_tokens": 40,
+        "model_usage": {"opencode/big-pickle": {"total_tokens": 120}},
+    }
+    session.save_session_messages(tmp_path, "usage", "opencode/big-pickle", [], usage=usage)
+    assert session.load_session_usage(tmp_path, "usage") == usage
+
+    legacy = session.get_session_path(tmp_path, "legacy")
+    legacy.write_text(json.dumps({"messages": []}), encoding="utf-8")
+    assert session.load_session_usage(tmp_path, "legacy") == {}
+
+
 def test_save_creates_parent_directories(tmp_path):
     path = session.save_session_messages(tmp_path, "s", "m", [])
     assert path.parent == session.get_sessions_dir(tmp_path)
