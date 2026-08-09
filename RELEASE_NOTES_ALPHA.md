@@ -1,6 +1,6 @@
 # Apsara by Bondeth Alpha Release Notes
 
-Version: `0.1.0`
+Version: `0.1.0a1`
 
 Date: `2026-08-08`
 
@@ -42,6 +42,8 @@ The focus of this release is:
 ### Safer Code Editing
 
 - approval prompts before file writes and command execution
+- `--auto-approve` is limited to workspace file mutations; commands,
+  background processes, project code, and external mutations still ask
 - diff preview before code changes are applied
 - `v` to inspect a fuller diff in the terminal
 - `e` to open the proposed patch in `$EDITOR` or `$VISUAL`
@@ -49,6 +51,8 @@ The focus of this release is:
 - checkpoints and undo support for agent edits
 - process-group cleanup for background commands
 - nested interpreter validation so `python -m pip` cannot bypass the command allowlist
+- MCP approvals are invalidated when execution environment values or HTTP
+  headers change
 
 ### Local CLI Workflow
 

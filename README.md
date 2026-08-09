@@ -17,7 +17,7 @@ middle.
 ## Install
 
 ```bash
-pipx install apsara-agentic
+pipx install apsara-agentic==0.1.0a1
 ```
 
 Python code intelligence works out of the box. For parser-accurate symbols and
@@ -25,13 +25,7 @@ syntax diagnostics in JavaScript, TypeScript, Go, Rust, Java, Ruby, PHP, C#,
 C++, and C, install the optional Tree-sitter extra:
 
 ```bash
-pipx install 'apsara-agentic[intelligence]'
-```
-
-Or, if you'd rather install through npm (it wraps the same Python package):
-
-```bash
-npm install -g apsara-cli
+pipx install 'apsara-agentic[intelligence]==0.1.0a1'
 ```
 
 ## Quickstart
@@ -76,8 +70,10 @@ Run `apsara <command> --help` for the full flag list.
 
 ## Tools
 
-The agent works through a workspace-scoped tool sandbox. Every path is resolved
-inside the workspace root; attempts to escape it fail.
+The built-in file tools are confined to the selected workspace. Their paths are
+resolved inside the workspace root, and attempts to escape it fail. Optional
+shell commands are a separate trust boundary: once you approve one, the program
+runs with your normal user permissions and is not an operating-system sandbox.
 
 **Reading** — `read_file`, `parallel_read_files`, `read_file_lines`, `glob_search`,
 `search_files`, `repository_map`, `find_symbol`, `list_project_structure`,
@@ -116,14 +112,15 @@ followed by a fast syntax check. The agent can request a full project diagnostic
 separately; Apsara selects Pyright, `tsc`, `go test`, or `cargo check` from the
 project manifest and installed tools.
 
-Every write shows a diff preview and asks for approval. In the prompt, `Enter`
-approves, `n` rejects, `a` approves the rest of the session, `v` shows the full
-patch, and `e` opens it in `$EDITOR`.
+Every write shows a diff preview and asks for approval by default. In the prompt,
+`Enter` approves, `n` rejects, `a` approves remaining workspace file mutations,
+`v` shows the full patch, and `e` opens it in `$EDITOR`.
 
 In the full-screen interface, approvals and diff review stay inside Apsara as a
-keyboard-driven overlay (`Enter`/`y` approve, `n`/`Esc` reject, `a` always,
-`v` toggles the full patch, and arrows scroll). Resumed sessions restore their
-saved user and final-assistant messages directly into the transcript.
+keyboard-driven overlay (`Enter`/`y` approve, `n`/`Esc` reject, `a` approves
+remaining workspace file mutations, `v` toggles the full patch, and arrows
+scroll). Resumed sessions restore their saved user and final-assistant messages
+directly into the transcript.
 
 ### Command execution
 
@@ -144,10 +141,12 @@ single-shot generation instead of an agent that iterates until the suite is
 green.
 
 Commands are parsed and checked against the allowlist — including every stage of
-a pipe or `&&` chain — and redirections that would write outside the workspace
-are rejected. Each command still needs your approval at run time unless you pass
-`--auto-approve`. A single command is killed after `--bash-timeout` seconds
-(default 120).
+a pipe or `&&` chain — and direct shell redirections outside the workspace are
+rejected. The allowlist controls executable names; it does not confine what an
+approved executable can read, write, or launch. Review every command as you
+would one typed directly into your terminal. Commands and background processes
+always require explicit approval, even with `--auto-approve`. A single command
+is killed after `--bash-timeout` seconds (default 120).
 
 ## MCP servers
 
@@ -191,8 +190,9 @@ execute code, so Apsara asks before running either one, showing what it's about
 to execute. Approvals are recorded per project in `~/.apsara/trust.json`, keyed
 by a digest of the code — if an approved file changes, you're asked again.
 
-`--auto-approve` does **not** cover this. That flag waives confirmation for file
-writes; it is not consent to execute a project's code.
+`--auto-approve` does **not** cover this. That flag waives confirmation for
+workspace file mutations; it is not consent to execute project code, shell
+commands, background processes, or external mutations.
 
 Review what you've approved, or take it back:
 
@@ -252,7 +252,7 @@ Useful flags:
 - `--model <name>` — any model LiteLLM can route to
 - `--read-only` — disable every destructive tool
 - `--dry-run` — preview changes without touching disk
-- `--auto-approve` — skip write confirmations
+- `--auto-approve` — skip workspace file-mutation confirmations only
 - `--stateless` — don't load or save session history
 - `--config <path>` — use a specific config file
 
@@ -307,7 +307,7 @@ facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
 `apsara eval evals/coding-core.json --live` runs disposable Python, TypeScript,
 Go, and Rust coding tasks and scores verification, edit scope, tool efficiency,
 and tokens. Saved `results.json` evidence can be re-scored offline with
-`--results`; see [the evaluation strategy](docs/EVALUATION_STRATEGY.md).
+`--results`; see [the evaluation strategy](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/docs/EVALUATION_STRATEGY.md).
 
 In chat, `/help` lists the complete command surface, including `/details`,
 `/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,
@@ -380,7 +380,7 @@ Local run notes are in
 [RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/RUN_PROJECT.md),
 tester setup is in
 [TESTER_QUICKSTART.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/TESTER_QUICKSTART.md),
-and the runtime design is in [`docs/AGENT_RUNTIME.md`](docs/AGENT_RUNTIME.md).
+and the runtime design is in [`docs/AGENT_RUNTIME.md`](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/docs/AGENT_RUNTIME.md).
 Maintainers: see `RELEASING.md` in the repository for the publish process.
 
 ## License

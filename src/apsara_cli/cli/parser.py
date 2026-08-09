@@ -39,7 +39,8 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--max-file-size", type=int, default=None,
                            help="Override the maximum readable file size in bytes for this run.")
     subparser.add_argument("--auto-approve", dest="auto_approve", action="store_true", default=None,
-                           help="Skip interactive confirmations for writes and local commands.")
+                           help="Skip confirmations for workspace file mutations. Commands, "
+                                "workspace code, and external mutations still require approval.")
     subparser.add_argument("--confirm", dest="auto_approve", action="store_false",
                            help="Require confirmations even if the config auto-approves actions.")
     subparser.add_argument("--dry-run", action="store_true",

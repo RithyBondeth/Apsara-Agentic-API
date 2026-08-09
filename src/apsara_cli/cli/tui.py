@@ -78,11 +78,20 @@ from apsara_cli.engine.models import (
     model_availability,
     model_price_label,
 )
-from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
+from apsara_cli.shared.ui import (
+    ConsoleUI,
+    Theme,
+    action_allows_blanket_approval,
+    describe_action,
+    terminal_width,
+)
 
 # Accent / chrome colors (ANSI truecolor), kept in one place.
 _ACCENT = "38;2;96;150;250"      # blue left-bar / user accent
 _DIMTXT = "38;2;120;125;138"
+_PANEL_GUTTER = 3
+_SIDEBAR_CONTENT_WIDTH = 34
+_SIDEBAR_TOTAL_WIDTH = _SIDEBAR_CONTENT_WIDTH + (_PANEL_GUTTER * 2)
 
 
 class TurnController:
@@ -117,6 +126,19 @@ class TurnController:
         return True
 
 
+class _ResponsiveCard:
+    """Semantic transcript entry rendered at the pane's current width."""
+
+    __slots__ = ("role", "text", "timestamp", "rendered_width", "rendered_lines")
+
+    def __init__(self, role: str, text: str, timestamp: Optional[str] = None) -> None:
+        self.role = role
+        self.text = text
+        self.timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
+        self.rendered_width: Optional[int] = None
+        self.rendered_lines: list[str] = []
+
+
 class TuiConsoleUI(ConsoleUI):
     """
     ConsoleUI backend for the full-screen TUI. All higher-level formatting
@@ -126,7 +148,7 @@ class TuiConsoleUI(ConsoleUI):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.lines: list[str] = []
+        self.lines: list[str | _ResponsiveCard] = []
         self.app: Optional[Application] = None
         self._passthrough = False
         self._spinner_frame = ""
@@ -145,7 +167,7 @@ class TuiConsoleUI(ConsoleUI):
                 columns = self.app.output.get_size().columns
             except Exception:
                 pass
-        sidebar_width = 35 if self.sidebar_visible else 0
+        sidebar_width = (_SIDEBAR_TOTAL_WIDTH + 1) if self.sidebar_visible else 0
         available = max(16, columns - sidebar_width)
         if fallback is not None:
             return max(16, min(fallback, available))
@@ -169,6 +191,64 @@ class TuiConsoleUI(ConsoleUI):
             return
         self._stop_spinner_tick()
         self.lines.extend(text.split("\n") if text else [""])
+        self._invalidate()
+
+    def _user_card_lines(self, card: "_ResponsiveCard", width: int) -> list[str]:
+        """Reflow a user card against the conversation pane's live width."""
+        card_width = max(32, width - 2)
+        body_width = max(29, card_width - 1)
+        horizontal_padding = 3
+        inner_width = max(23, body_width - (horizontal_padding * 2))
+        bar = self.style("▌", "1", _ACCENT)
+        bg = "48;2;14;16;21"
+
+        def card_line(content: str = "", color: str = "38;2;225;230;242") -> str:
+            clipped = content[:inner_width]
+            padded = clipped.ljust(inner_width)
+            gutter = " " * horizontal_padding
+            return f"  {bar}{self.style(gutter + padded + gutter, color, bg)}"
+
+        lines = [card_line()]
+        for raw in card.text.split("\n"):
+            wrapped = textwrap.wrap(
+                raw,
+                width=inner_width,
+                replace_whitespace=False,
+                drop_whitespace=True,
+            ) or [""]
+            lines.extend(card_line(line) for line in wrapped)
+        lines.extend([
+            card_line(),
+            card_line(f"you  {card.timestamp}", "38;2;132;136;146"),
+            card_line(),
+        ])
+        return lines
+
+    def rendered_lines(self) -> list[str]:
+        """Expand responsive cards using the terminal's current dimensions."""
+        rendered: list[str] = []
+        card_width = max(35, self.content_width() - 3)
+        for item in self.lines:
+            if isinstance(item, _ResponsiveCard):
+                if item.rendered_width != card_width:
+                    item.rendered_lines = (
+                        self._user_card_lines(item, card_width)
+                        if item.role == "user"
+                        else self._markdown_card_lines(
+                            item.text, width=card_width, timestamp=item.timestamp
+                        )
+                    )
+                    item.rendered_width = card_width
+                rendered.extend(item.rendered_lines)
+            else:
+                rendered.extend(str(item).split("\n"))
+        return rendered
+
+    def render_markdown_panel(self, text: str) -> None:
+        if self._passthrough or self.app is None:
+            super().render_markdown_panel(text)
+            return
+        self.lines.append(_ResponsiveCard("assistant", text))
         self._invalidate()
 
     def _print_typed(self, prefix: str, content: str, color_code: str, delay: float) -> None:
@@ -247,39 +327,9 @@ class TuiConsoleUI(ConsoleUI):
     # ── Transcript panels (used by the submit handler) ────────────────────
 
     def append_user_message(self, text: str) -> None:
-        """Render the user request as the primary transcript card."""
-        card_width = max(32, self.content_width() - 2)
-        body_width = max(29, card_width - 1)
-        horizontal_padding = 3
-        inner_width = max(23, body_width - (horizontal_padding * 2))
-        bar = self.style("▌", "1", _ACCENT)
-        bg = "48;2;24;25;29"
-        timestamp = datetime.now().strftime("%I:%M %p").lstrip("0")
-
-        def card_line(content: str = "", color: str = "38;2;225;230;242") -> str:
-            clipped = content[:inner_width]
-            padded = clipped.ljust(inner_width)
-            gutter = " " * horizontal_padding
-            return f"  {bar}{self.style(gutter + padded + gutter, color, bg)}"
-
+        """Store a user request so it can reflow when the pane resizes."""
         self.lines.append("")
-        self.lines.append(card_line())
-        for raw in text.split("\n"):
-            wrapped = textwrap.wrap(
-                raw,
-                width=inner_width,
-                replace_whitespace=False,
-                drop_whitespace=True,
-            ) or [""]
-            self.lines.extend(card_line(line) for line in wrapped)
-        self.lines.append(card_line())
-        self.lines.append(
-            card_line(
-                f"you  {timestamp}",
-                "38;2;132;136;146",
-            )
-        )
-        self.lines.append(card_line())
+        self.lines.append(_ResponsiveCard("user", text))
         self._invalidate()
 
     # ── Native confirmation bridge + defensive terminal fallback ─────────
@@ -459,7 +509,10 @@ def _sidebar_text(
     )
     lines(f"   {ui.style('bash', _DIMTXT)}  {bash_state}")
     if options.auto_approve:
-        lines(f"   {ui.style('auto-approve', _DIMTXT)}  {ui.style('on', '38;2;247;200;100')}")
+        lines(
+            f"   {ui.style('file auto-approve', _DIMTXT)}  "
+            f"{ui.style('on', '38;2;247;200;100')}"
+        )
     steps = len(ui.latest_hidden_events)
     if steps:
         step_word = "steps" if steps != 1 else "step"
@@ -510,12 +563,13 @@ def _sidebar_text(
         f"{ui.style('v' + __version__, _C_MODEL)}"
     )
     lines(f"   {ui.style('by Bondeth', _C_WORKSPACE)}")
+    lines("")
 
     return ANSI("\n".join(body))
 
 
 def _chat_text(ui: TuiConsoleUI) -> ANSI:
-    body_lines = list(ui.lines)
+    body_lines = ui.rendered_lines()
     if ui._spinner_frame:
         body_lines.append("")
         body_lines.append(f"  {ui.compose_spinner_line(ui._spinner_tick)}")
@@ -529,7 +583,7 @@ def _status_left(ui: TuiConsoleUI, options: Any) -> ANSI:
     path_width = max(12, min(38, terminal_width() - 58))
     label = _shorten_path(str(workspace), width=path_width)
     return ANSI(
-        f" {ui.style('apsara', '1', '38;2;210;216;242')} "
+        f"{' ' * _PANEL_GUTTER}{ui.style('apsara', '1', '38;2;210;216;242')} "
         f"{ui.style('v' + __version__, _DIMTXT)}  "
         f"{ui.style(label, _C_WORKSPACE)}"
     )
@@ -551,7 +605,8 @@ def _status_right(ui: TuiConsoleUI, options: Any, current_model: str) -> ANSI:
     right = (
         f"{ui.style(f'ctx {tok}/{context}{pct}', _DIMTXT)}  "
         f"{ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')}  "
-        f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)} "
+        f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)}"
+        f"{' ' * _PANEL_GUTTER}"
     )
     return ANSI(right)
 
@@ -596,7 +651,8 @@ def _approval_footer(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
         ui.style(" n/esc ", "1", "38;2;30;18;18", "48;2;225;125;115")
         + ui.style(" deny", "38;2;242;172;164"),
     ]
-    if not approval.get("is_trust"):
+    allow_always = approval.get("allow_always", not approval.get("is_trust"))
+    if allow_always:
         hints.append(
             ui.style(" a ", "1", "38;2;15;21;32", "48;2;120;165;235")
             + ui.style(" always allow", "38;2;166;198;246")
@@ -730,7 +786,7 @@ async def tui_loop(args: object, config: object) -> int:
         # The Window clamps its scroll to keep this 'cursor' visible on every
         # render — so pointing it at the last line implements follow-bottom,
         # pointing it at the current scroll row freezes manual browsing, and
-        total = len(ui.lines) + (2 if ui._spinner_frame else 0)
+        total = len(ui.rendered_lines()) + (2 if ui._spinner_frame else 0)
         if follow["on"]:
             return Point(x=0, y=max(total - 1, 0))
         return Point(x=0, y=max(chat_window.vertical_scroll, 0))
@@ -740,13 +796,30 @@ async def tui_loop(args: object, config: object) -> int:
     )
     chat_window = Window(content=chat_control, wrap_lines=True, always_hide_cursor=True)
 
+    def _sidebar_cursor_position() -> Point:
+        # Keep Prompt Toolkit from snapping a mouse-scrolled sidebar back to
+        # its logical cursor at row zero on the next render.
+        return Point(x=0, y=max(sidebar_window.vertical_scroll, 0))
+
     sidebar_control = FormattedTextControl(
         lambda: _sidebar_text(ui, options, state["model"], session_label, history, session_started),
         focusable=False,
+        get_cursor_position=_sidebar_cursor_position,
     )
-    sidebar_window = Window(content=sidebar_control, width=34, wrap_lines=True, style="class:sidebar")
+    sidebar_window = Window(
+        content=sidebar_control,
+        width=_SIDEBAR_CONTENT_WIDTH,
+        wrap_lines=True,
+        always_hide_cursor=True,
+        style="class:sidebar",
+    )
+    sidebar_shell = VSplit([
+        Window(width=_PANEL_GUTTER, char=" ", style="class:sidebar"),
+        sidebar_window,
+        Window(width=_PANEL_GUTTER, char=" ", style="class:sidebar"),
+    ], width=_SIDEBAR_TOTAL_WIDTH, style="class:sidebar")
 
-    status_bar = VSplit([
+    status_content = VSplit([
         Window(content=FormattedTextControl(lambda: _status_left(ui, options)), height=1),
         Window(
             content=FormattedTextControl(lambda: _status_right(ui, options, state["model"])),
@@ -755,6 +828,10 @@ async def tui_loop(args: object, config: object) -> int:
             dont_extend_width=True,
         ),
     ], height=1, style="class:statusbar")
+    status_bar = HSplit([
+        status_content,
+        Window(height=1, char=" ", style="class:statusbar"),
+    ], height=2, style="class:statusbar")
 
     history_dir = Path.home() / ".apsara"
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -812,9 +889,9 @@ async def tui_loop(args: object, config: object) -> int:
         def _row(content, height) -> VSplit:
             return VSplit([
                 Window(width=1, char="▌", style="class:accent"),
-                Window(width=3, char=" "),
+                Window(width=_PANEL_GUTTER, char=" "),
                 content,
-                Window(width=3, char=" "),
+                Window(width=_PANEL_GUTTER, char=" "),
                 Window(width=1, char="│", style="class:inputborder"),
             ], height=height)
 
@@ -844,7 +921,6 @@ async def tui_loop(args: object, config: object) -> int:
         height=1,
         style="class:approval",
     )
-    approval_card_width = max(32, ui.content_width() - 2)
     approval_card = VSplit([
             Window(width=1, char="▌", style="class:approvalaccent"),
             Window(width=3, char=" ", style="class:approval"),
@@ -857,7 +933,6 @@ async def tui_loop(args: object, config: object) -> int:
             ], style="class:approval"),
             Window(width=3, char=" ", style="class:approval"),
         ],
-        width=Dimension.exact(approval_card_width),
         height=Dimension.exact(11),
         style="class:approval",
     )
@@ -865,7 +940,7 @@ async def tui_loop(args: object, config: object) -> int:
         content=VSplit([
             Window(width=2, char=" "),
             approval_card,
-            Window(char=" "),
+            Window(width=3, char=" "),
         ], height=Dimension.exact(11)),
         filter=approval_active,
     )
@@ -877,7 +952,7 @@ async def tui_loop(args: object, config: object) -> int:
             return VSplit([
                 conversation,
                 Window(width=1, char="│", style="class:sep"),
-                sidebar_window,
+                sidebar_shell,
             ])
         return conversation
 
@@ -1010,6 +1085,13 @@ async def tui_loop(args: object, config: object) -> int:
             follow["last_set"] = cur
 
     def _after_render(app_) -> None:
+        sidebar_info = sidebar_window.render_info
+        if sidebar_info is not None:
+            sidebar_max = max(sidebar_info.content_height - sidebar_info.window_height, 0)
+            if sidebar_window.vertical_scroll > sidebar_max:
+                sidebar_window.vertical_scroll = sidebar_max
+                app_.invalidate()
+
         # render_info is only fresh AFTER a render, so when following we may
         # discover the true bottom just now — snap to it and repaint once.
         if state["welcome"] or picker["active"] or not follow["on"]:
@@ -1024,18 +1106,18 @@ async def tui_loop(args: object, config: object) -> int:
         "accent": "fg:#6096fa",
         "sep": "fg:#3d4668",
         "inputborder": "fg:#5a6cb4",
-        "composer": "bg:#171b2a",
-        "approvalaccent": "fg:#f0b35f bg:#18191e",
+        "composer": "bg:#0e1015",
+        "approvalaccent": "fg:#f0b35f bg:#0e1015",
         "placeholder": "fg:#5a616e",
         "sidebar": "bg:#0e1015",
-        "statusbar": "bg:#12141a",
+        "statusbar": "bg:#0e1015",
         "overlay": "bg:#08090d",
-        "approval": "bg:#14161c fg:#e1e6f2",
-        "approval.border": "fg:#65739a bg:#14161c",
-        "approval.label": "fg:#f0c878 bg:#14161c bold",
-        "picker": "bg:#12151f fg:#e1e6f2",
-        "picker.border": "fg:#7180aa bg:#12151f",
-        "picker.label": "fg:#dce4ff bg:#12151f bold",
+        "approval": "bg:#0e1015 fg:#e1e6f2",
+        "approval.border": "fg:#65739a bg:#0e1015",
+        "approval.label": "fg:#f0c878 bg:#0e1015 bold",
+        "picker": "bg:#0e1015 fg:#e1e6f2",
+        "picker.border": "fg:#7180aa bg:#0e1015",
+        "picker.label": "fg:#dce4ff bg:#0e1015 bold",
         "completion-menu.completion": "bg:#1c1f27 fg:#c8cede",
         "completion-menu.completion.current": "bg:#f7b76a fg:#1a1a1a",
     })
@@ -1332,7 +1414,8 @@ async def tui_loop(args: object, config: object) -> int:
     def _native_confirm(action: str, payload: dict[str, Any]) -> bool:
         """Block only the agent worker while the main TUI operates the dialog."""
         is_trust = action == "trust_workspace_code"
-        if ui.approve_all and not is_trust:
+        allows_blanket = action_allows_blanket_approval(action)
+        if ui.approve_all and allows_blanket:
             return True
 
         title, preview, diff_preview, diff_full, _diff_editor, _path_hint = describe_action(
@@ -1349,6 +1432,7 @@ async def tui_loop(args: object, config: object) -> int:
             "result": "reject",
             "event": done,
             "is_trust": is_trust,
+            "allow_always": allows_blanket,
         })
         approval_window.vertical_scroll = 0
         ui.stop_spinner()
@@ -1356,7 +1440,7 @@ async def tui_loop(args: object, config: object) -> int:
         done.wait()
 
         result = approval["result"]
-        if result == "always" and not is_trust:
+        if result == "always" and allows_blanket:
             ui.approve_all = True
         ui.start_spinner("Apsara is working")
         return result in {"approve", "always"}
@@ -1397,7 +1481,8 @@ async def tui_loop(args: object, config: object) -> int:
     @kb.add("a", filter=approval_active, eager=True)
     @kb.add("A", filter=approval_active, eager=True)
     def _approval_always(event) -> None:
-        _approval_resolve("always")
+        if approval.get("allow_always"):
+            _approval_resolve("always")
 
     @kb.add("n", filter=approval_active, eager=True)
     @kb.add("N", filter=approval_active, eager=True)
@@ -1499,6 +1584,23 @@ async def tui_loop(args: object, config: object) -> int:
         """Show details on demand without permanently shrinking the chat."""
         sidebar_state["visible"] = not sidebar_state["visible"]
         ui.sidebar_visible = sidebar_state["visible"]
+        event.app.invalidate()
+
+    @kb.add("c-up")
+    def _scroll_sidebar_up(event) -> None:
+        """Scroll the workspace details independently of the transcript."""
+        if not sidebar_state["visible"]:
+            return
+        sidebar_window.vertical_scroll = max(sidebar_window.vertical_scroll - 1, 0)
+        event.app.invalidate()
+
+    @kb.add("c-down")
+    def _scroll_sidebar_down(event) -> None:
+        if not sidebar_state["visible"]:
+            return
+        info = sidebar_window.render_info
+        max_scroll = max(info.content_height - info.window_height, 0) if info else 0
+        sidebar_window.vertical_scroll = min(sidebar_window.vertical_scroll + 1, max_scroll)
         event.app.invalidate()
 
     @kb.add("pageup")

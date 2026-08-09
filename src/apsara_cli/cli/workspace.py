@@ -17,7 +17,8 @@ DEFAULT_CONFIG_TEMPLATE = """# Apsara Project Configuration
 # can write code but never run it, so it cannot catch its own mistakes.
 # @verify expands to the common test/build tools (pytest, npm, go, cargo,
 # make, ...); @read and @git are also available. Every command still needs
-# your approval at run time unless you pass --auto-approve.
+# your explicit approval at run time; --auto-approve covers file mutations
+# only.
 # allow_bash = true
 # allowed_commands = ["@verify", "@git"]
 # bash_timeout = 120

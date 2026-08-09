@@ -7,12 +7,17 @@ from apsara_cli.cli.tui import TuiConsoleUI, _approval_footer, _approval_text, _
 class _FakeApplication:
     class _Output:
         class _Size:
-            columns = 80
+            def __init__(self, columns):
+                self.columns = columns
+
+        def __init__(self, columns=80):
+            self.columns = columns
 
         def get_size(self):
-            return self._Size()
+            return self._Size(self.columns)
 
-    output = _Output()
+    def __init__(self, columns=80):
+        self.output = self._Output(columns)
 
     def invalidate(self):
         pass
@@ -64,13 +69,42 @@ def test_tui_uses_the_same_padded_markdown_card():
     ui.stream_text_chunk("### TUI Ready\n\n- shared renderer")
     ui.stream_text_end()
 
-    output = "\n".join(ui.lines)
+    lines = ui.rendered_lines()
+    output = "\n".join(lines)
     assert "apsara" in output
     assert "▌" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
     assert ui.content_width() == 80
-    assert max(len(line) for line in ui.lines) == 80
+    assert max(len(line) for line in lines) == 77
+
+    ui.app.output.columns = 120
+    resized_lines = ui.rendered_lines()
+    assert ui.content_width() == 120
+    assert max(len(line) for line in resized_lines) == 117
+
+
+def test_responsive_markdown_card_is_cached_until_width_changes(monkeypatch):
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=80)
+    ui.sidebar_visible = False
+    calls = []
+    original = ui._markdown_card_lines
+
+    def counted(*args, **kwargs):
+        calls.append(kwargs["width"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "_markdown_card_lines", counted)
+    ui.render_markdown_panel("### Cached")
+
+    ui.rendered_lines()
+    ui.rendered_lines()
+    assert calls == [77]
+
+    ui.app.output.columns = 120
+    ui.rendered_lines()
+    assert calls == [77, 117]
 
 
 def test_tui_user_turn_has_a_clear_role_label():
@@ -79,10 +113,12 @@ def test_tui_user_turn_has_a_clear_role_label():
 
     ui.append_user_message("Explain this code")
 
-    output = "\n".join(ui.lines)
+    output = "\n".join(ui.rendered_lines())
     assert "▌" in output
     assert "  ▌   Explain this code" in output
     assert "you" in output
+    assert ui.content_width() == 39
+    assert max(len(line) for line in ui.rendered_lines()) == 36
 
 
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
@@ -198,6 +234,22 @@ def test_inline_approval_card_renders_diff_and_shortcuts():
     assert "v full diff" in footer
 
 
+def test_command_approval_card_does_not_offer_always_allow():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    approval = {
+        "title": "Run command",
+        "preview": "$ pytest -q",
+        "full": "$ pytest -q",
+        "is_trust": False,
+        "allow_always": False,
+    }
+
+    footer = fragment_list_to_text(to_formatted_text(_approval_footer(ui, approval)))
+
+    assert "allow once" in footer
+    assert "always allow" not in footer
+
+
 def test_bash_approval_includes_command_and_working_directory():
     title, preview, *_ = describe_action(
         "run_bash_command",
@@ -225,7 +277,7 @@ def test_restored_history_shows_conversation_but_hides_tool_internals():
 
     _restore_history(ui, history)
 
-    output = "\n".join(ui.lines)
+    output = "\n".join(ui.rendered_lines())
     assert "Resumed 1 prior turn" in output
     assert "▌" in output and "Fix the bug" in output and "you" in output
     assert "Fixed" in output and "The bug is resolved." in output
