@@ -440,61 +440,41 @@ class ConsoleUI:
         width: Optional[int] = None,
         timestamp: Optional[str] = None,
     ) -> list[str]:
-        """Format a Markdown response card without writing it."""
+        """Format a Markdown response in the original rounded Apsara box."""
+        from rich import box
         from rich.console import Console
         from rich.markdown import Markdown
+        from rich.panel import Panel
         from rich.text import Text
 
-        panel_width = max(4, width or self.content_width())
-        card_width = max(2, panel_width - 2)
-        body_width = max(1, card_width - 1)
-        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
-        render_width = max(1, body_width - (horizontal_padding * 2))
+        # The two-space transcript indent is outside Rich's panel, so reserve
+        # it here and keep the complete line inside the requested pane width.
+        panel_width = max(4, (width or self.content_width()) - 2)
         rendered = StringIO()
         console = Console(
             file=rendered,
             force_terminal=self.use_color,
             color_system="truecolor" if self.use_color else None,
-            width=render_width,
+            width=panel_width,
             legacy_windows=False,
         )
         body = text.strip() or "_No response content._"
-        console.print(Markdown(body, code_theme="monokai"))
-
-        rail = self.style("▌", "1", "38;2;104;205;220")
-        background = "48;2;14;16;21"
-        foreground = "38;2;225;230;242"
-        timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
-
-        def card_line(content: str = "") -> str:
-            # Rich emits resets inside highlighted Markdown. Re-apply the
-            # card background after each reset so the panel stays continuous.
-            visual_width = Text.from_ansi(content).cell_len
-            content += " " * max(render_width - visual_width, 0)
-            if self.use_color:
-                content = content.replace("\033[0m", f"\033[0m\033[{background}m")
-            padded = (
-                (" " * horizontal_padding)
-                + content
-                + (" " * horizontal_padding)
-            )
-            return f"  {rail}{self.style(padded, foreground, background)}"
-
-        lines = [card_line(" " * render_width)]
-        for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
-            lines.append(card_line(line))
-        lines.append(card_line(" " * render_width))
-        footer = f"apsara  {timestamp}"[:render_width].ljust(render_width)
-        if self.use_color:
-            footer = self.style(footer, "38;2;132;136;146").replace(
-                "\033[0m", f"\033[0m\033[{background}m"
-            )
-        lines.append(card_line(footer))
-        lines.append(card_line(" " * render_width))
-        return lines
+        console.print(Panel(
+            Markdown(body, code_theme="monokai"),
+            title=Text("Apsara", style="bold rgb(225,230,242)"),
+            title_align="left",
+            border_style="rgb(80,100,140)",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            expand=True,
+        ))
+        return [
+            f"  {line}"
+            for line in rendered.getvalue().rstrip("\n").splitlines()
+        ]
 
     def render_markdown_panel(self, text: str) -> None:
-        """Render an assistant response in a padded transcript card."""
+        """Render an assistant response in the original rounded panel."""
         for line in self._markdown_card_lines(text):
             self.print_line(line)
 

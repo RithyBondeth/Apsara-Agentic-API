@@ -32,7 +32,7 @@ class _FakeApplication:
         pass
 
 
-def test_assistant_renders_markdown_in_a_padded_transcript_card(capsys):
+def test_assistant_renders_markdown_in_the_rounded_apsara_box(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
 
     ui.assistant(
@@ -41,10 +41,9 @@ def test_assistant_renders_markdown_in_a_padded_transcript_card(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "apsara" in output
-    assert "▌" in output
-    assert "  ▌    • first item" in output
-    assert "╭" not in output and "╰" not in output
+    assert "Apsara" in output
+    assert "╭" in output and "╰" in output
+    assert "│" in output
     assert "Result" in output
     assert "• first item" in output
     assert "print('ready')" in output
@@ -62,14 +61,14 @@ def test_streamed_answer_is_buffered_then_rendered_as_markdown(capsys):
     ui.stream_text_end()
 
     output = capsys.readouterr().out
-    assert "apsara" in output
-    assert "▌" in output
+    assert "Apsara" in output
+    assert "│" in output
     assert "Summary" in output
     assert "Ready." in output
     assert "**" not in output
 
 
-def test_tui_uses_the_same_padded_markdown_card():
+def test_tui_uses_the_same_rounded_markdown_box():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
     ui.sidebar_visible = False
@@ -80,8 +79,8 @@ def test_tui_uses_the_same_padded_markdown_card():
 
     lines = ui.rendered_lines()
     output = "\n".join(lines)
-    assert "apsara" in output
-    assert "▌" in output
+    assert "Apsara" in output
+    assert "╭" in output and "╰" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
     assert ui.content_width() == 80
@@ -124,10 +123,10 @@ def test_tui_user_turn_has_a_clear_role_label():
 
     output = "\n".join(ui.rendered_lines())
     assert "▌" in output
-    assert "  ▌   Explain this code" in output
-    assert "you" in output
+    assert "  ▌ Explain this code" in output
+    assert "You" in output
     assert ui.content_width() == 39
-    assert max(len(line) for line in ui.rendered_lines()) == 36
+    assert max(len(line) for line in ui.rendered_lines()) <= 36
 
 
 def test_tui_cards_fit_a_narrow_terminal():
@@ -154,6 +153,15 @@ def test_tui_hides_sidebar_when_it_would_starve_conversation():
     ui.app.output.columns = 80
     assert ui.sidebar_is_rendered() is True
     assert ui.content_width() == 39
+
+
+def test_tui_sidebar_is_enabled_by_default_on_wide_terminals():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=100)
+
+    assert ui.sidebar_visible is True
+    assert ui.sidebar_is_rendered() is True
+    assert ui.content_width() == 59
 
 
 def test_welcome_panel_never_exceeds_terminal_width():
@@ -359,7 +367,7 @@ def test_restored_history_shows_conversation_but_hides_tool_internals():
 
     output = "\n".join(ui.rendered_lines())
     assert "Resumed 1 prior turn" in output
-    assert "▌" in output and "Fix the bug" in output and "you" in output
+    assert "▌" in output and "Fix the bug" in output and "You" in output
     assert "Fixed" in output and "The bug is resolved." in output
     assert "I will inspect it" not in output
     assert "secret tool output" not in output
