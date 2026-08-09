@@ -37,6 +37,8 @@ The focus of this release is:
 - `/details` to inspect hidden activity on demand
 - local session history with trimming for oversized requests
 - typed run state, durable redacted journals, run reports, and evaluation suites
+- repeated coding evaluations with flaky-verification detection, aggregate
+  variance reports, and configurable release thresholds
 - planning and verification gates for multi-step coding tasks
 - privacy-safe `/bug` bundles that omit content by default and always redact
   recognizable credentials

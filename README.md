@@ -306,10 +306,12 @@ Each turn also writes an append-only event trace and typed run state beneath
 facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
 `/memory add <note>` to manage them.
 
-`apsara eval evals/coding-core.json --live` runs disposable Python, TypeScript,
-Go, and Rust coding tasks and scores verification, edit scope, tool efficiency,
-and tokens. Saved `results.json` evidence can be re-scored offline with
-`--results`; see [the evaluation strategy](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/docs/EVALUATION_STRATEGY.md).
+`apsara eval evals/coding-core.json --live --repeat 3` runs independent
+disposable Python, TypeScript, Go, and Rust coding trials and scores
+verification, edit scope, tool efficiency, and tokens. Repeated verification
+detects flaky fixtures, while `summary.json` records pass rate, variance,
+failure categories, and release-gate status. Saved `results.json` evidence can
+be re-scored offline with `--results`; see [the evaluation strategy](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/docs/EVALUATION_STRATEGY.md).
 
 In chat, `/help` lists the complete command surface, including `/details`,
 `/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,

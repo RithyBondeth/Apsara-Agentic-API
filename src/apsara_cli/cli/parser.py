@@ -5,6 +5,26 @@ from typing import Optional, Sequence
 from apsara_cli.config.cli_config import DEFAULT_CONFIG_PATH
 
 
+def _benchmark_repeat_count(value: str) -> int:
+    try:
+        repeat_count = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("repeat count must be an integer") from exc
+    if not 1 <= repeat_count <= 10:
+        raise argparse.ArgumentTypeError("repeat count must be between 1 and 10")
+    return repeat_count
+
+
+def _benchmark_pass_rate(value: str) -> float:
+    try:
+        percentage = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("pass rate must be a percentage") from exc
+    if not 0 <= percentage <= 100:
+        raise argparse.ArgumentTypeError("pass rate must be between 0 and 100")
+    return percentage / 100
+
+
 def _configure_output_streams() -> None:
     """Keep Unicode UI glyphs from crashing legacy Windows code pages."""
     for stream in (sys.stdout, sys.stderr):
@@ -128,6 +148,20 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Directory for disposable benchmark workspaces and result evidence.")
     eval_parser.add_argument("--results", default=None,
                              help="Re-score an existing benchmark results.json without provider calls.")
+    eval_parser.add_argument(
+        "--repeat",
+        type=_benchmark_repeat_count,
+        default=1,
+        metavar="N",
+        help="Run each live benchmark case N times (1-10; multiplies provider usage).",
+    )
+    eval_parser.add_argument(
+        "--min-pass-rate",
+        type=_benchmark_pass_rate,
+        default=None,
+        metavar="PERCENT",
+        help="Override the suite's aggregate release pass-rate threshold.",
+    )
 
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
@@ -173,6 +207,8 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
     if args.command == "eval":
         from pathlib import Path
         from apsara_cli.engine.evals import (
+            aggregate_benchmark_results,
+            format_benchmark_aggregate,
             is_benchmark_suite,
             run_benchmark_suite,
             run_suite,
@@ -181,6 +217,9 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
         suite_path = Path(args.suite).resolve()
         if is_benchmark_suite(suite_path):
             if args.results:
+                if args.repeat != 1:
+                    print("--repeat is only valid with --live.")
+                    return 2
                 results = score_benchmark_results(suite_path, Path(args.results).resolve())
             elif args.live:
                 output = Path(args.output or ".apsara/benchmarks")
@@ -188,17 +227,28 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
                     suite_path,
                     output,
                     args.model or config.defaults.model,
+                    repeats=args.repeat,
+                    min_pass_rate=args.min_pass_rate,
                 )
                 print(f"Evidence: {results_path}")
+                print(f"Summary: {results_path.with_name('summary.json')}")
             else:
                 print("Coding benchmark suites require --live or --results <results.json>.")
                 return 2
             for result in results:
+                trial = result.details.get("trial")
+                trial_label = f" trial {trial}" if trial is not None else ""
                 print(
-                    f"{'PASS' if result.passed else 'FAIL'} {result.name} "
+                    f"{'PASS' if result.passed else 'FAIL'} {result.name}{trial_label} "
                     f"[{result.language}] {result.score}/100: {'; '.join(result.checks)}"
                 )
-            return 0 if all(result.passed for result in results) else 1
+            aggregate = aggregate_benchmark_results(
+                suite_path,
+                results,
+                min_pass_rate=args.min_pass_rate,
+            )
+            print(format_benchmark_aggregate(aggregate))
+            return 0 if aggregate["passed"] else 1
         workspace = Path(args.workspace or ".").resolve()
         results = run_suite(suite_path, workspace)
         for result in results:

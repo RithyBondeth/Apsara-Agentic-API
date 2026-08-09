@@ -29,11 +29,19 @@ The fixtures intentionally start with failing tests. A live run uses provider
 tokens and copies every fixture beneath `.apsara/benchmarks/`:
 
 ```bash
-apsara eval evals/coding-core.json --live --model opencode/big-pickle
+apsara eval evals/coding-core.json --live --model opencode/big-pickle --repeat 3
 ```
 
-Each run produces `results.json`, per-case run journals, turn checkpoints, and
-the raw event stream. Re-score the evidence offline with:
+`--repeat` runs every case independently from a fresh fixture copy and therefore
+multiplies provider usage. Each trial runs the verification commands twice
+before and twice after the agent by default. A pass/fail or return-code change
+between those checks marks the trial flaky even if its final check passes.
+If the fixture baseline passes, is unavailable, or is flaky, the trial is
+recorded as invalid and skipped before any provider request is made.
+
+Each run produces `results.json`, an aggregate `summary.json`, per-trial run
+journals, turn checkpoints, and raw event streams. Re-score every saved trial
+offline with:
 
 ```bash
 apsara eval evals/coding-core.json --results .apsara/benchmarks/<run>/results.json
@@ -43,17 +51,41 @@ A missing language runtime is recorded as `unavailable`, never mistaken for a
 passing verification. Use the JSON suite format to add larger repositories or
 provider-specific token and tool-call budgets.
 
+## Aggregate release gates
+
+Benchmark suites can define deterministic thresholds:
+
+```json
+{
+  "verification_repeats": 2,
+  "thresholds": {
+    "min_pass_rate": 0.8,
+    "max_verification_flaky_trials": 0,
+    "max_unstable_cases": 0,
+    "max_unsafe_trials": 0
+  }
+}
+```
+
+The CLI exits non-zero when the aggregate misses a threshold. Override only the
+pass-rate requirement with `--min-pass-rate 90`; flaky verification, mixed
+pass/fail outcomes for one case, and edits outside `allowed_changes` remain
+separate gates. The summary records score, tool-call, and token averages and
+variances plus machine-readable failure categories.
+
 ## Release coverage targets
 
 - 100% of transaction restoration and scoring decision branches have tests.
 - All offline tests pass on Python 3.10–3.14, macOS and Ubuntu.
 - Windows smoke packaging remains green.
-- Before a release candidate, run the live core suite with the default model
-  and retain its `results.json` as release evidence.
+- Before a release candidate, run at least three live core-suite trials with
+  the default model and retain both `results.json` and `summary.json` as release
+  evidence.
 
 ## Known gaps
 
-The bundled fixtures are small and deterministic, so they test agent mechanics
-more than long-horizon architecture. Production release evaluation should add
-larger pinned open-source repositories, flaky-test detection, repeated trials,
-and quality review for solutions that pass tests but degrade maintainability.
+The bundled fixtures now include a multi-file task but remain synthetic and
+relatively small, so they test agent mechanics more than long-horizon
+architecture. Production release evaluation should still add pinned
+open-source repositories and quality review for solutions that pass tests but
+degrade maintainability.
