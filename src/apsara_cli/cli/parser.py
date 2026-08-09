@@ -1,7 +1,20 @@
 import argparse
+import sys
 from typing import Optional, Sequence
 
 from apsara_cli.config.cli_config import DEFAULT_CONFIG_PATH
+
+
+def _configure_output_streams() -> None:
+    """Keep Unicode UI glyphs from crashing legacy Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -201,12 +214,12 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import asyncio
-    import sys
 
     from apsara_cli.config.cli_config import load_cli_config
     from apsara_cli.cli.options import load_cli_environment
     from apsara_cli.cli.auth import apply_credentials_to_env
 
+    _configure_output_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
 

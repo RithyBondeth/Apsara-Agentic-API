@@ -5,10 +5,29 @@ from datetime import date
 
 from apsara_cli.cli.session import save_session_messages
 from apsara_cli.cli.tui import TurnController
+from apsara_cli.cli import parser as cli_parser
 from apsara_cli.engine.executor import _fallback_allowed
 from apsara_cli.engine.models import lookup_model, model_availability, model_lifecycle
 from apsara_cli.engine.usage_reports import format_usage_report, workspace_usage
 from apsara_cli.engine.workspace_diff import workspace_diff
+
+
+def test_cli_output_uses_replacement_for_legacy_encodings(monkeypatch):
+    class LegacyStream:
+        errors = "strict"
+
+        def reconfigure(self, **options):
+            self.errors = options["errors"]
+
+    stdout = LegacyStream()
+    stderr = LegacyStream()
+    monkeypatch.setattr(cli_parser.sys, "stdout", stdout)
+    monkeypatch.setattr(cli_parser.sys, "stderr", stderr)
+
+    cli_parser._configure_output_streams()
+
+    assert stdout.errors == "replace"
+    assert stderr.errors == "replace"
 
 
 def test_retired_models_are_blocked_and_retiring_models_warn():
