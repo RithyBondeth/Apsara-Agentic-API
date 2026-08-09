@@ -1,7 +1,7 @@
 """
-Full-screen TUI modeled on OpenCode's information hierarchy: a full-width
-scrollable transcript, rail-led messages, an on-demand details sidebar, a
-focused composer, centered overlays, and a compact telemetry bar.
+Full-screen split-pane TUI with a scrollable boxed transcript, persistent
+details sidebar, focused composer, centered overlays, and compact telemetry
+bar. On narrow terminals the sidebar collapses to protect the conversation.
 
 Design note: this file does NOT reimplement any of ConsoleUI's formatting
 logic (badges, diffs, markdown/code rendering, confirm-dialog boxes, the
@@ -209,21 +209,13 @@ class TuiConsoleUI(ConsoleUI):
         self._invalidate()
 
     def _user_card_lines(self, card: "_ResponsiveCard", width: int) -> list[str]:
-        """Reflow a user card against the conversation pane's live width."""
-        card_width = max(2, width - 2)
-        body_width = max(1, card_width - 1)
-        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
-        inner_width = max(1, body_width - (horizontal_padding * 2))
-        bar = self.style("▌", "1", _ACCENT)
-        bg = "48;2;14;16;21"
-
-        def card_line(content: str = "", color: str = "38;2;225;230;242") -> str:
-            clipped = content[:inner_width]
-            padded = clipped.ljust(inner_width)
-            gutter = " " * horizontal_padding
-            return f"  {bar}{self.style(gutter + padded + gutter, color, bg)}"
-
-        lines = [card_line()]
+        """Reflow the original labeled user rail at the live pane width."""
+        inner_width = max(1, width - 4)
+        bar = self.style("▌", _ACCENT)
+        lines = [
+            f"  {self.style('❯', '1', _ACCENT)} "
+            f"{self.style('You', '1', '38;2;210;220;242')}"
+        ]
         for raw in card.text.split("\n"):
             wrapped = textwrap.wrap(
                 raw,
@@ -231,12 +223,10 @@ class TuiConsoleUI(ConsoleUI):
                 replace_whitespace=False,
                 drop_whitespace=True,
             ) or [""]
-            lines.extend(card_line(line) for line in wrapped)
-        lines.extend([
-            card_line(),
-            card_line(f"you  {card.timestamp}", "38;2;132;136;146"),
-            card_line(),
-        ])
+            lines.extend(
+                f"  {bar} {self.style(line, '38;2;225;230;242')}"
+                for line in wrapped
+            )
         return lines
 
     def rendered_lines(self) -> list[str]:
@@ -781,10 +771,11 @@ async def tui_loop(args: object, config: object) -> int:
     # screen: centered logo with the message box directly below it. The
     # split chat/sidebar layout takes over on the first submission.
     state = {"model": options.model, "welcome": not history, "busy": False}
-    # Preserve the transcript as the primary surface. Session details remain
-    # one shortcut away but never shrink the conversation on launch.
+    # The classic split-pane layout keeps details visible by default. The
+    # responsive renderer collapses it only when the conversation would be
+    # starved, and Ctrl+B remains available as an explicit override.
     turn_controller = TurnController()
-    sidebar_state = {"visible": terminal_width() >= 110}
+    sidebar_state = {"visible": ui.sidebar_visible}
     ui.sidebar_visible = sidebar_state["visible"]
 
     # /models runs as a native centered overlay. An asyncio.Future bridges the
