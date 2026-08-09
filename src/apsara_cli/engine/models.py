@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 
@@ -36,6 +37,11 @@ class ModelEntry:
     output_cost_per_million: Optional[float] = None
     cache_read_cost_per_million: Optional[float] = None
     cache_write_cost_per_million: Optional[float] = None
+    lifecycle: str = "active"  # active | deprecated | retiring | retired
+    shutdown_date: Optional[str] = None
+    replacement: Optional[str] = None
+    supports_tools: bool = True
+    supports_streaming: bool = True
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -57,6 +63,16 @@ MODELS: list[ModelEntry] = [
 
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
     ModelEntry(
+        model_id="groq/openai/gpt-oss-120b",
+        display_name="GPT OSS 120B",
+        provider="groq",
+        tier="free",
+        context_window=131_072,
+        env_var="GROQ_API_KEY",
+        notes="Groq-hosted open-weight reasoning and coding model",
+        aliases=["gpt-oss", "oss-120b"],
+    ),
+    ModelEntry(
         model_id="groq/llama-3.3-70b-versatile",
         display_name="Llama 3.3 70B",
         provider="groq",
@@ -65,6 +81,9 @@ MODELS: list[ModelEntry] = [
         env_var="GROQ_API_KEY",
         notes="Fast, general-purpose — default model",
         aliases=["llama", "llama70b", "llama-70b"],
+        lifecycle="retiring",
+        shutdown_date="2026-08-16",
+        replacement="groq/openai/gpt-oss-120b",
     ),
     ModelEntry(
         model_id="groq/deepseek-r1-distill-llama-70b",
@@ -75,6 +94,8 @@ MODELS: list[ModelEntry] = [
         env_var="GROQ_API_KEY",
         notes="Reasoning model, high speed via Groq",
         aliases=["r1-groq", "deepseek-r1-groq"],
+        lifecycle="retired",
+        shutdown_date="2025-10-02",
     ),
 
     # ── OpenAI (paid) ─────────────────────────────────────────────────────────
@@ -123,6 +144,7 @@ MODELS: list[ModelEntry] = [
         output_cost_per_million=15.0,
         cache_read_cost_per_million=0.30,
         cache_write_cost_per_million=3.75,
+        lifecycle="deprecated",
     ),
     ModelEntry(
         model_id="anthropic/claude-3-5-haiku-20241022",
@@ -137,6 +159,7 @@ MODELS: list[ModelEntry] = [
         output_cost_per_million=4.0,
         cache_read_cost_per_million=0.08,
         cache_write_cost_per_million=1.0,
+        lifecycle="deprecated",
     ),
 
     # ── Google Gemini (free quota + paid) ─────────────────────────────────────
@@ -149,6 +172,9 @@ MODELS: list[ModelEntry] = [
         env_var="GEMINI_API_KEY",
         notes="Latest Gemini Flash, 1M context, free quota",
         aliases=["gemini-flash", "flash", "gemini2"],
+        lifecycle="retired",
+        shutdown_date="2026-06-01",
+        replacement="gemini/gemini-2.5-flash",
     ),
     ModelEntry(
         model_id="gemini/gemini-1.5-pro",
@@ -163,6 +189,7 @@ MODELS: list[ModelEntry] = [
         output_cost_per_million=5.0,
         cache_read_cost_per_million=0.3125,
         cache_write_cost_per_million=1.25,
+        lifecycle="deprecated",
     ),
 
     # ── Mistral (paid but affordable) ─────────────────────────────────────────
@@ -252,6 +279,38 @@ def resolve_model_id(name: str) -> str:
     """
     entry = lookup_model(name)
     return entry.model_id if entry else name
+
+
+def model_lifecycle(entry: ModelEntry, today: date | None = None) -> str:
+    """Return lifecycle status, enforcing a registered shutdown date."""
+    if entry.shutdown_date:
+        try:
+            if (today or date.today()) >= date.fromisoformat(entry.shutdown_date):
+                return "retired"
+        except ValueError:
+            pass
+    return entry.lifecycle
+
+
+def model_availability(entry: ModelEntry, today: date | None = None) -> tuple[bool, str]:
+    """Whether Apsara can safely select this model, plus a user-facing reason."""
+    lifecycle = model_lifecycle(entry, today)
+    replacement = f" Use {entry.replacement} instead." if entry.replacement else ""
+    if lifecycle == "retired":
+        date_note = f" on {entry.shutdown_date}" if entry.shutdown_date else ""
+        return False, f"{entry.display_name} was retired{date_note}.{replacement}"
+    if not entry.supports_streaming or not entry.supports_tools:
+        missing = []
+        if not entry.supports_streaming:
+            missing.append("streaming")
+        if not entry.supports_tools:
+            missing.append("tool calling")
+        return False, f"{entry.display_name} does not support {' and '.join(missing)} required by Apsara."
+    if lifecycle == "retiring":
+        return True, f"{entry.display_name} retires on {entry.shutdown_date}.{replacement}"
+    if lifecycle == "deprecated":
+        return True, f"{entry.display_name} is deprecated.{replacement}"
+    return True, ""
 
 
 def model_usage_cost(
@@ -383,6 +442,6 @@ def provider_env_var(provider: str) -> Optional[str]:
 
 
 def default_model_for_provider(provider: str) -> Optional[str]:
-    """The default (first-listed) model_id for *provider*, or None if unknown."""
+    """The first active compatible model for *provider*, or None if unavailable."""
     models = models_for_provider(provider)
-    return models[0].model_id if models else None
+    return next((entry.model_id for entry in models if model_availability(entry)[0]), None)

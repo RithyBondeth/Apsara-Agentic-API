@@ -38,6 +38,8 @@ from apsara_cli.engine.models import (
     format_context_window,
     is_key_available,
     lookup_model,
+    model_availability,
+    model_lifecycle,
     model_price_label,
     providers_in_order,
     resolve_model_id,
@@ -121,6 +123,12 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
     entry = lookup_model(raw_name)
 
     if entry:
+        selectable, health_message = model_availability(entry)
+        if not selectable:
+            ui.error(health_message)
+            return current_model
+        if health_message:
+            ui.warning(health_message)
         ctx = format_context_window(entry.context_window)
         has_key = is_key_available(entry)
         ui.print_line()
@@ -358,6 +366,7 @@ def build_model_rows(
             name_text  = ui.style(entry.display_name, *name_style)
             tier_badge = ui.style(f"[{tier_label}]", tier_color)
             ctx_text   = ui.dim(f"{ctx} ctx")
+            lifecycle = model_lifecycle(entry)
 
             if has_key or entry.tier == "local":
                 key_text = ui.style("✓ key set", "38;2;120;200;150")
@@ -368,12 +377,19 @@ def build_model_rows(
             if entry.aliases:
                 aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
 
+            if lifecycle == "retired":
+                health_text = ui.style("[retired]", "38;2;235;110;100")
+            elif lifecycle in {"retiring", "deprecated"}:
+                health_text = ui.style(f"[{lifecycle}]", "38;2;247;200;100")
+            else:
+                health_text = ""
+
             line = (
                 f"{status_icon} {name_text}  {tier_badge}  "
-                f"{ui.dim(model_price_label(entry.model_id))}  {ctx_text}  {key_text}  "
+                f"{health_text}  {ui.dim(model_price_label(entry.model_id))}  {ctx_text}  {key_text}  "
                 f"{ui.dim(entry.model_id)}{aliases_hint}"
             )
-            provider_rows.append((line, entry.model_id))
+            provider_rows.append((line, entry.model_id if lifecycle != "retired" else None))
 
         if provider_rows:
             rows.append((ui.style(provider.upper(), "1", "38;2;190;200;220"), None))
@@ -399,12 +415,14 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Session", [
         ("/status", "", "Token usage, context health, session cost"),
+        ("/usage", "", "Local token totals by model and saved session"),
         ("/save", "", "Save the current session now"),
         ("/session", "", "Show session and workspace details"),
         ("/sessions", "", "List all saved sessions"),
         ("/sessions", "clear [name]", "Delete all sessions, or one by name"),
     ]),
     ("Workspace", [
+        ("/diff", "", "Show Git status plus staged and unstaged changes"),
         ("/checkpoints", "", "List automatic file snapshots"),
         ("/undo", "[checkpoint-id]", "Restore the latest or selected snapshot"),
         ("/memory", "show", "Show persistent project memory"),
@@ -474,6 +492,23 @@ def handle_chat_command(
 
     if command_text == "/details":
         ui.show_hidden_events()
+        return True, current_model
+
+    if command_text == "/diff":
+        from apsara_cli.engine.workspace_diff import workspace_diff
+        result = workspace_diff(options.workspace_root)
+        if result.startswith("Error"):
+            ui.error(result)
+        else:
+            ui.info("Git workspace changes")
+            ui.print_block(result)
+        return True, current_model
+
+    if command_text == "/usage":
+        from apsara_cli.engine.usage_reports import format_usage_report
+        snapshot = ui.usage_snapshot() if hasattr(ui, "usage_snapshot") else {}
+        ui.info("Usage summary")
+        ui.print_block(format_usage_report(options.workspace_root, snapshot))
         return True, current_model
 
     if command_text == "/checkpoints":

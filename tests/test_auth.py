@@ -54,7 +54,7 @@ def test_provider_helpers_consistent_with_registry():
     assert models.provider_env_var("opencode") == "OPENCODE_API_KEY"
     assert models.provider_env_var("ollama") is None
     assert models.default_model_for_provider("openai") == "gpt-4o"
-    assert models.default_model_for_provider("groq") == "groq/llama-3.3-70b-versatile"
+    assert models.default_model_for_provider("groq") == "groq/openai/gpt-oss-120b"
     assert models.default_model_for_provider("opencode") == models.DEFAULT_MODEL
 
 

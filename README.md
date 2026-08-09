@@ -84,7 +84,8 @@ default, see below.
 
 Before every file mutation Apsara creates a recoverable checkpoint under
 `.apsara/checkpoints/`. Use `/undo` for the latest edit, `/checkpoints` to list
-snapshots, or `/undo <id>` to restore a specific one.
+snapshots, or `/undo <id>` to restore a specific one. `/diff` shows Git status
+plus staged and unstaged patches before you accept or undo a change.
 
 `edit_file` is the primary editing tool: it replaces an exact snippet of text
 and refuses ambiguous or missing matches, so an edit can't silently land in the
@@ -251,6 +252,8 @@ Usage totals persist with named sessions and are restored when a session is
 reopened. The CLI separates input, output, cache-read, cache-write, and reasoning
 tokens when the provider reports those fields. Provider rate-limit counters and
 reset times also appear in `/status` and the TUI sidebar when available.
+`/usage` provides a local-only rollup for the current session, saved sessions,
+and each model. It reads the same JSON files and never uploads telemetry.
 
 For paid models, Apsara calculates a directional cost from provider-reported
 tokens and LiteLLM's maintained public list-price metadata. That metadata is
@@ -267,7 +270,10 @@ facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
 
 In chat, `/help` lists the complete command surface, including `/details`,
 `/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,
-`/stop`, `/undo`, `/memory`, `/report`, `/save`, and `/bug`.
+`/stop`, `/diff`, `/undo`, `/usage`, `/memory`, `/report`, `/save`, and `/bug`.
+
+In the full-screen TUI, press `Ctrl+C` while a turn is running to cancel that
+turn without closing Apsara. Press it again while idle to exit.
 
 ## Extending with local plugins
 
