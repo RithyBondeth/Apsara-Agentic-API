@@ -14,11 +14,47 @@ import os as _os
 # litellm's tokenizer downloads — it's noise in the chat UI.
 _os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 litellm.suppress_debug_info = True
+litellm.return_response_headers = True
 # Max tokens per completion. Kept generous enough to avoid truncating
 # multi-step tool calls and longer code responses; override per-call if needed.
 DEFAULT_MAX_COMPLETION_TOKENS = 4096
 
 _RETRY_DELAYS = [5, 15, 30]
+
+
+def _rate_limits_from_response(value: Any) -> dict[str, str]:
+    """Extract only non-sensitive rate-limit headers from a LiteLLM response."""
+    hidden = getattr(value, "_hidden_params", {}) or {}
+    headers = hidden.get("additional_headers", {}) if isinstance(hidden, dict) else {}
+    if not isinstance(headers, dict):
+        return {}
+    lowered = {str(k).lower(): str(v) for k, v in headers.items() if v is not None}
+
+    def find(*suffixes: str) -> str | None:
+        for suffix in suffixes:
+            for key, item in lowered.items():
+                if key == suffix or key.endswith("-" + suffix):
+                    return item
+        return None
+
+    result = {
+        "remaining_requests": find(
+            "x-ratelimit-remaining-requests", "ratelimit-remaining-requests",
+            "anthropic-ratelimit-requests-remaining",
+        ),
+        "remaining_tokens": find(
+            "x-ratelimit-remaining-tokens", "ratelimit-remaining-tokens",
+            "anthropic-ratelimit-tokens-remaining",
+        ),
+        "limit_requests": find("x-ratelimit-limit-requests", "ratelimit-limit-requests"),
+        "limit_tokens": find("x-ratelimit-limit-tokens", "ratelimit-limit-tokens"),
+        "reset": find(
+            "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens",
+            "anthropic-ratelimit-requests-reset", "anthropic-ratelimit-tokens-reset",
+        ),
+        "retry_after": find("retry-after"),
+    }
+    return {key: item for key, item in result.items() if item is not None}
 
 
 def estimate_request_tokens(messages: list[dict], model: str = DEFAULT_MODEL) -> int:
@@ -134,8 +170,12 @@ async def call_llm_stream(
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             usage: dict = {}
+            rate_limits = _rate_limits_from_response(response)
 
             async for chunk in response:
+                chunk_limits = _rate_limits_from_response(chunk)
+                if chunk_limits:
+                    rate_limits.update(chunk_limits)
                 # With include_usage, OpenAI-compatible providers commonly
                 # send a final usage-only chunk whose choices list is empty.
                 if hasattr(chunk, "usage") and chunk.usage:
@@ -174,6 +214,7 @@ async def call_llm_stream(
                 "content": "".join(content_parts),
                 "tool_calls": list(tool_calls_acc.values()) if tool_calls_acc else None,
                 "usage": usage,
+                "rate_limits": rate_limits,
             }
             return
 

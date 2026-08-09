@@ -261,8 +261,14 @@ class ConsoleUI:
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._session_total_tokens: int = 0
+        self._session_cached_tokens: int = 0
+        self._session_cache_creation_tokens: int = 0
+        self._session_reasoning_tokens: int = 0
+        self._session_model_usage: dict[str, dict[str, Any]] = {}
+        self._latest_rate_limits: dict[str, Any] = {}
         self._session_cost_usd: float = 0.0
         self._session_has_unpriced_usage: bool = False
+        self._session_uses_list_pricing: bool = False
         self._context_tokens: int = 0
         self._context_budget: int = 0
 
@@ -733,21 +739,95 @@ class ConsoleUI:
 
     def session_cost_label(self) -> str:
         cost = self.calculate_session_cost()
-        return "provider billed" if cost is None else f"${cost:.4f}"
+        if cost is None:
+            return "provider billed"
+        suffix = " list" if self._session_uses_list_pricing else ""
+        return f"${cost:.4f}{suffix}"
 
     def set_context_usage(self, tokens: int, budget: int) -> None:
         self._context_tokens = max(0, int(tokens))
         self._context_budget = max(0, int(budget))
 
+    def usage_snapshot(self) -> dict[str, Any]:
+        return {
+            "prompt_tokens": self._session_prompt_tokens,
+            "completion_tokens": self._session_completion_tokens,
+            "total_tokens": self._session_total_tokens,
+            "cached_tokens": self._session_cached_tokens,
+            "cache_creation_tokens": self._session_cache_creation_tokens,
+            "reasoning_tokens": self._session_reasoning_tokens,
+            "model_usage": self._session_model_usage,
+            "rate_limits": self._latest_rate_limits,
+        }
+
+    def restore_usage(self, usage_data: dict[str, Any]) -> None:
+        """Restore persisted counters without printing another turn summary."""
+        from apsara_cli.engine.usage import normalize_usage
+
+        data = normalize_usage(usage_data)
+        self._session_prompt_tokens = data["prompt_tokens"]
+        self._session_completion_tokens = data["completion_tokens"]
+        self._session_total_tokens = data["total_tokens"]
+        self._session_cached_tokens = data["cached_tokens"]
+        self._session_cache_creation_tokens = data["cache_creation_tokens"]
+        self._session_reasoning_tokens = data["reasoning_tokens"]
+        raw_models = usage_data.get("model_usage")
+        self._session_model_usage = {
+            str(model): normalize_usage(tokens)
+            for model, tokens in raw_models.items()
+            if isinstance(tokens, dict)
+        } if isinstance(raw_models, dict) else {}
+        self._latest_rate_limits = (
+            dict(usage_data["rate_limits"])
+            if isinstance(usage_data.get("rate_limits"), dict) else {}
+        )
+        self._recalculate_session_cost()
+
+    def _recalculate_session_cost(self) -> None:
+        from apsara_cli.engine.pricing import pricing_for_model, usage_cost
+
+        self._session_cost_usd = 0.0
+        self._session_has_unpriced_usage = False
+        self._session_uses_list_pricing = False
+        for model, tokens in self._session_model_usage.items():
+            if not tokens.get("total_tokens"):
+                continue
+            known_cost = usage_cost(model, tokens)
+            _prices, source = pricing_for_model(model)
+            if source not in {"local model", "Apsara model registry"}:
+                self._session_uses_list_pricing = True
+            if known_cost is None:
+                self._session_has_unpriced_usage = True
+            else:
+                self._session_cost_usd += known_cost
+
+    def rate_limit_label(self) -> str:
+        limits = self._latest_rate_limits
+        parts = []
+        if limits.get("remaining_requests") is not None:
+            parts.append(f"{limits['remaining_requests']} requests left")
+        if limits.get("remaining_tokens") is not None:
+            parts.append(f"{limits['remaining_tokens']} tokens left")
+        reset = limits.get("reset") or limits.get("retry_after")
+        if reset:
+            parts.append(f"reset {reset}")
+        return " · ".join(parts)
+
     def usage(self, usage_data: dict[str, Any]) -> None:
-        p = usage_data.get("prompt_tokens") or 0
-        c = usage_data.get("completion_tokens") or 0
-        t = usage_data.get("total_tokens") or 0
+        from apsara_cli.engine.usage import add_usage, normalize_usage
+
+        normalized = normalize_usage(usage_data)
+        p = normalized["prompt_tokens"]
+        c = normalized["completion_tokens"]
+        t = normalized["total_tokens"]
         self._session_prompt_tokens     += p
         self._session_completion_tokens += c
         self._session_total_tokens      += t
-
-        from apsara_cli.engine.models import model_usage_cost
+        self._session_cached_tokens += normalized["cached_tokens"]
+        self._session_cache_creation_tokens += normalized["cache_creation_tokens"]
+        self._session_reasoning_tokens += normalized["reasoning_tokens"]
+        if normalized.get("rate_limits"):
+            self._latest_rate_limits = normalized["rate_limits"]
 
         model_usage = usage_data.get("model_usage")
         if not isinstance(model_usage, dict):
@@ -759,21 +839,25 @@ class ConsoleUI:
             model_total = int(tokens.get("total_tokens") or 0)
             if model_total <= 0:
                 continue
-            known_cost = model_usage_cost(
-                str(model),
-                int(tokens.get("prompt_tokens") or 0),
-                int(tokens.get("completion_tokens") or 0),
-            )
-            if known_cost is None:
-                self._session_has_unpriced_usage = True
-            else:
-                self._session_cost_usd += known_cost
+            target = self._session_model_usage.setdefault(str(model), {})
+            add_usage(target, tokens)
+        self._recalculate_session_cost()
 
         st = self._session_total_tokens
         session_short = f"{st / 1000:.1f}K" if st >= 1000 else str(st)
+        details = [f"in {p:,}", f"out {c:,}"]
+        if normalized["cached_tokens"]:
+            details.append(f"cached {normalized['cached_tokens']:,}")
+        if normalized["cache_creation_tokens"]:
+            details.append(f"cache write {normalized['cache_creation_tokens']:,}")
+        if normalized["reasoning_tokens"]:
+            details.append(f"reasoning {normalized['reasoning_tokens']:,}")
+        self.print_line(f"    {self.dim(' · '.join(details))}")
         self.print_line(
             f"    {self.dim(f'{t:,} tok · session {session_short} · {self.session_cost_label()}')}"
         )
+        if self.rate_limit_label():
+            self.print_line(f"    {self.dim('limit · ' + self.rate_limit_label())}")
 
     # ── Assistant message ─────────────────────────────────────────────────────
 

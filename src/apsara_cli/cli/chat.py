@@ -25,6 +25,7 @@ from apsara_cli.cli.session import (
     get_session_path,
     list_sessions,
     load_session_messages,
+    load_session_usage,
     sanitize_session_name,
     save_session_messages,
 )
@@ -922,8 +923,19 @@ def handle_chat_command(
         ui.print_line(
             f"  {ui.dim('  cost     ')} "
             f"{ui.style(ui.session_cost_label(), '38;2;120;200;150')} "
-            f"{ui.dim('(known provider cost; never estimated)')}"
+            f"{ui.dim('(provider list price; free quotas may reduce billing)')}"
         )
+        ui.print_line(
+            f"  {ui.dim('  usage    ')} "
+            f"{ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', '38;2;220;216;210')}"
+        )
+        if ui._session_cached_tokens or ui._session_cache_creation_tokens or ui._session_reasoning_tokens:
+            ui.print_line(
+                f"  {ui.dim('  details  ')} "
+                f"{ui.style(f'cached {ui._session_cached_tokens:,} · cache write {ui._session_cache_creation_tokens:,} · reasoning {ui._session_reasoning_tokens:,}', '38;2;220;216;210')}"
+            )
+        if ui.rate_limit_label():
+            ui.print_line(f"  {ui.dim('  limits   ')} {ui.dim(ui.rate_limit_label())}")
         ui.print_line()
         return True, current_model
 
@@ -1091,28 +1103,26 @@ async def execute_instruction(
         async for chunk_str in run_agent_stream(next_history, model=model):
             event = json.loads(chunk_str)
             if event.get("type") == "usage":
+                from apsara_cli.engine.usage import add_usage, normalize_usage
+
                 data = event.get("data") or {}
                 if aggregate_usage is None:
                     aggregate_usage = {
                         "prompt_tokens": 0,
                         "completion_tokens": 0,
                         "total_tokens": 0,
+                        "cached_tokens": 0,
+                        "cache_creation_tokens": 0,
+                        "reasoning_tokens": 0,
                         "model_usage": {},
                     }
-                prompt = int(data.get("prompt_tokens") or 0)
-                completion = int(data.get("completion_tokens") or 0)
-                total = int(data.get("total_tokens") or prompt + completion)
-                aggregate_usage["prompt_tokens"] += prompt
-                aggregate_usage["completion_tokens"] += completion
-                aggregate_usage["total_tokens"] += total
+                add_usage(aggregate_usage, data)
+                normalized = normalize_usage(data)
                 usage_model = str(data.get("apsara_model") or model)
                 by_model = aggregate_usage["model_usage"].setdefault(
-                    usage_model,
-                    {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    usage_model, {},
                 )
-                by_model["prompt_tokens"] += prompt
-                by_model["completion_tokens"] += completion
-                by_model["total_tokens"] += total
+                add_usage(by_model, normalized)
             else:
                 print_event(event, ui)
                 update_history_from_event(next_history, event)
@@ -1146,6 +1156,7 @@ def save_if_needed(
         session_name=options.session,
         model=model,
         messages=history,
+        usage=ui.usage_snapshot() if hasattr(ui, "usage_snapshot") else {},
     )
     ui.session_saved(session_path)
 
@@ -1167,6 +1178,7 @@ async def run_once(args: object, config: object) -> int:
 
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
 
     async with mcp_session(config, options, ui):
         updated_history, latest_usage = await execute_instruction(
@@ -1177,9 +1189,9 @@ async def run_once(args: object, config: object) -> int:
             ui=ui,
         )
 
-    save_if_needed(updated_history, options.model, options, ui)
     if latest_usage and latest_usage.get("total_tokens") is not None:
         ui.usage(latest_usage)
+    save_if_needed(updated_history, options.model, options, ui)
 
     return 0
 
@@ -1205,6 +1217,7 @@ async def chat_loop(args: object, config: object) -> int:
 
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
 
     print_welcome_banner(ui, config)
 
@@ -1376,8 +1389,8 @@ async def chat_loop(args: object, config: object) -> int:
                 ui=ui,
             )
 
-            save_if_needed(history, current_model, options, ui)
             if latest_usage and latest_usage.get("total_tokens") is not None:
                 ui.usage(latest_usage)
+            save_if_needed(history, current_model, options, ui)
 
         return 0

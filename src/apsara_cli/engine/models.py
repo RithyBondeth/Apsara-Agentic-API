@@ -34,6 +34,8 @@ class ModelEntry:
     aliases: list[str] = field(default_factory=list)  # Short names, e.g. ["sonnet"]
     input_cost_per_million: Optional[float] = None
     output_cost_per_million: Optional[float] = None
+    cache_read_cost_per_million: Optional[float] = None
+    cache_write_cost_per_million: Optional[float] = None
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -117,6 +119,10 @@ MODELS: list[ModelEntry] = [
         env_var="ANTHROPIC_API_KEY",
         notes="Anthropic's best balanced model for coding",
         aliases=["sonnet", "claude-sonnet", "claude"],
+        input_cost_per_million=3.0,
+        output_cost_per_million=15.0,
+        cache_read_cost_per_million=0.30,
+        cache_write_cost_per_million=3.75,
     ),
     ModelEntry(
         model_id="anthropic/claude-3-5-haiku-20241022",
@@ -127,6 +133,10 @@ MODELS: list[ModelEntry] = [
         env_var="ANTHROPIC_API_KEY",
         notes="Fast and affordable Claude",
         aliases=["haiku", "claude-haiku"],
+        input_cost_per_million=0.80,
+        output_cost_per_million=4.0,
+        cache_read_cost_per_million=0.08,
+        cache_write_cost_per_million=1.0,
     ),
 
     # ── Google Gemini (free quota + paid) ─────────────────────────────────────
@@ -149,6 +159,10 @@ MODELS: list[ModelEntry] = [
         env_var="GEMINI_API_KEY",
         notes="Massive 2M context window, advanced reasoning",
         aliases=["gemini-pro", "pro"],
+        input_cost_per_million=1.25,
+        output_cost_per_million=5.0,
+        cache_read_cost_per_million=0.3125,
+        cache_write_cost_per_million=1.25,
     ),
 
     # ── Mistral (paid but affordable) ─────────────────────────────────────────
@@ -248,17 +262,13 @@ def model_usage_cost(
     Apsara never invents a blended token price. Local models have no provider
     token charge, and Big Pickle's explicit zero pricing is stored above.
     """
-    entry = lookup_model(model)
-    if entry is None:
-        return None
-    if entry.tier == "local":
-        return 0.0
-    if entry.input_cost_per_million is None or entry.output_cost_per_million is None:
-        return None
-    return (
-        prompt_tokens * entry.input_cost_per_million
-        + completion_tokens * entry.output_cost_per_million
-    ) / 1_000_000
+    from apsara_cli.engine.pricing import usage_cost
+
+    return usage_cost(model, {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    })
 
 
 def model_price_label(model: str) -> str:
@@ -271,7 +281,15 @@ def model_price_label(model: str) -> str:
     if entry.input_cost_per_million == 0 and entry.output_cost_per_million == 0:
         return "$0"
     if entry.tier == "paid":
-        return "paid · provider rates"
+        from apsara_cli.engine.pricing import pricing_for_model
+
+        prices, _source = pricing_for_model(model)
+        if prices:
+            return (
+                f"${prices['input'] * 1_000_000:g}/${prices['output'] * 1_000_000:g} "
+                "per 1M in/out"
+            )
+        return "paid · pricing unavailable"
     return "free quota · provider limits apply"
 
 

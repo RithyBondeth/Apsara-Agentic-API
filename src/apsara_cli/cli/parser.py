@@ -180,6 +180,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         config = load_cli_config(args.config, getattr(args, "workspace", None))
         load_cli_environment(args, config)
+        from apsara_cli.engine.pricing import refresh_pricing_if_stale
+        refresh_pricing_if_stale()
         # Make stored BYO-key provider keys visible to LiteLLM (env/.env keys win).
         apply_credentials_to_env()
         return asyncio.run(dispatch_command(args, config))
