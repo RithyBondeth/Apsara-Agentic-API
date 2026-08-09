@@ -187,10 +187,14 @@ def describe_action(
     if action == "run_bash_command":
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
-        return (f"Run command in {cwd}: {command}", None, None, None, None, None)
+        preview = f"$ {command}"
+        if cwd:
+            preview += f"\n  in {cwd}"
+        return ("Run command", preview, None, None, None, None)
 
     if action == "start_process":
-        return (f"Start background process: {payload.get('command', '')}", None, None, None, None, None)
+        command = payload.get("command", "")
+        return ("Start background process", f"$ {command}", None, None, None, None)
 
     if action == "stop_process":
         return (f"Stop background process {payload.get('process_id', '')}?", None, None, None, None, None)
@@ -373,37 +377,56 @@ class ConsoleUI:
     # ── Rich text renderer ────────────────────────────────────────────────────
 
     def render_markdown_panel(self, text: str) -> None:
-        """Render a finished assistant response as Markdown in one panel."""
-        from rich import box
+        """Render an assistant response in a padded transcript card."""
         from rich.console import Console
         from rich.markdown import Markdown
-        from rich.panel import Panel
         from rich.text import Text
 
+        card_width = max(32, self.content_width() - 2)
+        body_width = max(29, card_width - 1)
+        horizontal_padding = 3
+        render_width = max(23, body_width - (horizontal_padding * 2))
         rendered = StringIO()
         console = Console(
             file=rendered,
             force_terminal=self.use_color,
             color_system="truecolor" if self.use_color else None,
-            width=self.content_width(),
+            width=render_width,
             legacy_windows=False,
         )
         body = text.strip() or "_No response content._"
-        panel = Panel(
-            Markdown(body, code_theme="monokai"),
-            title=Text("Apsara", style="bold rgb(225,230,242)"),
-            title_align="left",
-            border_style="rgb(80,100,140)",
-            box=box.ROUNDED,
-            padding=(0, 1),
-            expand=True,
-        )
-        console.print(panel)
+        console.print(Markdown(body, code_theme="monokai"))
 
-        # Going through print_line makes this work in the classic terminal
-        # and in the prompt-toolkit transcript without separate renderers.
-        for line in rendered.getvalue().rstrip("\n").splitlines():
-            self.print_line(f"  {line}")
+        rail = self.style("▌", "1", "38;2;104;205;220")
+        background = "48;2;24;25;29"
+        foreground = "38;2;225;230;242"
+        timestamp = datetime.now().strftime("%I:%M %p").lstrip("0")
+
+        def card_line(content: str = "") -> str:
+            # Rich emits resets inside highlighted Markdown. Re-apply the
+            # card background after each reset so the panel stays continuous.
+            visual_width = Text.from_ansi(content).cell_len
+            content += " " * max(render_width - visual_width, 0)
+            if self.use_color:
+                content = content.replace("\033[0m", f"\033[0m\033[{background}m")
+            padded = (
+                (" " * horizontal_padding)
+                + content
+                + (" " * horizontal_padding)
+            )
+            return f"  {rail}{self.style(padded, foreground, background)}"
+
+        self.print_line(card_line(" " * render_width))
+        for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
+            self.print_line(card_line(line))
+        self.print_line(card_line(" " * render_width))
+        footer = f"apsara  {timestamp}".ljust(render_width)
+        if self.use_color:
+            footer = self.style(footer, "38;2;132;136;146").replace(
+                "\033[0m", f"\033[0m\033[{background}m"
+            )
+        self.print_line(card_line(footer))
+        self.print_line(card_line(" " * render_width))
 
     def render_rich_text(self, text: str, typing_delay: float = 0.0) -> None:
         import re as _re

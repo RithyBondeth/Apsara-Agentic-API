@@ -18,7 +18,7 @@ class _FakeApplication:
         pass
 
 
-def test_assistant_renders_markdown_in_a_panel(capsys):
+def test_assistant_renders_markdown_in_a_padded_transcript_card(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
 
     ui.assistant(
@@ -27,8 +27,10 @@ def test_assistant_renders_markdown_in_a_panel(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "╭─ Apsara " in output
-    assert "╰" in output
+    assert "apsara" in output
+    assert "▌" in output
+    assert "  ▌    • first item" in output
+    assert "╭" not in output and "╰" not in output
     assert "Result" in output
     assert "• first item" in output
     assert "print('ready')" in output
@@ -46,13 +48,14 @@ def test_streamed_answer_is_buffered_then_rendered_as_markdown(capsys):
     ui.stream_text_end()
 
     output = capsys.readouterr().out
-    assert "╭─ Apsara " in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "Summary" in output
     assert "Ready." in output
     assert "**" not in output
 
 
-def test_tui_uses_the_same_markdown_panel_renderer():
+def test_tui_uses_the_same_padded_markdown_card():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
     ui.sidebar_visible = False
@@ -62,7 +65,8 @@ def test_tui_uses_the_same_markdown_panel_renderer():
     ui.stream_text_end()
 
     output = "\n".join(ui.lines)
-    assert "╭─ Apsara " in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
     assert max(len(line) for line in ui.lines) <= 76
@@ -75,26 +79,31 @@ def test_tui_user_turn_has_a_clear_role_label():
     ui.append_user_message("Explain this code")
 
     output = "\n".join(ui.lines)
-    assert "❯ You" in output
-    assert "▌ Explain this code" in output
+    assert "▌" in output
+    assert "  ▌   Explain this code" in output
+    assert "you" in output
 
 
 def test_native_approval_overlay_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     approval = {
+        "action": "edit file",
         "title": "Edit src/app.py",
         "preview": "-old\n+new",
         "full": "@@ -1 +1 @@\n-old\n+new",
         "show_full": False,
+        "is_trust": False,
     }
 
     body = fragment_list_to_text(to_formatted_text(_approval_text(ui, approval)))
     footer = fragment_list_to_text(to_formatted_text(_approval_footer(ui, approval)))
 
-    assert "Approve this action?" in body
+    assert "Permission required" in body
     assert "Edit src/app.py" in body
     assert "-old" in body and "+new" in body
-    assert "enter/y approve" in footer
+    assert "enter  allow once" in footer
+    assert "n/esc  deny" in footer
+    assert "a  always allow" in footer
     assert "v full diff" in footer
 
 
@@ -117,7 +126,7 @@ def test_restored_history_shows_conversation_but_hides_tool_internals():
 
     output = "\n".join(ui.lines)
     assert "Resumed 1 prior turn" in output
-    assert "❯ You" in output and "Fix the bug" in output
+    assert "▌" in output and "Fix the bug" in output and "you" in output
     assert "Fixed" in output and "The bug is resolved." in output
     assert "I will inspect it" not in output
     assert "secret tool output" not in output

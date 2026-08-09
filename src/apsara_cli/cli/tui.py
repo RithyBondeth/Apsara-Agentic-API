@@ -1,9 +1,7 @@
 """
-Full-screen split-pane TUI (opt-in via --tui), modeled on OpenCode's layout:
-a scrollable chat pane with bordered message panels, a persistent sidebar
-(session title + live context stats + tips), and a bottom status bar with the
-working directory and token usage, all inside one `prompt_toolkit` full-screen
-Application.
+Full-screen TUI modeled on OpenCode's information hierarchy: a full-width
+scrollable transcript, rail-led messages, an on-demand details sidebar, a
+focused composer, centered overlays, and a compact telemetry bar.
 
 Design note: this file does NOT reimplement any of ConsoleUI's formatting
 logic (badges, diffs, markdown/code rendering, confirm-dialog boxes, the
@@ -22,6 +20,7 @@ calls made before the full-screen application is attached.
 
 import asyncio
 import os
+import textwrap
 import threading
 import time
 from datetime import datetime
@@ -36,6 +35,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
@@ -66,6 +66,7 @@ from apsara_cli.cli.chat import (
     execute_instruction,
     handle_chat_command,
     save_if_needed,
+    turn_mode_word,
 )
 from apsara_cli.cli.input import SlashCompleter
 from apsara_cli.cli.options import resolve_runtime_options
@@ -207,14 +208,39 @@ class TuiConsoleUI(ConsoleUI):
     # ── Transcript panels (used by the submit handler) ────────────────────
 
     def append_user_message(self, text: str) -> None:
-        """A user turn with an explicit role label and quiet accent rail."""
-        bar = self.style("▌", _ACCENT)
+        """Render the user request as the primary transcript card."""
+        card_width = max(32, self.content_width() - 2)
+        body_width = max(29, card_width - 1)
+        horizontal_padding = 3
+        inner_width = max(23, body_width - (horizontal_padding * 2))
+        bar = self.style("▌", "1", _ACCENT)
+        bg = "48;2;24;25;29"
+        timestamp = datetime.now().strftime("%I:%M %p").lstrip("0")
+
+        def card_line(content: str = "", color: str = "38;2;225;230;242") -> str:
+            clipped = content[:inner_width]
+            padded = clipped.ljust(inner_width)
+            gutter = " " * horizontal_padding
+            return f"  {bar}{self.style(gutter + padded + gutter, color, bg)}"
+
         self.lines.append("")
-        self.lines.append(
-            f"  {self.style('❯', '1', _ACCENT)} {self.style('You', '1', '38;2;210;220;242')}"
-        )
+        self.lines.append(card_line())
         for raw in text.split("\n"):
-            self.lines.append(f"  {bar} {self.style(raw, '38;2;225;230;242')}")
+            wrapped = textwrap.wrap(
+                raw,
+                width=inner_width,
+                replace_whitespace=False,
+                drop_whitespace=True,
+            ) or [""]
+            self.lines.extend(card_line(line) for line in wrapped)
+        self.lines.append(card_line())
+        self.lines.append(
+            card_line(
+                f"you  {timestamp}",
+                "38;2;132;136;146",
+            )
+        )
+        self.lines.append(card_line())
         self._invalidate()
 
     # ── Native confirmation bridge + defensive terminal fallback ─────────
@@ -436,33 +462,47 @@ def _chat_text(ui: TuiConsoleUI) -> ANSI:
     return ANSI("\n".join(body_lines))
 
 
-def _status_left(options: Any) -> ANSI:
+def _status_left(ui: TuiConsoleUI, options: Any) -> ANSI:
+    from apsara_cli import __version__
+
     workspace = Path(options.workspace_root)
-    label = _shorten_path(workspace.name or str(workspace), width=26)
-    return ANSI(f" \x1b[{_C_WORKSPACE}m⌂\x1b[0m \x1b[{_DIMTXT}m{label}\x1b[0m")
+    path_width = max(12, min(38, terminal_width() - 58))
+    label = _shorten_path(str(workspace), width=path_width)
+    return ANSI(
+        f" {ui.style('apsara', '1', '38;2;210;216;242')} "
+        f"{ui.style('v' + __version__, _DIMTXT)}  "
+        f"{ui.style(label, _C_WORKSPACE)}"
+    )
 
 
-def _status_right(ui: TuiConsoleUI, current_model: str) -> ANSI:
+def _status_right(ui: TuiConsoleUI, options: Any, current_model: str) -> ANSI:
     total = ui._session_total_tokens
     tok = f"{total / 1000:.1f}K" if total >= 1000 else str(total)
     entry = lookup_model(current_model)
-    pct = ""
-    if entry and entry.context_window and total:
-        pct = f" ({min(100, int(total / entry.context_window * 100))}%)"
+    context = format_context_window(entry.context_window) if entry and entry.context_window else "—"
+    mode = turn_mode_word(options).upper()
+    mode_color = {
+        "DRY-RUN": "48;2;112;84;35",
+        "READ-ONLY": "48;2;105;72;38",
+    }.get(mode, "48;2;78;64;122")
     right = (
-        f"\x1b[{_DIMTXT}m{tok}{pct}\x1b[0m   "
-        f"\x1b[1;38;2;210;216;228mctrl+b\x1b[0m \x1b[{_DIMTXT}mdetails\x1b[0m   "
-        f"\x1b[1;38;2;210;216;228mctrl+p\x1b[0m \x1b[{_DIMTXT}mcommands\x1b[0m "
+        f"{ui.style(f'ctx {tok}/{context}', _DIMTXT)}  "
+        f"{ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')}  "
+        f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)} "
     )
     return ANSI(right)
 
 
 def _approval_text(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
-    """Content for the native tool-approval review overlay."""
+    """Content for the inline tool-permission card."""
     lines: list[str] = [
-        f"{ui.style('Approve this action?', '1', '38;2;247;200;100')}",
-        ui.style(str(approval.get("title", "Action requires approval")), "1", _C_VALUE),
+        (
+            ui.style("◆", "1", "38;2;247;190;90")
+            + " "
+            + ui.style("Permission required", "1", "38;2;247;214;145")
+        ),
         "",
+        ui.style(str(approval.get("title", "Action requires approval")), "1", _C_VALUE),
     ]
     content = (
         approval.get("full")
@@ -470,6 +510,7 @@ def _approval_text(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
         else approval.get("preview")
     )
     if content:
+        lines.extend(["", ui.style("Review", "1", "38;2;164;173;196")])
         for raw in str(content).splitlines():
             if raw.startswith(("+++", "---", "@@")):
                 color = "38;2;140;191;255"
@@ -479,18 +520,24 @@ def _approval_text(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
                 color = "38;2;255;168;168"
             else:
                 color = "38;2;205;211;222"
-            lines.append(ui.style(raw, color))
+            lines.append(ui.style("│ ", "38;2;70;82;112") + ui.style(raw, color))
     else:
-        lines.append(ui.style("No content preview is available for this action.", _DIMTXT))
+        lines.extend(["", ui.style("Review the action above before allowing it.", _DIMTXT)])
     return ANSI("\n".join(lines))
 
 
 def _approval_footer(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
     hints = [
-        ui.style("enter/y", "1", "38;2;120;200;150") + ui.dim(" approve"),
-        ui.style("n/esc", "1", "38;2;235;110;100") + ui.dim(" reject"),
-        ui.style("a", "1", "38;2;140;180;255") + ui.dim(" always"),
+        ui.style(" enter ", "1", "38;2;18;24;20", "48;2;130;210;160")
+        + ui.style(" allow once", "38;2;170;224;188"),
+        ui.style(" n/esc ", "1", "38;2;30;18;18", "48;2;225;125;115")
+        + ui.style(" deny", "38;2;242;172;164"),
     ]
+    if not approval.get("is_trust"):
+        hints.append(
+            ui.style(" a ", "1", "38;2;15;21;32", "48;2;120;165;235")
+            + ui.style(" always allow", "38;2;166;198;246")
+        )
     if approval.get("full") and approval.get("full") != approval.get("preview"):
         label = "preview" if approval.get("show_full") else "full diff"
         hints.append(ui.style("v", "1", "38;2;190;150;250") + ui.dim(f" {label}"))
@@ -540,17 +587,16 @@ async def tui_loop(args: object, config: object) -> int:
     # screen: centered logo with the message box directly below it. The
     # split chat/sidebar layout takes over on the first submission.
     state = {"model": options.model, "welcome": not history, "busy": False}
+    # Preserve the transcript as the primary surface. Session details remain
+    # one shortcut away but never shrink the conversation on launch.
     sidebar_state = {"visible": terminal_width() >= 110}
     ui.sidebar_visible = sidebar_state["visible"]
 
-    # /models runs as a NATIVE in-app picker in the TUI (not the blocking
-    # stdin-reading pick_model, which can't work while the Application owns
-    # the terminal): the list is appended to the transcript and navigated
-    # via the app's own key bindings, with an asyncio.Future bridging the
-    # background submission coroutine to those key presses.
+    # /models runs as a native centered overlay. An asyncio.Future bridges the
+    # background submission coroutine to the application's key bindings.
     picker: dict[str, Any] = {
         "active": False, "rows": [], "selectable": [],
-        "selected": 0, "block_len": 0, "future": None,
+        "selected": 0, "future": None, "filter": "",
     }
     picker_active = Condition(lambda: picker["active"])
 
@@ -572,6 +618,7 @@ async def tui_loop(args: object, config: object) -> int:
         "result": "reject",
         "event": None,
         "is_trust": False,
+        "action": "",
     }
     approval_active = Condition(lambda: approval["active"])
 
@@ -602,11 +649,6 @@ async def tui_loop(args: object, config: object) -> int:
         # The Window clamps its scroll to keep this 'cursor' visible on every
         # render — so pointing it at the last line implements follow-bottom,
         # pointing it at the current scroll row freezes manual browsing, and
-        # (while the /models picker is open) pointing it at the highlighted
-        # row keeps the selection on screen as you arrow through a long list.
-        if picker["active"] and picker["block_len"]:
-            block_start = len(ui.lines) - picker["block_len"]
-            return Point(x=0, y=max(block_start + picker["selected"], 0))
         total = len(ui.lines) + (2 if ui._spinner_frame else 0)
         if follow["on"]:
             return Point(x=0, y=max(total - 1, 0))
@@ -624,9 +666,9 @@ async def tui_loop(args: object, config: object) -> int:
     sidebar_window = Window(content=sidebar_control, width=34, wrap_lines=True, style="class:sidebar")
 
     status_bar = VSplit([
-        Window(content=FormattedTextControl(lambda: _status_left(options)), height=1),
+        Window(content=FormattedTextControl(lambda: _status_left(ui, options)), height=1),
         Window(
-            content=FormattedTextControl(lambda: _status_right(ui, state["model"])),
+            content=FormattedTextControl(lambda: _status_right(ui, options, state["model"])),
             height=1,
             align=WindowAlign.RIGHT,
             dont_extend_width=True,
@@ -686,41 +728,77 @@ async def tui_loop(args: object, config: object) -> int:
         )
         composer_meta = VSplit([mode_window, composer_hint], height=1)
 
-        def _edge(left: str, right: str) -> VSplit:
-            return VSplit([
-                Window(width=1, char=left, style="class:inputborder"),
-                Window(char="─", style="class:inputborder"),
-                Window(width=1, char=right, style="class:inputborder"),
-            ], height=1)
-
         def _row(content, height) -> VSplit:
             return VSplit([
-                Window(width=1, char="│", style="class:inputborder"),
                 Window(width=1, char="▌", style="class:accent"),
-                Window(width=1, char=" "),
+                Window(width=3, char=" "),
                 content,
+                Window(width=3, char=" "),
                 Window(width=1, char="│", style="class:inputborder"),
             ], height=height)
 
+        padding_row = lambda: _row(Window(char=" "), 1)
         box = HSplit([
-            _edge("╭", "╮"),
+            padding_row(),
             _row(control_window, input_height),
             _row(composer_meta, 1),
-            _edge("╰", "╯"),
-        ], width=width)
+            padding_row(),
+        ], width=width, style="class:composer")
         return box, control_window
 
     chat_box, chat_input_window = _make_input_box(2)
 
+    # Permission requests stay in the conversation flow. Keeping this card
+    # inside the left transcript pane preserves the user's context and the
+    # workspace sidebar while the agent worker waits for a decision.
+    approval_window = Window(
+        content=FormattedTextControl(lambda: _approval_text(ui, approval), focusable=False),
+        height=Dimension(min=4, preferred=7, max=11),
+        wrap_lines=True,
+        always_hide_cursor=True,
+        style="class:approval",
+    )
+    approval_footer_window = Window(
+        FormattedTextControl(lambda: _approval_footer(ui, approval), focusable=False),
+        height=1,
+        style="class:approval",
+    )
+    approval_card_width = max(32, ui.content_width() - 2)
+    approval_card = VSplit([
+            Window(width=1, char="▌", style="class:approvalaccent"),
+            Window(width=3, char=" ", style="class:approval"),
+            HSplit([
+                Window(height=1, char=" ", style="class:approval"),
+                approval_window,
+                Window(height=1, char=" ", style="class:approval"),
+                approval_footer_window,
+                Window(height=1, char=" ", style="class:approval"),
+            ], style="class:approval"),
+            Window(width=3, char=" ", style="class:approval"),
+        ],
+        width=Dimension.exact(approval_card_width),
+        height=Dimension.exact(11),
+        style="class:approval",
+    )
+    approval_inline = ConditionalContainer(
+        content=VSplit([
+            Window(width=2, char=" "),
+            approval_card,
+            Window(char=" "),
+        ], height=Dimension.exact(11)),
+        filter=approval_active,
+    )
+
     # ── Chat layout: transcript + detail sidebar + boxed input + status bar ─
     def _transcript_container():
+        conversation = HSplit([chat_window, approval_inline])
         if sidebar_state["visible"]:
             return VSplit([
-                chat_window,
+                conversation,
                 Window(width=1, char="│", style="class:sep"),
                 sidebar_window,
             ])
-        return chat_window
+        return conversation
 
     chat_root = HSplit([
         DynamicContainer(_transcript_container),
@@ -823,40 +901,6 @@ async def tui_loop(args: object, config: object) -> int:
         welcome_bar,
     ])
 
-    approval_window = Window(
-        content=FormattedTextControl(lambda: _approval_text(ui, approval), focusable=False),
-        wrap_lines=False,
-        always_hide_cursor=True,
-    )
-    approval_dialog = ConditionalContainer(
-        content=Frame(
-            HSplit([
-                approval_window,
-                Window(height=1, char=" "),
-                Window(
-                    FormattedTextControl(lambda: _approval_footer(ui, approval), focusable=False),
-                    height=1,
-                ),
-            ]),
-            title="Action review",
-            style="class:approval",
-        ),
-        filter=approval_active,
-    )
-    approval_scrim = ConditionalContainer(
-        content=Window(char=" ", style="class:overlay"),
-        filter=approval_active,
-    )
-
-    body = FloatContainer(
-        content=DynamicContainer(lambda: welcome_root if state["welcome"] else chat_root),
-        floats=[
-            Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=16, scroll_offset=1)),
-            Float(left=0, right=0, top=0, bottom=0, content=approval_scrim),
-            Float(left=4, right=4, top=2, bottom=2, content=approval_dialog),
-        ],
-    )
-
     # ── Chat-pane scrolling: auto-follow the newest line, but let PageUp/
     # PageDown and the mouse wheel browse history (e.g. long /help output) ──
     follow = {"on": True, "last_set": 0}
@@ -899,49 +943,142 @@ async def tui_loop(args: object, config: object) -> int:
         "accent": "fg:#6096fa",
         "sep": "fg:#3d4668",
         "inputborder": "fg:#5a6cb4",
+        "composer": "bg:#171b2a",
+        "approvalaccent": "fg:#f0b35f bg:#18191e",
         "placeholder": "fg:#5a616e",
         "sidebar": "bg:#0e1015",
         "statusbar": "bg:#12141a",
         "overlay": "bg:#08090d",
-        "approval": "bg:#12151d fg:#e1e6f2",
-        "approval.border": "fg:#f0aa5a bg:#12151d",
-        "approval.label": "fg:#f0c878 bg:#12151d bold",
+        "approval": "bg:#14161c fg:#e1e6f2",
+        "approval.border": "fg:#65739a bg:#14161c",
+        "approval.label": "fg:#f0c878 bg:#14161c bold",
+        "picker": "bg:#12151f fg:#e1e6f2",
+        "picker.border": "fg:#7180aa bg:#12151f",
+        "picker.label": "fg:#dce4ff bg:#12151f bold",
         "completion-menu.completion": "bg:#1c1f27 fg:#c8cede",
         "completion-menu.completion.current": "bg:#f7b76a fg:#1a1a1a",
     })
 
     # ── /models native in-app picker ─────────────────────────────────────
     _PICKER_CURSOR = ("1", "38;2;120;200;150")
-    _PICKER_HINT = "↑/↓ or j/k move   enter select   esc cancel"
+    _PICKER_HINT = "type search  ·  ↑↓ move  ·  enter select  ·  esc close"
 
     def _picker_row(txt: str, model_id, highlighted: bool) -> str:
         if model_id is None:               # provider group header
             return f"  {txt}"
+        entry = lookup_model(model_id)
+        if entry is not None:
+            key_ok = is_key_available(entry) or entry.tier == "local"
+            context = format_context_window(entry.context_window)
+            availability = "ready" if key_ok else "key needed"
+            txt = (
+                f"{entry.display_name}  "
+                f"{ui.dim(entry.provider + ' · ' + entry.tier + ' · ' + context + ' · ' + availability)}"
+            )
         if highlighted:
             return f"  {ui.style('❯ ', *_PICKER_CURSOR)}{txt}"
         return f"    {txt}"
 
-    def _render_picker() -> None:
+    def _picker_text() -> ANSI:
+        query = picker.get("filter", "")
+        search = query + "▏" if query else "Search models…"
+        search_color = "38;2;205;212;232" if query else _DIMTXT
         lines = [
+            f" {ui.style('⌕', '38;2;140;180;255')} {ui.style(search, search_color)}",
+            f" {ui.style('─' * 52, '38;2;48;55;78')}",
+            "",
+        ]
+        lines.extend(
             _picker_row(txt, mid, i == picker["selected"])
             for i, (txt, mid) in enumerate(picker["rows"])
-        ]
-        lines.append("")
-        lines.append(f"  {ui.dim(_PICKER_HINT)}")
-        if picker["block_len"]:
-            del ui.lines[-picker["block_len"]:]
-        ui.lines.extend(lines)
-        picker["block_len"] = len(lines)
+        )
+        return ANSI("\n".join(lines))
+
+    def _picker_cursor_position() -> Point:
+        return Point(x=0, y=max(picker["selected"] + 3, 0))
+
+    picker_window = Window(
+        content=FormattedTextControl(
+            _picker_text,
+            focusable=False,
+            get_cursor_position=_picker_cursor_position,
+        ),
+        wrap_lines=False,
+        always_hide_cursor=True,
+    )
+    picker_footer = Window(
+        content=FormattedTextControl(
+            lambda: ANSI(ui.dim(_PICKER_HINT)),
+            focusable=False,
+        ),
+        height=1,
+    )
+    picker_dialog = ConditionalContainer(
+        content=Frame(
+            HSplit([picker_window, Window(height=1), picker_footer]),
+            title="Select model",
+            style="class:picker",
+            width=Dimension(min=48, preferred=64, max=72),
+        ),
+        filter=picker_active,
+    )
+    picker_centered = ConditionalContainer(
+        content=HSplit([
+            Window(char=" ", style="class:overlay"),
+            VSplit(
+                [
+                    Window(char=" ", style="class:overlay"),
+                    picker_dialog,
+                    Window(char=" ", style="class:overlay"),
+                ],
+                height=Dimension(min=12, preferred=22, max=30),
+            ),
+            Window(char=" ", style="class:overlay"),
+        ]),
+        filter=picker_active,
+    )
+
+    body = FloatContainer(
+        content=DynamicContainer(lambda: welcome_root if state["welcome"] else chat_root),
+        floats=[
+            Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=16, scroll_offset=1)),
+            Float(left=0, right=0, top=0, bottom=0, content=picker_centered),
+        ],
+    )
+
+    def _render_picker() -> None:
         ui._invalidate()
 
+    def _apply_picker_filter(query: str) -> bool:
+        """Rebuild model rows while preserving a useful active selection."""
+        _headers, rows, shown_any = build_model_rows(state["model"], query, ui)
+        picker["filter"] = query
+        if not shown_any:
+            picker["rows"] = [(ui.dim("No models match this search."), None)]
+            picker["selectable"] = []
+            picker["selected"] = 0
+            _render_picker()
+            return False
+
+        selectable = [i for i, (_, mid) in enumerate(rows) if mid is not None]
+        previous_id = None
+        if picker["rows"] and picker["selected"] < len(picker["rows"]):
+            previous_id = picker["rows"][picker["selected"]][1]
+        picker["rows"] = rows
+        picker["selectable"] = selectable
+        picker["selected"] = next(
+            (
+                i
+                for i in selectable
+                if rows[i][1] in {previous_id, state["model"]}
+            ),
+            selectable[0],
+        )
+        picker_window.vertical_scroll = 0
+        _render_picker()
+        return True
+
     def _finalize_picker(chosen) -> None:
-        # Replace the live block with a static listing (chosen row keeps the
-        # ❯, no hint) so it reads cleanly in scrollback.
-        if picker["block_len"]:
-            del ui.lines[-picker["block_len"]:]
-        for txt, mid in picker["rows"]:
-            ui.lines.append(_picker_row(txt, mid, mid is not None and mid == chosen))
-        picker["block_len"] = 0
         ui._invalidate()
 
     def _picker_move(delta: int) -> None:
@@ -958,23 +1095,15 @@ async def tui_loop(args: object, config: object) -> int:
             fut.set_result(model_id)
 
     async def _run_model_picker(filt: str) -> None:
-        header_parts, rows, shown_any = build_model_rows(state["model"], filt, ui)
-        ui.lines.append("")
-        ui.lines.append("  " + "  ".join(header_parts))
-        ui.lines.append("")
-        if not shown_any:
+        picker["rows"] = []
+        picker["selected"] = 0
+        if not _apply_picker_filter(filt):
             ui.warning(f"No models match '{filt}'. Try a provider like 'openai', 'groq', 'anthropic'.")
             return
 
-        selectable = [i for i, (_, mid) in enumerate(rows) if mid is not None]
-        picker["rows"] = rows
-        picker["selectable"] = selectable
-        picker["selected"] = next(
-            (i for i in selectable if rows[i][1] == state["model"]), selectable[0]
-        )
-        picker["block_len"] = 0
         picker["future"] = asyncio.get_event_loop().create_future()
         picker["active"] = True
+        picker_window.vertical_scroll = 0
         _render_picker()
         try:
             chosen = await picker["future"]
@@ -1100,6 +1229,7 @@ async def tui_loop(args: object, config: object) -> int:
         done = threading.Event()
         approval.update({
             "active": True,
+            "action": action.replace("_", " "),
             "title": title,
             "preview": diff_preview or preview or "",
             "full": diff_full or diff_preview or preview or "",
@@ -1189,24 +1319,32 @@ async def tui_loop(args: object, config: object) -> int:
 
     # ── /models picker navigation (only while the picker is open) ─────────
     @kb.add("up", filter=picker_active, eager=True)
-    @kb.add("k", filter=picker_active, eager=True)
     def _picker_up(event) -> None:
         _picker_move(-1)
 
     @kb.add("down", filter=picker_active, eager=True)
-    @kb.add("j", filter=picker_active, eager=True)
     def _picker_down(event) -> None:
         _picker_move(1)
 
     @kb.add("enter", filter=picker_active, eager=True)
     def _picker_accept(event) -> None:
-        _picker_resolve(picker["rows"][picker["selected"]][1])
+        if picker["selectable"]:
+            _picker_resolve(picker["rows"][picker["selected"]][1])
 
     @kb.add("escape", filter=picker_active, eager=True)
-    @kb.add("q", filter=picker_active, eager=True)
     @kb.add("c-c", filter=picker_active, eager=True)
     def _picker_cancel(event) -> None:
         _picker_resolve(None)
+
+    @kb.add("backspace", filter=picker_active, eager=True)
+    def _picker_backspace(event) -> None:
+        _apply_picker_filter(picker["filter"][:-1])
+
+    @kb.add(Keys.Any, filter=picker_active, eager=True, is_global=True)
+    def _picker_search(event) -> None:
+        char = event.data
+        if char and char.isprintable():
+            _apply_picker_filter(picker["filter"] + char)
 
     # ── Inline key-prompt bindings (only while a key prompt is open) ──────
     @kb.add("enter", filter=kp_key, eager=True)
