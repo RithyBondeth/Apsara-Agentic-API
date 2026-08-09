@@ -17,7 +17,7 @@ from apsara_cli.shared.types import ToolRisk
 
 
 class ToolSecurityError(Exception):
-    """Raised when a tool request breaks sandbox rules."""
+    """Raised when a tool request violates the configured tool policy."""
 
 
 ConfirmationCallback = Callable[[str, Dict[str, Any]], bool]

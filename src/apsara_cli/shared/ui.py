@@ -106,6 +106,27 @@ class Theme:
 
 DEFAULT_THEME = Theme()
 
+
+# Blanket approval is intentionally allowlisted to reversible workspace
+# changes. Unknown and newly added actions therefore require an explicit
+# decision until they have been reviewed here.
+_BLANKET_APPROVAL_ACTIONS = frozenset({
+    "write_to_file",
+    "edit_file",
+    "replace_file_lines",
+    "delete_file",
+    "move_file",
+    "replace_symbol",
+    "remember_project_note",
+    "undo_checkpoint",
+    "undo_turn",
+})
+
+
+def action_allows_blanket_approval(action: str) -> bool:
+    return action in _BLANKET_APPROVAL_ACTIONS
+
+
 _BRAILLE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 # OpenCode-style accents shared across the renderer.
@@ -1147,12 +1168,19 @@ class ConsoleUI:
         with self.raw_terminal():
             return self.read_raw_key()
 
-    def prompt_confirmation_choice(self, *, allow_view: bool = False, allow_editor: bool = False) -> str:
+    def prompt_confirmation_choice(
+        self,
+        *,
+        allow_view: bool = False,
+        allow_editor: bool = False,
+        allow_always: bool = True,
+    ) -> str:
         options = [
             f"{self.badge('↵  approve', '17', '48;2;80;170;140')}",
             f"{self.badge('n  reject', '17', '48;2;200;100;80')}",
-            f"{self.badge('a  always', '17', '48;2;80;120;200')}",
         ]
+        if allow_always:
+            options.append(f"{self.badge('a  always', '17', '48;2;80;120;200')}")
         if allow_view:
             options.append(f"{self.badge('v  full diff', '17', '48;2;80;95;125')}")
         if allow_editor:
@@ -1164,7 +1192,7 @@ class ConsoleUI:
             if key in {"", "\r", "\n", "y", "Y"}:
                 self.print_line(f"  {self.style('  ↳ approved', '38;2;120;200;150')}")
                 return "approve"
-            if key in {"a", "A"}:
+            if allow_always and key in {"a", "A"}:
                 self.print_line(f"  {self.style('  ↳ always approve enabled', '38;2;120;180;255')}")
                 return "always"
             if allow_view and key in {"v", "V"}:
@@ -1176,25 +1204,27 @@ class ConsoleUI:
                 return "reject"
 
     def confirm_action(self, action: str, payload: dict[str, Any]) -> bool:
-        # Executing workspace-supplied code is never covered by a blanket
-        # approval: --auto-approve (and 'a' during a turn) waive confirmation
-        # for file writes, which is a much weaker consent than "run this code".
-        is_trust = action == "trust_workspace_code"
+        allows_blanket = action_allows_blanket_approval(action)
 
-        if self.approve_all and not is_trust:
+        if self.approve_all and allows_blanket:
             return True
 
         if not sys.stdin.isatty():
-            if is_trust:
+            if action == "trust_workspace_code":
                 self.error(
                     f"{payload.get('display_path', 'This workspace code')} needs approval "
                     "before it can run, but stdin is not interactive. Run `apsara chat` "
                     "in this project once to review and approve it."
                 )
-            else:
+            elif allows_blanket:
                 self.error(
                     f"Approval required for {action}, but stdin is not interactive. "
                     "Re-run with --auto-approve if you trust this action."
+                )
+            else:
+                self.error(
+                    f"Explicit approval required for {action}, but stdin is not interactive. "
+                    "This action is not covered by --auto-approve."
                 )
             return False
 
@@ -1221,6 +1251,7 @@ class ConsoleUI:
             choice = self.prompt_confirmation_choice(
                 allow_view=bool(diff_full and diff_full != diff_preview),
                 allow_editor=bool(diff_editor),
+                allow_always=allows_blanket,
             )
             if choice == "view":
                 self.print_line()
@@ -1231,10 +1262,11 @@ class ConsoleUI:
                 self._open_editor_preview(title, diff_editor or diff_full or diff_preview or "", path_hint)
                 continue
             if choice == "always":
-                # Approving one plugin must not also silence file-write
-                # confirmations; the trust store already remembers this one.
-                if not is_trust:
+                if allows_blanket:
                     self.approve_all = True
+                # Defensive fallback for custom prompt implementations: an
+                # unsupported "always" response becomes approval for this
+                # action only, never a blanket grant.
                 return True
             return choice == "approve"
 

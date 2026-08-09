@@ -4,16 +4,15 @@ Welcome to the Apsara alpha test! Follow these steps to get the AI coding agent 
 
 ## 1. Installation
 
-Ensure you have **Python 3.9+** and **Git** installed.
+Ensure you have **Python 3.10+**, **pipx**, and **Git** installed.
 
 ```bash
-# Clone the repository (if you haven't)
-git clone https://github.com/your-repo/apsara-agentic.git
-cd apsara-agentic/apsara-agentic-cli
-
-# Install the package in editable mode
-pip install -e .
+# Install the exact private-alpha build
+pipx install apsara-agentic==0.1.0a1
 ```
+
+For source development instead, follow
+[RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/RUN_PROJECT.md).
 
 ## 2. Choose a Provider & Add Your API Key
 
@@ -79,10 +78,12 @@ apsara chat
 - `/add <path>` - Pin a file to the context.
 - `/status` - Check token usage and session cost.
 - `/bug` - If the agent gets stuck, run this to save diagnostic logs.
-- `/details` - See the agent's hidden thought process.
+- `/details` - See hidden tool and planning activity.
 
 ## 5. Safety Tips
-- Apsara will **always ask for confirmation** before writing files or running commands.
+- Apsara asks before workspace file mutations by default. Shell commands,
+  background processes, project-supplied code, and external mutations always
+  require explicit approval, even with `--auto-approve`.
 - Use `apsara chat --dry-run` to see what it *would* do without touching your files.
 - Use `apsara chat --read-only` if you just want it to explain the code.
 

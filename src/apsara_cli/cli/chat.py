@@ -1147,7 +1147,9 @@ async def execute_instruction(
         allowed_commands=options.allowed_commands,
         max_file_size_bytes=options.max_file_size,
         bash_timeout_seconds=options.bash_timeout,
-        confirmation_callback=None if options.auto_approve else ui.confirm_action,
+        # The UI applies --auto-approve only to reversible workspace writes.
+        # Commands and external mutations still require explicit approval.
+        confirmation_callback=ui.confirm_action,
         dry_run=options.dry_run,
         read_only=options.read_only,
         # Always ask, even under --auto-approve: that flag waives confirmation

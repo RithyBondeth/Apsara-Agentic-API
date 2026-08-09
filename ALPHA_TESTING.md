@@ -50,10 +50,11 @@ Optional but recommended:
 
 ## 4. Quick Start For Testers
 
-1. Clone or open the project:
+1. Clone and enter the project:
 
 ```bash
-cd Apsara-Agentic-Cli/apsara-agentic-cli
+git clone https://github.com/RithyBondeth/Apsara-Agentic-Cli.git
+cd Apsara-Agentic-Cli
 ```
 
 1. Create and activate a virtual environment:
@@ -63,34 +64,23 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-1. Install dependencies:
+1. Install the CLI and development dependencies:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+python3 -m pip install -e ".[dev]"
 ```
 
-1. Optional: install the CLI command:
+1. Configure a provider:
 
 ```bash
-python3 -m pip install -e .
-```
-
-If that fails, testers can still use:
-
-```bash
-python3 -m app.cli
-```
-
-1. Add the API key to `.env`:
-
-```env
-OPENCODE_API_KEY=your_opencode_zen_api_key
+apsara login
 ```
 
 1. Run the health check:
 
 ```bash
-python3 -m app.cli doctor --workspace .
+apsara doctor --workspace .
 ```
 
 1. Initialize the project and start the CLI:
@@ -195,7 +185,7 @@ Please ask testers to report:
 Testers should know:
 
 - this is an alpha CLI, not a final public release
-- the `apsara` command may fail on older packaging setups, but `python3 -m app.cli` should still work
+- editable installation failures should include the Python and pip versions used
 - live model access depends on the tester's own API billing and rate limits
 - automated tests are still limited
 
@@ -222,7 +212,7 @@ Screenshot or terminal paste:
 Before sharing with testers, confirm:
 
 - `.env` loading works
-- `python3 -m app.cli doctor --workspace .` works
+- `apsara doctor --workspace .` works
 - `apsara chat --workspace .` works with the default `opencode/big-pickle` model
 - the welcome screen renders nicely
 - the loading animation appears while the agent is working
@@ -230,7 +220,8 @@ Before sharing with testers, confirm:
 - code edits show a diff preview
 - `v` shows a fuller diff
 - `e` opens the patch in `$EDITOR` or `$VISUAL`
-- `Enter`, `n`, and `a` work in approval prompts
+- `Enter` and `n` work in every approval prompt; `a` applies only to workspace
+  file mutations
 - `/details` works
 - `/clear` works
 

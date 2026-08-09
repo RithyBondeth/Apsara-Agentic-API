@@ -1,7 +1,14 @@
 import asyncio
+import re
 import subprocess
 import threading
 from datetime import date
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from apsara_cli.cli.session import save_session_messages
 from apsara_cli.cli.tui import TurnController
@@ -10,6 +17,9 @@ from apsara_cli.engine.executor import _fallback_allowed
 from apsara_cli.engine.models import lookup_model, model_availability, model_lifecycle
 from apsara_cli.engine.usage_reports import format_usage_report, workspace_usage
 from apsara_cli.engine.workspace_diff import workspace_diff
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_cli_output_uses_replacement_for_legacy_encodings(monkeypatch):
@@ -113,3 +123,35 @@ def test_workspace_usage_aggregates_saved_sessions_locally(tmp_path):
     assert "Stored locally" in rendered
     assert "not a billing ledger" in rendered
     assert "provider dashboard remains authoritative" in rendered
+
+
+def test_alpha_distribution_uses_pep440_prerelease_version():
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = metadata["project"]["version"]
+
+    assert version == "0.1.0a1"
+    assert f"Version: `{version}`" in (ROOT / "RELEASE_NOTES_ALPHA.md").read_text(encoding="utf-8")
+    assert f"apsara-agentic=={version}" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"apsara-agentic=={version}" in (ROOT / "TESTER_QUICKSTART.md").read_text(encoding="utf-8")
+
+
+def test_public_install_docs_do_not_reference_removed_entrypoints():
+    public_docs = "\n".join(
+        (ROOT / filename).read_text(encoding="utf-8")
+        for filename in ("README.md", "TESTER_QUICKSTART.md", "ALPHA_TESTING.md")
+    )
+
+    for stale_instruction in (
+        "npm install -g apsara-cli",
+        "python3 -m app.cli",
+        "Python 3.9",
+        "your-repo",
+    ):
+        assert stale_instruction not in public_docs
+
+
+def test_pypi_readme_does_not_use_relative_markdown_links():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    relative_links = re.findall(r"\[[^]]+\]\(((?!https?://|#)[^)]+)\)", readme)
+
+    assert relative_links == []

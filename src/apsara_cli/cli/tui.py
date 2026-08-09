@@ -78,7 +78,13 @@ from apsara_cli.engine.models import (
     model_availability,
     model_price_label,
 )
-from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
+from apsara_cli.shared.ui import (
+    ConsoleUI,
+    Theme,
+    action_allows_blanket_approval,
+    describe_action,
+    terminal_width,
+)
 
 # Accent / chrome colors (ANSI truecolor), kept in one place.
 _ACCENT = "38;2;96;150;250"      # blue left-bar / user accent
@@ -123,12 +129,14 @@ class TurnController:
 class _ResponsiveCard:
     """Semantic transcript entry rendered at the pane's current width."""
 
-    __slots__ = ("role", "text", "timestamp")
+    __slots__ = ("role", "text", "timestamp", "rendered_width", "rendered_lines")
 
     def __init__(self, role: str, text: str, timestamp: Optional[str] = None) -> None:
         self.role = role
         self.text = text
         self.timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
+        self.rendered_width: Optional[int] = None
+        self.rendered_lines: list[str] = []
 
 
 class TuiConsoleUI(ConsoleUI):
@@ -140,7 +148,7 @@ class TuiConsoleUI(ConsoleUI):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.lines: list[Any] = []
+        self.lines: list[str | _ResponsiveCard] = []
         self.app: Optional[Application] = None
         self._passthrough = False
         self._spinner_frame = ""
@@ -185,10 +193,9 @@ class TuiConsoleUI(ConsoleUI):
         self.lines.extend(text.split("\n") if text else [""])
         self._invalidate()
 
-    def _user_card_lines(self, card: "_ResponsiveCard") -> list[str]:
+    def _user_card_lines(self, card: "_ResponsiveCard", width: int) -> list[str]:
         """Reflow a user card against the conversation pane's live width."""
-        panel_width = max(35, self.content_width() - 3)
-        card_width = max(32, panel_width - 2)
+        card_width = max(32, width - 2)
         body_width = max(29, card_width - 1)
         horizontal_padding = 3
         inner_width = max(23, body_width - (horizontal_padding * 2))
@@ -220,18 +227,19 @@ class TuiConsoleUI(ConsoleUI):
     def rendered_lines(self) -> list[str]:
         """Expand responsive cards using the terminal's current dimensions."""
         rendered: list[str] = []
+        card_width = max(35, self.content_width() - 3)
         for item in self.lines:
             if isinstance(item, _ResponsiveCard):
-                if item.role == "user":
-                    rendered.extend(self._user_card_lines(item))
-                else:
-                    rendered.extend(
-                        self._markdown_card_lines(
-                            item.text,
-                            width=max(35, self.content_width() - 3),
-                            timestamp=item.timestamp,
+                if item.rendered_width != card_width:
+                    item.rendered_lines = (
+                        self._user_card_lines(item, card_width)
+                        if item.role == "user"
+                        else self._markdown_card_lines(
+                            item.text, width=card_width, timestamp=item.timestamp
                         )
                     )
+                    item.rendered_width = card_width
+                rendered.extend(item.rendered_lines)
             else:
                 rendered.extend(str(item).split("\n"))
         return rendered
@@ -501,7 +509,10 @@ def _sidebar_text(
     )
     lines(f"   {ui.style('bash', _DIMTXT)}  {bash_state}")
     if options.auto_approve:
-        lines(f"   {ui.style('auto-approve', _DIMTXT)}  {ui.style('on', '38;2;247;200;100')}")
+        lines(
+            f"   {ui.style('file auto-approve', _DIMTXT)}  "
+            f"{ui.style('on', '38;2;247;200;100')}"
+        )
     steps = len(ui.latest_hidden_events)
     if steps:
         step_word = "steps" if steps != 1 else "step"
@@ -640,7 +651,8 @@ def _approval_footer(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
         ui.style(" n/esc ", "1", "38;2;30;18;18", "48;2;225;125;115")
         + ui.style(" deny", "38;2;242;172;164"),
     ]
-    if not approval.get("is_trust"):
+    allow_always = approval.get("allow_always", not approval.get("is_trust"))
+    if allow_always:
         hints.append(
             ui.style(" a ", "1", "38;2;15;21;32", "48;2;120;165;235")
             + ui.style(" always allow", "38;2;166;198;246")
@@ -1402,7 +1414,8 @@ async def tui_loop(args: object, config: object) -> int:
     def _native_confirm(action: str, payload: dict[str, Any]) -> bool:
         """Block only the agent worker while the main TUI operates the dialog."""
         is_trust = action == "trust_workspace_code"
-        if ui.approve_all and not is_trust:
+        allows_blanket = action_allows_blanket_approval(action)
+        if ui.approve_all and allows_blanket:
             return True
 
         title, preview, diff_preview, diff_full, _diff_editor, _path_hint = describe_action(
@@ -1419,6 +1432,7 @@ async def tui_loop(args: object, config: object) -> int:
             "result": "reject",
             "event": done,
             "is_trust": is_trust,
+            "allow_always": allows_blanket,
         })
         approval_window.vertical_scroll = 0
         ui.stop_spinner()
@@ -1426,7 +1440,7 @@ async def tui_loop(args: object, config: object) -> int:
         done.wait()
 
         result = approval["result"]
-        if result == "always" and not is_trust:
+        if result == "always" and allows_blanket:
             ui.approve_all = True
         ui.start_spinner("Apsara is working")
         return result in {"approve", "always"}
@@ -1467,7 +1481,8 @@ async def tui_loop(args: object, config: object) -> int:
     @kb.add("a", filter=approval_active, eager=True)
     @kb.add("A", filter=approval_active, eager=True)
     def _approval_always(event) -> None:
-        _approval_resolve("always")
+        if approval.get("allow_always"):
+            _approval_resolve("always")
 
     @kb.add("n", filter=approval_active, eager=True)
     @kb.add("N", filter=approval_active, eager=True)

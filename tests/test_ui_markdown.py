@@ -84,6 +84,29 @@ def test_tui_uses_the_same_padded_markdown_card():
     assert max(len(line) for line in resized_lines) == 117
 
 
+def test_responsive_markdown_card_is_cached_until_width_changes(monkeypatch):
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=80)
+    ui.sidebar_visible = False
+    calls = []
+    original = ui._markdown_card_lines
+
+    def counted(*args, **kwargs):
+        calls.append(kwargs["width"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ui, "_markdown_card_lines", counted)
+    ui.render_markdown_panel("### Cached")
+
+    ui.rendered_lines()
+    ui.rendered_lines()
+    assert calls == [77]
+
+    ui.app.output.columns = 120
+    ui.rendered_lines()
+    assert calls == [77, 117]
+
+
 def test_tui_user_turn_has_a_clear_role_label():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
@@ -209,6 +232,22 @@ def test_inline_approval_card_renders_diff_and_shortcuts():
     assert "n/esc  deny" in footer
     assert "a  always allow" in footer
     assert "v full diff" in footer
+
+
+def test_command_approval_card_does_not_offer_always_allow():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    approval = {
+        "title": "Run command",
+        "preview": "$ pytest -q",
+        "full": "$ pytest -q",
+        "is_trust": False,
+        "allow_always": False,
+    }
+
+    footer = fragment_list_to_text(to_formatted_text(_approval_footer(ui, approval)))
+
+    assert "allow once" in footer
+    assert "always allow" not in footer
 
 
 def test_bash_approval_includes_command_and_working_directory():
