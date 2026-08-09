@@ -327,6 +327,7 @@ async def run_agent_stream(
                 before_hook = await asyncio.to_thread(
                     run_hooks, hook_event, hook_payload, _workspace_root()
                 )
+                mutation_applied = False
                 if not before_hook.allowed:
                     tool_result_str = f"Error: Blocked by {hook_event} hook: {before_hook.reason}"
                 elif tool_name in mutation_tools and not changed_workspace and not baseline_attempted:
@@ -340,6 +341,10 @@ async def run_agent_stream(
                         if tool_name == "request_critic":
                             execution_arguments["_changed_files"] = list(run.changed_files)
                         tool_result_str = await execute_tool_async(tool_name, execution_arguments)
+                        mutation_applied = (
+                            tool_name in mutation_tools
+                            and ToolResult.from_text(tool_result_str).ok
+                        )
                     except asyncio.CancelledError:
                         journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
                         raise
@@ -362,8 +367,14 @@ async def run_agent_stream(
                 else:
                     consecutive_errors = 0
 
-                if typed_result.ok and tool_name in mutation_tools:
+                if mutation_applied:
                     changed_workspace = True
+                    # Verification and review evidence only applies to the
+                    # exact workspace state that existed when it was produced.
+                    verification_seen = False
+                    critic_seen = False
+                    verification_nudged = False
+                    critic_nudged = False
                     candidate = arguments.get("path") or arguments.get("dest") or arguments.get("src")
                     if candidate and str(candidate) not in run.changed_files:
                         run.changed_files.append(str(candidate))
