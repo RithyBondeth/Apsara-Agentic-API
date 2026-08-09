@@ -79,6 +79,59 @@ def test_tui_user_turn_has_a_clear_role_label():
     assert "▌ Explain this code" in output
 
 
+def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 800,
+        "completion_tokens": 200,
+        "total_tokens": 1000,
+        "apsara_model": "opencode/big-pickle",
+    })
+
+    assert ui.calculate_session_cost() == 0.0
+    assert "$0.0000" in capsys.readouterr().out
+
+
+def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 800,
+        "completion_tokens": 200,
+        "total_tokens": 1000,
+        "apsara_model": "custom/paid-model",
+    })
+
+    assert ui.calculate_session_cost() is None
+    output = capsys.readouterr().out
+    assert "provider billed" in output
+    assert "$0.0100" not in output
+
+
+def test_aggregated_usage_costs_each_model_without_double_counting(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 150,
+        "completion_tokens": 50,
+        "total_tokens": 200,
+        "model_usage": {
+            "opencode/big-pickle": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+            },
+            "ollama/llama3.2": {
+                "prompt_tokens": 50,
+                "completion_tokens": 0,
+                "total_tokens": 50,
+            },
+        },
+    })
+
+    assert ui._session_total_tokens == 200
+    assert ui.calculate_session_cost() == 0.0
+    capsys.readouterr()
+
+
 def test_native_approval_overlay_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     approval = {

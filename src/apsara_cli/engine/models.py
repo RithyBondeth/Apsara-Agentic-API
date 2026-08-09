@@ -32,6 +32,8 @@ class ModelEntry:
     env_var: Optional[str]  # Primary env var needed, None for local
     notes: str              # One-line description shown in /models
     aliases: list[str] = field(default_factory=list)  # Short names, e.g. ["sonnet"]
+    input_cost_per_million: Optional[float] = None
+    output_cost_per_million: Optional[float] = None
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -47,6 +49,8 @@ MODELS: list[ModelEntry] = [
         env_var="OPENCODE_API_KEY",
         notes="Reasoning coding model; free temporarily (avoid confidential code)",
         aliases=["big-pickle", "pickle"],
+        input_cost_per_million=0.0,
+        output_cost_per_million=0.0,
     ),
 
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
@@ -234,6 +238,41 @@ def resolve_model_id(name: str) -> str:
     """
     entry = lookup_model(name)
     return entry.model_id if entry else name
+
+
+def model_usage_cost(
+    model: str, prompt_tokens: int, completion_tokens: int
+) -> Optional[float]:
+    """Return known provider cost, or None when pricing is not registered.
+
+    Apsara never invents a blended token price. Local models have no provider
+    token charge, and Big Pickle's explicit zero pricing is stored above.
+    """
+    entry = lookup_model(model)
+    if entry is None:
+        return None
+    if entry.tier == "local":
+        return 0.0
+    if entry.input_cost_per_million is None or entry.output_cost_per_million is None:
+        return None
+    return (
+        prompt_tokens * entry.input_cost_per_million
+        + completion_tokens * entry.output_cost_per_million
+    ) / 1_000_000
+
+
+def model_price_label(model: str) -> str:
+    """Short honest pricing label for model-selection surfaces."""
+    entry = lookup_model(model)
+    if entry is None:
+        return "pricing unknown"
+    if entry.tier == "local":
+        return "$0 provider cost"
+    if entry.input_cost_per_million == 0 and entry.output_cost_per_million == 0:
+        return "$0"
+    if entry.tier == "paid":
+        return "paid · provider rates"
+    return "free quota · provider limits apply"
 
 
 # ── Key hints ────────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream
-from apsara_cli.engine.models import DEFAULT_MODEL
+from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model
 from apsara_cli.engine.runtime import RunJournal
 from apsara_cli.engine.tools import classify_tool_risk, execute_tool_async, get_mcp_manager
 from apsara_cli.shared.types import AgentRun, AgentRunState, ToolResult
@@ -28,12 +28,31 @@ def _max_steps() -> int:
     return max(1, min(value, 100))
 
 
+def _fallback_allowed(primary: str, candidate: str) -> bool:
+    primary_entry = lookup_model(primary)
+    if primary_entry is None or primary_entry.tier not in {"free", "local"}:
+        return True
+    candidate_entry = lookup_model(candidate)
+    return candidate_entry is not None and candidate_entry.tier in {"free", "local"}
+
+
+def _configured_fallbacks() -> list[str]:
+    return [
+        item.strip()
+        for item in os.environ.get("APSARA_FALLBACK_MODELS", "").split(",")
+        if item.strip()
+    ]
+
+
 def _model_candidates(primary: str) -> list[str]:
-    """Primary model followed by unique APSARA_FALLBACK_MODELS entries."""
+    """Return fallbacks that cannot silently turn a free run into a bill.
+
+    Free/local primaries may only auto-fallback to another known free/local
+    model. Paid and unknown candidates still work when selected explicitly.
+    """
     candidates = [primary]
-    for item in os.environ.get("APSARA_FALLBACK_MODELS", "").split(","):
-        candidate = item.strip()
-        if candidate and candidate not in candidates:
+    for candidate in _configured_fallbacks():
+        if candidate not in candidates and _fallback_allowed(primary, candidate):
             candidates.append(candidate)
     return candidates
 
@@ -135,6 +154,20 @@ async def run_agent_stream(
     verification_nudged = False
     verification_capable = _bash_enabled()
     model_candidates = _model_candidates(model)
+    blocked_fallbacks = [
+        candidate
+        for candidate in _configured_fallbacks()
+        if candidate != model and not _fallback_allowed(model, candidate)
+    ]
+    if blocked_fallbacks:
+        yield json.dumps({
+            "type": "warning",
+            "message": (
+                "Skipped paid or unknown automatic fallback(s) from this free model: "
+                f"{', '.join(dict.fromkeys(blocked_fallbacks))}. "
+                "Select one explicitly with /model if you accept provider billing."
+            ),
+        })
     active_model_index = 0
     mutation_tools = {
         "write_to_file", "edit_file", "replace_file_lines", "delete_file",
@@ -192,6 +225,8 @@ async def run_agent_stream(
             return
 
         if usage:
+            usage = dict(usage)
+            usage["apsara_model"] = active_model
             yield json.dumps({"type": "usage", "data": usage})
 
         assistant_dict: Dict[str, Any] = {"role": "assistant", "content": full_content}
