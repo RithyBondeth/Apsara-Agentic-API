@@ -187,10 +187,14 @@ def describe_action(
     if action == "run_bash_command":
         command = payload.get("command", "")
         cwd = payload.get("cwd", "")
-        return (f"Run command in {cwd}: {command}", None, None, None, None, None)
+        preview = f"$ {command}"
+        if cwd:
+            preview += f"\n  in {cwd}"
+        return ("Run command", preview, None, None, None, None)
 
     if action == "start_process":
-        return (f"Start background process: {payload.get('command', '')}", None, None, None, None, None)
+        command = payload.get("command", "")
+        return ("Start background process", f"$ {command}", None, None, None, None)
 
     if action == "stop_process":
         return (f"Stop background process {payload.get('process_id', '')}?", None, None, None, None, None)
@@ -267,11 +271,17 @@ class ConsoleUI:
         self._session_cached_tokens: int = 0
         self._session_cache_creation_tokens: int = 0
         self._session_reasoning_tokens: int = 0
+        self._session_estimated_tokens: int = 0
+        self._session_provider_reported_calls: int = 0
+        self._session_unreported_calls: int = 0
+        self._session_interrupted_calls: int = 0
+        self._session_auxiliary_calls: int = 0
         self._session_model_usage: dict[str, dict[str, Any]] = {}
         self._latest_rate_limits: dict[str, Any] = {}
         self._session_cost_usd: float = 0.0
         self._session_has_unpriced_usage: bool = False
         self._session_uses_list_pricing: bool = False
+        self._session_uses_promotional_pricing: bool = False
         self._context_tokens: int = 0
         self._context_budget: int = 0
 
@@ -386,37 +396,56 @@ class ConsoleUI:
     # ── Rich text renderer ────────────────────────────────────────────────────
 
     def render_markdown_panel(self, text: str) -> None:
-        """Render a finished assistant response as Markdown in one panel."""
-        from rich import box
+        """Render an assistant response in a padded transcript card."""
         from rich.console import Console
         from rich.markdown import Markdown
-        from rich.panel import Panel
         from rich.text import Text
 
+        card_width = max(32, self.content_width() - 2)
+        body_width = max(29, card_width - 1)
+        horizontal_padding = 3
+        render_width = max(23, body_width - (horizontal_padding * 2))
         rendered = StringIO()
         console = Console(
             file=rendered,
             force_terminal=self.use_color,
             color_system="truecolor" if self.use_color else None,
-            width=self.content_width(),
+            width=render_width,
             legacy_windows=False,
         )
         body = text.strip() or "_No response content._"
-        panel = Panel(
-            Markdown(body, code_theme="monokai"),
-            title=Text("Apsara", style="bold rgb(225,230,242)"),
-            title_align="left",
-            border_style="rgb(80,100,140)",
-            box=box.ROUNDED,
-            padding=(0, 1),
-            expand=True,
-        )
-        console.print(panel)
+        console.print(Markdown(body, code_theme="monokai"))
 
-        # Going through print_line makes this work in the classic terminal
-        # and in the prompt-toolkit transcript without separate renderers.
-        for line in rendered.getvalue().rstrip("\n").splitlines():
-            self.print_line(f"  {line}")
+        rail = self.style("▌", "1", "38;2;104;205;220")
+        background = "48;2;24;25;29"
+        foreground = "38;2;225;230;242"
+        timestamp = datetime.now().strftime("%I:%M %p").lstrip("0")
+
+        def card_line(content: str = "") -> str:
+            # Rich emits resets inside highlighted Markdown. Re-apply the
+            # card background after each reset so the panel stays continuous.
+            visual_width = Text.from_ansi(content).cell_len
+            content += " " * max(render_width - visual_width, 0)
+            if self.use_color:
+                content = content.replace("\033[0m", f"\033[0m\033[{background}m")
+            padded = (
+                (" " * horizontal_padding)
+                + content
+                + (" " * horizontal_padding)
+            )
+            return f"  {rail}{self.style(padded, foreground, background)}"
+
+        self.print_line(card_line(" " * render_width))
+        for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
+            self.print_line(card_line(line))
+        self.print_line(card_line(" " * render_width))
+        footer = f"apsara  {timestamp}".ljust(render_width)
+        if self.use_color:
+            footer = self.style(footer, "38;2;132;136;146").replace(
+                "\033[0m", f"\033[0m\033[{background}m"
+            )
+        self.print_line(card_line(footer))
+        self.print_line(card_line(" " * render_width))
 
     def render_rich_text(self, text: str, typing_delay: float = 0.0) -> None:
         import re as _re
@@ -744,7 +773,12 @@ class ConsoleUI:
         cost = self.calculate_session_cost()
         if cost is None:
             return "provider billed"
-        suffix = " list" if self._session_uses_list_pricing else ""
+        if self._session_uses_promotional_pricing and self._session_uses_list_pricing:
+            suffix = " mixed"
+        elif self._session_uses_promotional_pricing:
+            suffix = " promo"
+        else:
+            suffix = " list" if self._session_uses_list_pricing else ""
         return f"${cost:.4f}{suffix}"
 
     def set_context_usage(self, tokens: int, budget: int) -> None:
@@ -759,6 +793,11 @@ class ConsoleUI:
             "cached_tokens": self._session_cached_tokens,
             "cache_creation_tokens": self._session_cache_creation_tokens,
             "reasoning_tokens": self._session_reasoning_tokens,
+            "estimated_input_tokens": self._session_estimated_tokens,
+            "provider_reported_calls": self._session_provider_reported_calls,
+            "unreported_calls": self._session_unreported_calls,
+            "interrupted_calls": self._session_interrupted_calls,
+            "auxiliary_calls": self._session_auxiliary_calls,
             "model_usage": self._session_model_usage,
             "rate_limits": self._latest_rate_limits,
         }
@@ -774,6 +813,11 @@ class ConsoleUI:
         self._session_cached_tokens = data["cached_tokens"]
         self._session_cache_creation_tokens = data["cache_creation_tokens"]
         self._session_reasoning_tokens = data["reasoning_tokens"]
+        self._session_estimated_tokens = data["estimated_input_tokens"]
+        self._session_provider_reported_calls = data["provider_reported_calls"]
+        self._session_unreported_calls = data["unreported_calls"]
+        self._session_interrupted_calls = data["interrupted_calls"]
+        self._session_auxiliary_calls = data["auxiliary_calls"]
         raw_models = usage_data.get("model_usage")
         self._session_model_usage = {
             str(model): normalize_usage(tokens)
@@ -792,12 +836,15 @@ class ConsoleUI:
         self._session_cost_usd = 0.0
         self._session_has_unpriced_usage = False
         self._session_uses_list_pricing = False
+        self._session_uses_promotional_pricing = False
         for model, tokens in self._session_model_usage.items():
             if not tokens.get("total_tokens"):
                 continue
             known_cost = usage_cost(model, tokens)
             _prices, source = pricing_for_model(model)
-            if source not in {"local model", "Apsara model registry"}:
+            if source.startswith("temporary provider promotion"):
+                self._session_uses_promotional_pricing = True
+            elif source not in {"local model", "Apsara model registry"}:
                 self._session_uses_list_pricing = True
             if known_cost is None:
                 self._session_has_unpriced_usage = True
@@ -829,6 +876,11 @@ class ConsoleUI:
         self._session_cached_tokens += normalized["cached_tokens"]
         self._session_cache_creation_tokens += normalized["cache_creation_tokens"]
         self._session_reasoning_tokens += normalized["reasoning_tokens"]
+        self._session_estimated_tokens += normalized["estimated_input_tokens"]
+        self._session_provider_reported_calls += normalized["provider_reported_calls"]
+        self._session_unreported_calls += normalized["unreported_calls"]
+        self._session_interrupted_calls += normalized["interrupted_calls"]
+        self._session_auxiliary_calls += normalized["auxiliary_calls"]
         if normalized.get("rate_limits"):
             self._latest_rate_limits = normalized["rate_limits"]
 
@@ -840,7 +892,10 @@ class ConsoleUI:
             if not isinstance(tokens, dict):
                 continue
             model_total = int(tokens.get("total_tokens") or 0)
-            if model_total <= 0:
+            model_estimated = int(
+                tokens.get("estimated_input_tokens") or tokens.get("estimated_tokens") or 0
+            )
+            if model_total <= 0 and model_estimated <= 0:
                 continue
             target = self._session_model_usage.setdefault(str(model), {})
             add_usage(target, tokens)
@@ -855,12 +910,30 @@ class ConsoleUI:
             details.append(f"cache write {normalized['cache_creation_tokens']:,}")
         if normalized["reasoning_tokens"]:
             details.append(f"reasoning {normalized['reasoning_tokens']:,}")
+        if normalized["estimated_input_tokens"]:
+            details.append(
+                f"~{normalized['estimated_input_tokens']:,} estimated input/unreported"
+            )
         self.print_line(f"    {self.dim(' · '.join(details))}")
         self.print_line(
             f"    {self.dim(f'{t:,} tok · session {session_short} · {self.session_cost_label()}')}"
         )
         if self.rate_limit_label():
             self.print_line(f"    {self.dim('limit · ' + self.rate_limit_label())}")
+
+    def record_interrupted_usage(self, estimated_tokens: int, model: str) -> None:
+        """Persist an honest local estimate for a call cancelled mid-stream."""
+        from apsara_cli.engine.usage import add_usage
+
+        data = {
+            "estimated_input_tokens": max(0, int(estimated_tokens)),
+            "unreported_calls": 1,
+            "interrupted_calls": 1,
+        }
+        self._session_estimated_tokens += data["estimated_input_tokens"]
+        self._session_unreported_calls += 1
+        self._session_interrupted_calls += 1
+        add_usage(self._session_model_usage.setdefault(str(model), {}), data)
 
     # ── Assistant message ─────────────────────────────────────────────────────
 

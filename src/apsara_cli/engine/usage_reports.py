@@ -43,7 +43,7 @@ def format_usage_report(workspace: Path, current: dict[str, Any]) -> str:
     current_usage = normalize_usage(current)
     report = workspace_usage(workspace)
     lines = [
-        "LOCAL USAGE",
+        "LOCAL USAGE · PROVIDER-REPORTED",
         (
             f"Current session  {current_usage['total_tokens']:,} tokens "
             f"(in {current_usage['prompt_tokens']:,} · out {current_usage['completion_tokens']:,})"
@@ -53,6 +53,15 @@ def format_usage_report(workspace: Path, current: dict[str, Any]) -> str:
             f"{len(report['sessions'])} session(s)"
         ),
     ]
+    if current_usage["estimated_input_tokens"]:
+        lines.append(
+            f"Unreported calls {current_usage['unreported_calls']:,} call(s), "
+            f"~{current_usage['estimated_input_tokens']:,} locally estimated input tokens"
+        )
+    if current_usage["interrupted_calls"]:
+        lines.append(f"Interrupted      {current_usage['interrupted_calls']:,} call(s)")
+    if current_usage["auxiliary_calls"]:
+        lines.append(f"Auxiliary        {current_usage['auxiliary_calls']:,} summarization call(s)")
     if report["models"]:
         lines.append("")
         lines.append("BY MODEL")
@@ -72,5 +81,10 @@ def format_usage_report(workspace: Path, current: dict[str, Any]) -> str:
         for item in report["sessions"][:5]:
             updated = str(item["updated_at"])[:10] or "unknown date"
             lines.append(f"{item['name']}  {item['total_tokens']:,} · {item['model']} · {updated}")
-    lines.extend(["", "Stored locally in .apsara-cli/sessions; no usage data is uploaded by Apsara."])
+    lines.extend([
+        "",
+        "Provider-reported totals are local telemetry, not a billing ledger or enforceable quota.",
+        "Stored locally under .apsara-cli/sessions; no usage data is uploaded by Apsara.",
+        "The provider dashboard remains authoritative.",
+    ])
     return "\n".join(lines)

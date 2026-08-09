@@ -1,4 +1,4 @@
-from apsara_cli.shared.ui import ConsoleUI
+from apsara_cli.shared.ui import ConsoleUI, describe_action
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
 
 from apsara_cli.cli.tui import TuiConsoleUI, _approval_footer, _approval_text, _restore_history
@@ -18,7 +18,7 @@ class _FakeApplication:
         pass
 
 
-def test_assistant_renders_markdown_in_a_panel(capsys):
+def test_assistant_renders_markdown_in_a_padded_transcript_card(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
 
     ui.assistant(
@@ -27,8 +27,10 @@ def test_assistant_renders_markdown_in_a_panel(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "╭─ Apsara " in output
-    assert "╰" in output
+    assert "apsara" in output
+    assert "▌" in output
+    assert "  ▌    • first item" in output
+    assert "╭" not in output and "╰" not in output
     assert "Result" in output
     assert "• first item" in output
     assert "print('ready')" in output
@@ -46,13 +48,14 @@ def test_streamed_answer_is_buffered_then_rendered_as_markdown(capsys):
     ui.stream_text_end()
 
     output = capsys.readouterr().out
-    assert "╭─ Apsara " in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "Summary" in output
     assert "Ready." in output
     assert "**" not in output
 
 
-def test_tui_uses_the_same_markdown_panel_renderer():
+def test_tui_uses_the_same_padded_markdown_card():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
     ui.sidebar_visible = False
@@ -62,10 +65,12 @@ def test_tui_uses_the_same_markdown_panel_renderer():
     ui.stream_text_end()
 
     output = "\n".join(ui.lines)
-    assert "╭─ Apsara " in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
-    assert max(len(line) for line in ui.lines) <= 76
+    assert ui.content_width() == 80
+    assert max(len(line) for line in ui.lines) == 80
 
 
 def test_tui_user_turn_has_a_clear_role_label():
@@ -75,8 +80,9 @@ def test_tui_user_turn_has_a_clear_role_label():
     ui.append_user_message("Explain this code")
 
     output = "\n".join(ui.lines)
-    assert "❯ You" in output
-    assert "▌ Explain this code" in output
+    assert "▌" in output
+    assert "  ▌   Explain this code" in output
+    assert "you" in output
 
 
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
@@ -89,7 +95,7 @@ def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
     })
 
     assert ui.calculate_session_cost() == 0.0
-    assert "$0.0000" in capsys.readouterr().out
+    assert "$0.0000 promo" in capsys.readouterr().out
 
 
 def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
@@ -155,23 +161,51 @@ def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
     assert restored.rate_limit_label() == "9 requests left · reset 3s"
 
 
-def test_native_approval_overlay_renders_diff_and_shortcuts():
+def test_unreported_usage_stays_separate_from_provider_totals(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "estimated_input_tokens": 900,
+        "unreported_calls": 1,
+        "apsara_model": "opencode/big-pickle",
+    })
+
+    assert ui._session_total_tokens == 0
+    assert ui._session_estimated_tokens == 900
+    assert ui.usage_snapshot()["unreported_calls"] == 1
+    assert "~900 estimated input/unreported" in capsys.readouterr().out
+
+
+def test_inline_approval_card_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     approval = {
+        "action": "edit file",
         "title": "Edit src/app.py",
         "preview": "-old\n+new",
         "full": "@@ -1 +1 @@\n-old\n+new",
         "show_full": False,
+        "is_trust": False,
     }
 
     body = fragment_list_to_text(to_formatted_text(_approval_text(ui, approval)))
     footer = fragment_list_to_text(to_formatted_text(_approval_footer(ui, approval)))
 
-    assert "Approve this action?" in body
+    assert "Permission required" in body
     assert "Edit src/app.py" in body
     assert "-old" in body and "+new" in body
-    assert "enter/y approve" in footer
+    assert "enter  allow once" in footer
+    assert "n/esc  deny" in footer
+    assert "a  always allow" in footer
     assert "v full diff" in footer
+
+
+def test_bash_approval_includes_command_and_working_directory():
+    title, preview, *_ = describe_action(
+        "run_bash_command",
+        {"command": "pytest -q", "cwd": "/workspace"},
+    )
+
+    assert title == "Run command"
+    assert preview == "$ pytest -q\n  in /workspace"
 
 
 def test_restored_history_shows_conversation_but_hides_tool_internals():
@@ -193,7 +227,7 @@ def test_restored_history_shows_conversation_but_hides_tool_internals():
 
     output = "\n".join(ui.lines)
     assert "Resumed 1 prior turn" in output
-    assert "❯ You" in output and "Fix the bug" in output
+    assert "▌" in output and "Fix the bug" in output and "you" in output
     assert "Fixed" in output and "The bug is resolved." in output
     assert "I will inspect it" not in output
     assert "secret tool output" not in output

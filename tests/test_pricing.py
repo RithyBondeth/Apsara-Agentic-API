@@ -4,12 +4,63 @@ from datetime import datetime, timezone
 from apsara_cli.engine import pricing
 
 
-def test_big_pickle_and_local_models_are_zero_cost():
+def test_big_pickle_and_local_models_are_zero_cost(monkeypatch):
+    monkeypatch.setattr(pricing, "_promotion_is_current", lambda _verified: True)
     for model in ("opencode/big-pickle", "ollama/llama3.2"):
         prices, _source = pricing.pricing_for_model(model)
         assert prices == {
             "input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0,
         }
+
+
+def test_big_pickle_zero_cost_is_explicitly_temporary(monkeypatch):
+    monkeypatch.setattr(pricing, "_promotion_is_current", lambda _verified: True)
+    _prices, source = pricing.pricing_for_model("opencode/big-pickle")
+    assert source.startswith("temporary provider promotion")
+
+
+def test_stale_promotion_does_not_claim_zero_forever(monkeypatch, tmp_path):
+    monkeypatch.setattr(pricing, "_promotion_is_current", lambda _verified: False)
+    monkeypatch.setenv("APSARA_PRICING_CACHE", str(tmp_path / "missing.json"))
+
+    prices, source = pricing.pricing_for_model("opencode/big-pickle")
+
+    assert prices is None
+    assert source == "temporary promotion requires re-verification"
+
+
+def test_stale_promotion_ignores_bundled_zero_price(monkeypatch):
+    monkeypatch.setattr(pricing, "_promotion_is_current", lambda _verified: False)
+    monkeypatch.setattr(pricing, "_model_map", lambda: ({
+        "opencode/big-pickle": {
+            "input_cost_per_token": 0,
+            "output_cost_per_token": 0,
+        }
+    }, "bundled LiteLLM pricing"))
+
+    prices, source = pricing.pricing_for_model("opencode/big-pickle")
+
+    assert prices is None
+    assert source == "temporary promotion requires re-verification"
+
+
+def test_invalid_cached_prices_fail_closed(monkeypatch, tmp_path):
+    path = tmp_path / "pricing.json"
+    monkeypatch.setenv("APSARA_PRICING_CACHE", str(path))
+    path.write_text(json.dumps({
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "models": {
+            "gpt-4o": {
+                "input_cost_per_token": -1,
+                "output_cost_per_token": "nan",
+            }
+        },
+    }), encoding="utf-8")
+
+    prices, source = pricing.pricing_for_model("gpt-4o")
+
+    assert prices is None
+    assert source == "pricing incomplete"
 
 
 def test_registry_snapshot_covers_deprecated_paid_models(monkeypatch, tmp_path):
