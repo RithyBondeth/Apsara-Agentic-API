@@ -1,0 +1,94 @@
+import asyncio
+import subprocess
+import threading
+from datetime import date
+
+from apsara_cli.cli.session import save_session_messages
+from apsara_cli.cli.tui import TurnController
+from apsara_cli.engine.executor import _fallback_allowed
+from apsara_cli.engine.models import lookup_model, model_availability, model_lifecycle
+from apsara_cli.engine.usage_reports import format_usage_report, workspace_usage
+from apsara_cli.engine.workspace_diff import workspace_diff
+
+
+def test_retired_models_are_blocked_and_retiring_models_warn():
+    retired = lookup_model("r1-groq")
+    retiring = lookup_model("llama70b")
+    assert retired is not None and retiring is not None
+    assert model_lifecycle(retired, date(2026, 8, 9)) == "retired"
+    assert model_availability(retired, date(2026, 8, 9))[0] is False
+    allowed, message = model_availability(retiring, date(2026, 8, 9))
+    assert allowed is True
+    assert "retires on 2026-08-16" in message
+    assert model_lifecycle(retiring, date(2026, 8, 16)) == "retired"
+
+
+def test_retired_model_cannot_be_an_automatic_fallback():
+    assert _fallback_allowed("opencode/big-pickle", "groq/deepseek-r1-distill-llama-70b") is False
+
+
+def test_turn_controller_cancels_worker_coroutine():
+    controller = TurnController()
+    started = threading.Event()
+    result = {}
+
+    async def work():
+        started.set()
+        await asyncio.sleep(30)
+
+    def runner():
+        try:
+            controller.run(work())
+        except asyncio.CancelledError:
+            result["cancelled"] = True
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    assert started.wait(timeout=2)
+    assert controller.cancel() is True
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert result == {"cancelled": True}
+
+
+def test_workspace_diff_reports_git_changes(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+        check=True,
+    )
+    tracked.write_text("after\n", encoding="utf-8")
+    (tmp_path / "new.txt").write_text("new\n", encoding="utf-8")
+
+    report = workspace_diff(tmp_path)
+    assert "STATUS" in report
+    assert "tracked.txt" in report
+    assert "new.txt" in report
+    assert "UNSTAGED" in report
+    assert "-before" in report and "+after" in report
+
+
+def test_workspace_usage_aggregates_saved_sessions_locally(tmp_path):
+    save_session_messages(
+        tmp_path,
+        "one",
+        "opencode/big-pickle",
+        [],
+        usage={
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "model_usage": {
+                "opencode/big-pickle": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            },
+        },
+    )
+    report = workspace_usage(tmp_path)
+    assert report["total_tokens"] == 15
+    assert report["models"]["opencode/big-pickle"]["total_tokens"] == 15
+    rendered = format_usage_report(tmp_path, {"prompt_tokens": 2, "completion_tokens": 3})
+    assert "Current session  5 tokens" in rendered
+    assert "Stored locally" in rendered

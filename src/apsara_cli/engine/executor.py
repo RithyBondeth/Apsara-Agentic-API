@@ -3,7 +3,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream
-from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model
+from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model, model_availability
 from apsara_cli.engine.runtime import RunJournal
 from apsara_cli.engine.tools import classify_tool_risk, execute_tool_async, get_mcp_manager
 from apsara_cli.shared.types import AgentRun, AgentRunState, ToolResult
@@ -30,9 +30,11 @@ def _max_steps() -> int:
 
 def _fallback_allowed(primary: str, candidate: str) -> bool:
     primary_entry = lookup_model(primary)
+    candidate_entry = lookup_model(candidate)
+    if candidate_entry is not None and not model_availability(candidate_entry)[0]:
+        return False
     if primary_entry is None or primary_entry.tier not in {"free", "local"}:
         return True
-    candidate_entry = lookup_model(candidate)
     return candidate_entry is not None and candidate_entry.tier in {"free", "local"}
 
 
@@ -154,6 +156,15 @@ async def run_agent_stream(
     verification_nudged = False
     verification_capable = _bash_enabled()
     model_candidates = _model_candidates(model)
+    primary_entry = lookup_model(model)
+    if primary_entry is not None:
+        primary_allowed, primary_health = model_availability(primary_entry)
+        if not primary_allowed:
+            journal.transition(AgentRunState.FAILED, primary_health)
+            yield json.dumps({"type": "error", "message": primary_health})
+            return
+        if primary_health:
+            yield json.dumps({"type": "warning", "message": primary_health})
     blocked_fallbacks = [
         candidate
         for candidate in _configured_fallbacks()
@@ -271,7 +282,11 @@ async def run_agent_stream(
                     "tool_call_id": tool_call["id"],
                 })
 
-                tool_result_str = await execute_tool_async(tool_name, arguments)
+                try:
+                    tool_result_str = await execute_tool_async(tool_name, arguments)
+                except asyncio.CancelledError:
+                    journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
+                    raise
                 typed_result = ToolResult.from_text(tool_result_str)
                 journal.tool_result(tool_name, typed_result, arguments, classify_tool_risk(tool_name).value)
 

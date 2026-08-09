@@ -35,6 +35,8 @@ error, and metadata contract.
 - All built-in paths resolve beneath the selected workspace.
 - Writes remain approval-gated and create a checkpoint before mutation.
 - `/undo` restores the latest snapshot, including removing a newly created file.
+- `/diff` shows the repository's staged, unstaged, and untracked state without
+  mutating Git.
 - Shell and background commands share the same allowlist validation.
 - Background output is bounded and processes are terminated when Apsara exits.
 - MCP `readOnlyHint` annotations are honored. Without an annotation, conservative
@@ -53,7 +55,8 @@ occur before response output begins.
 
 Cancellation marks the current run `cancelled`. Long-running work should use
 the managed background-process tools so output can be inspected and the process
-can be stopped independently.
+can be stopped independently. In the TUI, `Ctrl+C` cancels the active agent turn
+and preserves the application, prior conversation, and automatic checkpoints.
 
 ## Extensibility and evaluation
 

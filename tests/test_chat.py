@@ -82,6 +82,7 @@ class _RecordingUI:
     def style(self, text, *codes): return text
     def dim(self, text): return text
     def muted(self, text): return text
+    def print_block(self, text, *args): self._record(text)
     def info(self, text): self._record(f"INFO {text}")
     def success(self, text): self._record(f"OK {text}")
     def warning(self, text): self._record(f"WARN {text}")
@@ -119,6 +120,17 @@ def _run_cmd(cmd, options, ui=None):
     ui = ui or _RecordingUI()
     keep, model = chat.handle_chat_command(cmd, [], "groq/llama-3.3-70b-versatile", options, object(), ui)
     return keep, model, ui
+
+
+def test_diff_and_usage_commands_render_local_reports(key_env):
+    keep, _model, diff_ui = _run_cmd("/diff", key_env)
+    assert keep is True
+    assert "Git workspace changes" in diff_ui.text
+
+    keep, _model, usage_ui = _run_cmd("/usage", key_env)
+    assert keep is True
+    assert "LOCAL USAGE" in usage_ui.text
+    assert "no usage data is uploaded" in usage_ui.text
 
 
 def test_paid_model_switch_requires_explicit_confirmation(key_env, monkeypatch):

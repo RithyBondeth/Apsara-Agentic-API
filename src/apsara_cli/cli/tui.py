@@ -74,6 +74,7 @@ from apsara_cli.engine.models import (
     format_context_window,
     is_key_available,
     lookup_model,
+    model_availability,
     model_price_label,
 )
 from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
@@ -81,6 +82,38 @@ from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_wid
 # Accent / chrome colors (ANSI truecolor), kept in one place.
 _ACCENT = "38;2;96;150;250"      # blue left-bar / user accent
 _DIMTXT = "38;2;120;125;138"
+
+
+class TurnController:
+    """Own the worker event loop so the UI can cancel an active agent task."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._task: Optional[asyncio.Task] = None
+
+    def run(self, coroutine):
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(coroutine)
+        with self._lock:
+            self._loop = loop
+            self._task = task
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            with self._lock:
+                self._loop = None
+                self._task = None
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    def cancel(self) -> bool:
+        with self._lock:
+            loop, task = self._loop, self._task
+        if loop is None or task is None or task.done():
+            return False
+        loop.call_soon_threadsafe(task.cancel)
+        return True
 
 
 class TuiConsoleUI(ConsoleUI):
@@ -577,6 +610,7 @@ async def tui_loop(args: object, config: object) -> int:
     # screen: centered logo with the message box directly below it. The
     # split chat/sidebar layout takes over on the first submission.
     state = {"model": options.model, "welcome": not history, "busy": False}
+    turn_controller = TurnController()
     sidebar_state = {"visible": terminal_width() >= 110}
     ui.sidebar_visible = sidebar_state["visible"]
 
@@ -1097,6 +1131,13 @@ async def tui_loop(args: object, config: object) -> int:
             _refresh_context_usage(ui, history, resolved)
             return resolved
 
+        selectable, health_message = model_availability(entry)
+        if not selectable:
+            ui.error(health_message)
+            return state["model"]
+        if health_message:
+            ui.warning(health_message)
+
         ctx = format_context_window(entry.context_window)
         ui.print_line()
         ui.print_line(
@@ -1182,8 +1223,12 @@ async def tui_loop(args: object, config: object) -> int:
 
     kb = KeyBindings()
 
-    @kb.add("c-c", filter=~approval_active)
+    @kb.add("c-c", filter=~approval_active & ~picker_active & ~kp_any)
     def _interrupt(event) -> None:
+        if state["busy"]:
+            if turn_controller.cancel():
+                ui.warning("Cancelling the active turn…")
+            return
         event.app.exit()
 
     @kb.add("c-d", filter=~approval_active)
@@ -1356,11 +1401,16 @@ async def tui_loop(args: object, config: object) -> int:
             # execute_instruction drives begin_turn/finish_turn, which render the
             # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.
             def _run_agent_turn():
-                return asyncio.run(
+                return turn_controller.run(
                     execute_instruction(text, state["model"], list(history), options, ui)
                 )
 
-            new_history, usage = await asyncio.to_thread(_run_agent_turn)
+            try:
+                new_history, usage = await asyncio.to_thread(_run_agent_turn)
+            except asyncio.CancelledError:
+                ui.stop_spinner()
+                ui.warning("Turn cancelled. Your previous conversation and file checkpoints are preserved.")
+                return
             history[:] = new_history
             if usage and usage.get("total_tokens") is not None:
                 ui.usage(usage)
