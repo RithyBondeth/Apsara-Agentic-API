@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Disable colored terminal output.")
 
     trust_parser = subparsers.add_parser(
-        "trust", help="Review or revoke approvals for this project's plugins and MCP servers."
+        "trust", help="Review or revoke approvals for this project's executable definitions."
     )
     trust_parser.add_argument("--workspace", default=None,
                               help="Workspace root whose approvals should be listed.")

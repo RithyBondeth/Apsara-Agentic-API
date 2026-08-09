@@ -135,7 +135,9 @@ def _is_malformed_tool_call(exc: Exception) -> bool:
     return "tool_use_failed" in text or "failed_generation" in text
 
 
-async def call_llm(messages: list[dict], model: str = DEFAULT_MODEL) -> tuple[Any, Any]:
+async def call_llm(
+    messages: list[dict], model: str = DEFAULT_MODEL, *, with_tools: bool = True
+) -> tuple[Any, Any]:
     """
     Send the conversation to LLM with configured tools via LiteLLM.
     Returns (Response Message Object, Usage Dictionary Object)
@@ -146,12 +148,14 @@ async def call_llm(messages: list[dict], model: str = DEFAULT_MODEL) -> tuple[An
 
     try:
         resolved_model, provider_options = resolve_litellm_request(model)
+        request_options: dict[str, Any] = {}
+        if with_tools:
+            request_options.update(tools=get_agent_tools(), tool_choice="auto")
         response = await litellm.acompletion(
             model=resolved_model,
             messages=messages,
-            tools=get_agent_tools(),
-            tool_choice="auto",
             max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+            **request_options,
             **provider_options,
         )
         return response.choices[0].message, response.usage.model_dump() if response.usage else {}

@@ -51,6 +51,24 @@ A missing language runtime is recorded as `unavailable`, never mistaken for a
 passing verification. Use the JSON suite format to add larger repositories or
 provider-specific token and tool-call budgets.
 
+Cases may use a local fixture or a pinned real repository. Remote sources must
+use HTTPS and a full 40-character commit SHA, so a benchmark cannot silently
+move when a branch or tag changes:
+
+```json
+{
+  "name": "real-repository-issue",
+  "language": "python",
+  "repository": {
+    "url": "https://github.com/example/project.git",
+    "ref": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "instruction": "Resolve the pinned issue without editing tests.",
+  "verify": [["python", "-m", "pytest", "-q"]],
+  "allowed_changes": ["src/**/*.py"]
+}
+```
+
 ## Aggregate release gates
 
 Benchmark suites can define deterministic thresholds:
@@ -84,8 +102,7 @@ variances plus machine-readable failure categories.
 
 ## Known gaps
 
-The bundled fixtures now include a multi-file task but remain synthetic and
-relatively small, so they test agent mechanics more than long-horizon
-architecture. Production release evaluation should still add pinned
-open-source repositories and quality review for solutions that pass tests but
-degrade maintainability.
+The bundled offline fixtures remain synthetic and relatively small. The runner
+supports pinned open-source checkouts, but release owners must select and
+maintain those networked cases and perform quality review for solutions that
+pass tests while degrading maintainability.

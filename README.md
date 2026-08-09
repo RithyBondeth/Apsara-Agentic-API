@@ -59,7 +59,7 @@ That creates `.apsara/config.toml`, adds Apsara's local artifacts to
 | `apsara init` | Set up `.apsara/` in this project and start chatting |
 | `apsara sessions` | List saved sessions for a workspace |
 | `apsara mcp` | List configured MCP servers and verify they connect |
-| `apsara trust` | Review or revoke approvals for this project's plugins and MCP servers |
+| `apsara trust` | Review or revoke approvals for executable workspace definitions |
 | `apsara doctor` | Check environment, config, tools, and credentials |
 | `apsara eval suite.json` | Score recorded runs against regression expectations |
 | `/key set <provider>` | Add a provider key securely from inside the UI |
@@ -79,6 +79,7 @@ runs with your normal user permissions and is not an operating-system sandbox.
 **Reading** — `read_file`, `parallel_read_files`, `read_file_lines`, `glob_search`,
 `search_files`, `repository_map`, `find_symbol`, `list_project_structure`,
 `list_symbols`, `go_to_definition`, `find_references`, `code_diagnostics`,
+`lsp_go_to_definition`, `lsp_find_references`,
 `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
 
 **Writing** — `edit_file`, `replace_file_lines`, `write_to_file`,
@@ -87,6 +88,10 @@ runs with your normal user permissions and is not an operating-system sandbox.
 **Commands** — `run_bash_command` plus cancellable background processes via
 `start_process`, `process_output`, `list_processes`, and `stop_process`; off by
 default, see below.
+
+**Quality** — `verify_project` for structured baseline, targeted, and full
+checks; `request_critic` for an independent read-only review of the current
+diff. These are available without enabling general shell access.
 
 Before every file mutation Apsara creates a recoverable checkpoint under
 `.apsara/checkpoints/`. Use `/undo` for the latest edit, `/checkpoints` to list
@@ -125,6 +130,38 @@ remaining workspace file mutations, `v` toggles the full patch, and arrows
 scroll). Resumed sessions restore their saved user and final-assistant messages
 directly into the transcript.
 
+### Verification engine
+
+For coding changes, Apsara requires a baseline attempt before the first edit and
+a passing full verification before it considers the change verified. It detects
+Pytest, npm scripts, Go tests, and Cargo tests from manifests. Unlike generic
+shell execution, verification returns structured command, exit-code, duration,
+and bounded-output evidence. An unrelated successful command never counts.
+
+Running repository tests executes workspace code, so the detected command set
+has its own digest-based trust prompt. Add deterministic overrides when
+auto-detection is not enough:
+
+```toml
+[verification]
+commands = [
+  ["python", "-m", "pytest", "-q"],
+  ["python", "-m", "mypy", "src"],
+]
+targeted_commands = [["python", "-m", "pytest", "-q", "tests/unit"]]
+```
+
+Set `isolated=true` on `verify_project` to run in a disposable Git worktree
+containing the current tracked and untracked changes. The snapshot is deleted
+afterward, so ordinary relative writes do not touch the primary workspace.
+Dependency directories such as `.venv` and `node_modules` are intentionally not
+copied. This protects workspace state; it is not an operating-system security
+sandbox, and checks still run with your normal user permissions.
+
+After a multi-file change passes full verification, Apsara requests an
+independent critic pass. The critic receives the objective and a bounded Git
+diff, has no tools, and cannot modify the workspace.
+
 ### Command execution
 
 The bash tool is disabled by default. Enable it with an explicit allowlist:
@@ -138,10 +175,9 @@ apsara --allow-bash --allowed-commands @verify,git
 `mvn`, `gradle`, `dotnet`, `ruff`, `mypy`, and friends. `@read` and `@git` are
 also available, and you can mix presets with plain command names.
 
-**Turn this on.** Without a test runner on the allowlist the agent can write
-code but never run it, so it can't catch its own mistakes — you get
-single-shot generation instead of an agent that iterates until the suite is
-green.
+General shell access is optional. The dedicated verification engine can run
+detected or configured quality checks without enabling arbitrary bash commands;
+enable `@verify` only when the agent also needs custom test invocations.
 
 Commands are parsed and checked against the allowlist — including every stage of
 a pipe or `&&` chain — and direct shell redirections outside the workspace are
@@ -185,13 +221,33 @@ Check your setup any time:
 apsara mcp
 ```
 
+## Lifecycle hooks
+
+Trusted hooks can enforce repository policy at `session_start`, `before_tool`,
+`after_tool`, `before_verify`, `after_verify`, and `turn_end`. Store them in
+`.apsara/hooks.json`; commands receive a JSON event on stdin and may deny an
+action by printing `{"decision":"deny","reason":"..."}`. Hooks are
+digest-approved as workspace code and are skipped in read-only mode.
+
+```json
+{
+  "before_tool": [
+    {"command": ["python", "scripts/agent_policy.py"], "timeout": 20}
+  ],
+  "turn_end": [
+    {"command": ["python", "scripts/release_gate.py"]}
+  ]
+}
+```
+
 ## Trust
 
-Two things can arrive with a repository rather than from you: local plugins in
-`.apsara/tools/*.py` and MCP server definitions in `.apsara/config.toml`. Both
-execute code, so Apsara asks before running either one, showing what it's about
-to execute. Approvals are recorded per project in `~/.apsara/trust.json`, keyed
-by a digest of the code — if an approved file changes, you're asked again.
+Several executable policies can arrive with a repository rather than from you:
+local plugins, MCP server definitions, verification commands, and lifecycle
+hooks. Apsara asks before running them and shows what it is about to execute.
+Approvals are recorded per project in `~/.apsara/trust.json`, keyed by a digest
+of the code or command set — if an approved definition changes, you're asked
+again.
 
 `--auto-approve` does **not** cover this. That flag waives confirmation for
 workspace file mutations; it is not consent to execute project code, shell
