@@ -395,13 +395,20 @@ class ConsoleUI:
 
     # ── Rich text renderer ────────────────────────────────────────────────────
 
-    def render_markdown_panel(self, text: str) -> None:
-        """Render an assistant response in a padded transcript card."""
+    def _markdown_card_lines(
+        self,
+        text: str,
+        *,
+        width: Optional[int] = None,
+        timestamp: Optional[str] = None,
+    ) -> list[str]:
+        """Format a Markdown response card without writing it."""
         from rich.console import Console
         from rich.markdown import Markdown
         from rich.text import Text
 
-        card_width = max(32, self.content_width() - 2)
+        panel_width = width or self.content_width()
+        card_width = max(32, panel_width - 2)
         body_width = max(29, card_width - 1)
         horizontal_padding = 3
         render_width = max(23, body_width - (horizontal_padding * 2))
@@ -417,9 +424,9 @@ class ConsoleUI:
         console.print(Markdown(body, code_theme="monokai"))
 
         rail = self.style("▌", "1", "38;2;104;205;220")
-        background = "48;2;24;25;29"
+        background = "48;2;14;16;21"
         foreground = "38;2;225;230;242"
-        timestamp = datetime.now().strftime("%I:%M %p").lstrip("0")
+        timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
 
         def card_line(content: str = "") -> str:
             # Rich emits resets inside highlighted Markdown. Re-apply the
@@ -435,17 +442,23 @@ class ConsoleUI:
             )
             return f"  {rail}{self.style(padded, foreground, background)}"
 
-        self.print_line(card_line(" " * render_width))
+        lines = [card_line(" " * render_width)]
         for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
-            self.print_line(card_line(line))
-        self.print_line(card_line(" " * render_width))
+            lines.append(card_line(line))
+        lines.append(card_line(" " * render_width))
         footer = f"apsara  {timestamp}".ljust(render_width)
         if self.use_color:
             footer = self.style(footer, "38;2;132;136;146").replace(
                 "\033[0m", f"\033[0m\033[{background}m"
             )
-        self.print_line(card_line(footer))
-        self.print_line(card_line(" " * render_width))
+        lines.append(card_line(footer))
+        lines.append(card_line(" " * render_width))
+        return lines
+
+    def render_markdown_panel(self, text: str) -> None:
+        """Render an assistant response in a padded transcript card."""
+        for line in self._markdown_card_lines(text):
+            self.print_line(line)
 
     def render_rich_text(self, text: str, typing_delay: float = 0.0) -> None:
         import re as _re
