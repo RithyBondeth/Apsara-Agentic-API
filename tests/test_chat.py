@@ -93,6 +93,15 @@ class _RecordingUI:
         return "\n".join(self.lines)
 
 
+class _ChoiceUI(_RecordingUI):
+    def __init__(self, choice):
+        super().__init__()
+        self.choice = choice
+
+    def read_single_key(self):
+        return self.choice
+
+
 @pytest.fixture
 def key_env(tmp_path, monkeypatch):
     """Isolated credential store + clean provider env for /key tests."""
@@ -110,6 +119,29 @@ def _run_cmd(cmd, options, ui=None):
     ui = ui or _RecordingUI()
     keep, model = chat.handle_chat_command(cmd, [], "groq/llama-3.3-70b-versatile", options, object(), ui)
     return keep, model, ui
+
+
+def test_paid_model_switch_requires_explicit_confirmation(key_env, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    ui = _ChoiceUI("n")
+
+    keep, model, ui = _run_cmd("/model gpt-4o", key_env, ui)
+
+    assert keep is True
+    assert model == "groq/llama-3.3-70b-versatile"
+    assert "paid model" in ui.text
+    assert "cancelled" in ui.text
+
+
+def test_paid_model_switch_proceeds_after_confirmation(key_env, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    ui = _ChoiceUI("y")
+
+    keep, model, ui = _run_cmd("/model gpt-4o", key_env, ui)
+
+    assert keep is True
+    assert model == "gpt-4o"
+    assert "paid model" in ui.text
 
 
 def test_key_list_shows_all_keyed_providers(key_env):

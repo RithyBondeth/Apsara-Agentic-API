@@ -208,11 +208,16 @@ different provider for confidential repositories. `--model` and the config
 file can still select any supported LiteLLM model.
 
 For provider resilience, set a comma-separated fallback chain. Apsara switches
-only when a request fails before emitting output:
+only when a request fails before emitting output. A free or local model will
+only fall back automatically to another known free/local model, so a temporary
+outage cannot silently create a provider bill:
 
 ```bash
-export APSARA_FALLBACK_MODELS="openai/gpt-5-mini,anthropic/claude-sonnet-4-5"
+export APSARA_FALLBACK_MODELS="ollama/llama3.2,groq/llama-3.3-70b-versatile"
 ```
+
+Paid models remain available through `--model` or `/model`; Apsara shows a
+billing warning and requires confirmation before an interactive switch.
 
 Useful flags:
 
@@ -236,6 +241,11 @@ The budget is derived from the selected model's context window, so a
 the current usage against both. Override it with `APSARA_INPUT_TOKEN_BUDGET` if
 you want to trade cost for memory, and cap the agent's per-turn tool calls with
 `APSARA_MAX_STEPS`.
+
+Token counts are provider-reported and aggregated across every model call in an
+agent turn. They measure session usage and context capacity, not an Apsara fee.
+Big Pickle and local models display `$0`; when Apsara does not have authoritative
+pricing metadata it displays `provider billed` instead of estimating a cost.
 
 Each turn also writes an append-only event trace and typed run state beneath
 `.apsara/runs/`. `/report` exports the latest run as Markdown. Durable project

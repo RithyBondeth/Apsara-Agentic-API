@@ -127,6 +127,7 @@ async def call_llm_stream(
                 tool_choice="auto",
                 max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
                 stream=True,
+                stream_options={"include_usage": True},
                 **provider_options,
             )
 
@@ -135,6 +136,13 @@ async def call_llm_stream(
             usage: dict = {}
 
             async for chunk in response:
+                # With include_usage, OpenAI-compatible providers commonly
+                # send a final usage-only chunk whose choices list is empty.
+                if hasattr(chunk, "usage") and chunk.usage:
+                    try:
+                        usage = chunk.usage.model_dump()
+                    except Exception:
+                        pass
                 choice = chunk.choices[0] if chunk.choices else None
                 if not choice:
                     continue
@@ -160,12 +168,6 @@ async def call_llm_stream(
                                 tool_calls_acc[idx]["function"]["name"] += tc.function.name
                             if tc.function.arguments:
                                 tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
-
-                if hasattr(chunk, "usage") and chunk.usage:
-                    try:
-                        usage = chunk.usage.model_dump()
-                    except Exception:
-                        pass
 
             yield {
                 "type": "stream_done",

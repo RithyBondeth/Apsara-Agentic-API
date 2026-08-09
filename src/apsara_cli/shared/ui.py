@@ -261,6 +261,10 @@ class ConsoleUI:
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._session_total_tokens: int = 0
+        self._session_cost_usd: float = 0.0
+        self._session_has_unpriced_usage: bool = False
+        self._context_tokens: int = 0
+        self._context_budget: int = 0
 
         self.spinner_message = "Apsara is working"
         self.spinner_stop_event = threading.Event()
@@ -721,8 +725,19 @@ class ConsoleUI:
             display = session_path
         self.print_line(f"  {self.dim(f'  ↳ saved · {display}')}")
 
-    def calculate_session_cost(self) -> float:
-        return (self._session_total_tokens / 1000) * 0.01
+    def calculate_session_cost(self) -> Optional[float]:
+        """Known session cost, or None if any provider pricing is unknown."""
+        if self._session_has_unpriced_usage:
+            return None
+        return self._session_cost_usd
+
+    def session_cost_label(self) -> str:
+        cost = self.calculate_session_cost()
+        return "provider billed" if cost is None else f"${cost:.4f}"
+
+    def set_context_usage(self, tokens: int, budget: int) -> None:
+        self._context_tokens = max(0, int(tokens))
+        self._context_budget = max(0, int(budget))
 
     def usage(self, usage_data: dict[str, Any]) -> None:
         p = usage_data.get("prompt_tokens") or 0
@@ -732,11 +747,32 @@ class ConsoleUI:
         self._session_completion_tokens += c
         self._session_total_tokens      += t
 
+        from apsara_cli.engine.models import model_usage_cost
+
+        model_usage = usage_data.get("model_usage")
+        if not isinstance(model_usage, dict):
+            model = usage_data.get("apsara_model")
+            model_usage = {model: usage_data} if model else {}
+        for model, tokens in model_usage.items():
+            if not isinstance(tokens, dict):
+                continue
+            model_total = int(tokens.get("total_tokens") or 0)
+            if model_total <= 0:
+                continue
+            known_cost = model_usage_cost(
+                str(model),
+                int(tokens.get("prompt_tokens") or 0),
+                int(tokens.get("completion_tokens") or 0),
+            )
+            if known_cost is None:
+                self._session_has_unpriced_usage = True
+            else:
+                self._session_cost_usd += known_cost
+
         st = self._session_total_tokens
         session_short = f"{st / 1000:.1f}K" if st >= 1000 else str(st)
-        cost = self.calculate_session_cost()
         self.print_line(
-            f"    {self.dim(f'{t:,} tok · session {session_short} · ${cost:.4f}')}"
+            f"    {self.dim(f'{t:,} tok · session {session_short} · {self.session_cost_label()}')}"
         )
 
     # ── Assistant message ─────────────────────────────────────────────────────

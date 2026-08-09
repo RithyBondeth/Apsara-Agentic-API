@@ -37,6 +37,7 @@ from apsara_cli.engine.models import (
     format_context_window,
     is_key_available,
     lookup_model,
+    model_price_label,
     providers_in_order,
     resolve_model_id,
 )
@@ -127,6 +128,19 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
             f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
             f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
         )
+        ui.print_line(f"  {ui.dim(model_price_label(entry.model_id))}")
+        if entry.tier == "paid" and resolved != current_model:
+            ui.warning(
+                f"{entry.display_name} is a paid model. Requests may be billed by "
+                f"{entry.provider.capitalize()} at its current rates."
+            )
+            ui.print_line(
+                f"  {ui.badge('y  switch', '17', '48;2;80;170;140')}  "
+                f"{ui.badge('n  cancel', '17', '48;2;120;100;80')}"
+            )
+            if ui.read_single_key() not in {"y", "Y"}:
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return current_model
         if entry.tier == "local":
             ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
         elif has_key:
@@ -176,8 +190,19 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
                 )
         ui.print_line()
     else:
-        # Unknown model — allow it but warn
-        ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+        # Unknown models may be billable, so interactive switches require the
+        # same explicit consent as known paid entries.
+        ui.warning(
+            f"'{raw_name}' is not in the built-in registry. Its pricing is unknown "
+            "and the provider may bill requests."
+        )
+        ui.print_line(
+            f"  {ui.badge('y  switch', '17', '48;2;80;170;140')}  "
+            f"{ui.badge('n  cancel', '17', '48;2;120;100;80')}"
+        )
+        if resolved != current_model and ui.read_single_key() not in {"y", "Y"}:
+            ui.info("Model switch cancelled — continuing with the current model.")
+            return current_model
 
     if resolved != current_model:
         ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
@@ -343,7 +368,8 @@ def build_model_rows(
                 aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
 
             line = (
-                f"{status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}  "
+                f"{status_icon} {name_text}  {tier_badge}  "
+                f"{ui.dim(model_price_label(entry.model_id))}  {ctx_text}  {key_text}  "
                 f"{ui.dim(entry.model_id)}{aliases_hint}"
             )
             provider_rows.append((line, entry.model_id))
@@ -858,7 +884,6 @@ def handle_chat_command(
         session_label = (
             sanitize_session_name(options.session) if not options.stateless else "stateless"
         )
-        cost = ui.calculate_session_cost()
 
         if pct < 70:
             health_color = "38;2;120;200;150"
@@ -894,7 +919,11 @@ def handle_chat_command(
             f"{ui.style(f'{tokens:,}', health_color)} "
             f"{ui.dim(f'/ {budget:,} budget  ({pct}%  {health_label}){window_note}')}"
         )
-        ui.print_line(f"  {ui.dim('  cost     ')} {ui.style(f'${cost:.4f}', '38;2;120;200;150')} {ui.dim('(est. session total)')}")
+        ui.print_line(
+            f"  {ui.dim('  cost     ')} "
+            f"{ui.style(ui.session_cost_label(), '38;2;120;200;150')} "
+            f"{ui.dim('(known provider cost; never estimated)')}"
+        )
         ui.print_line()
         return True, current_model
 
@@ -1026,7 +1055,7 @@ async def execute_instruction(
 
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
-    latest_usage = None
+    aggregate_usage: Optional[dict[str, Any]] = None
     ui.begin_turn()
 
     with agent_runtime_context(
@@ -1043,6 +1072,7 @@ async def execute_instruction(
         trust_callback=ui.confirm_action,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
+        ui.set_context_usage(trim_result.trimmed_tokens, input_token_budget(model))
         if trim_result.dropped_turns:
             ui.warning(
                 f"Trimmed {trim_result.dropped_turns} earlier turn(s) "
@@ -1061,17 +1091,46 @@ async def execute_instruction(
         async for chunk_str in run_agent_stream(next_history, model=model):
             event = json.loads(chunk_str)
             if event.get("type") == "usage":
-                latest_usage = event.get("data")
+                data = event.get("data") or {}
+                if aggregate_usage is None:
+                    aggregate_usage = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "model_usage": {},
+                    }
+                prompt = int(data.get("prompt_tokens") or 0)
+                completion = int(data.get("completion_tokens") or 0)
+                total = int(data.get("total_tokens") or prompt + completion)
+                aggregate_usage["prompt_tokens"] += prompt
+                aggregate_usage["completion_tokens"] += completion
+                aggregate_usage["total_tokens"] += total
+                usage_model = str(data.get("apsara_model") or model)
+                by_model = aggregate_usage["model_usage"].setdefault(
+                    usage_model,
+                    {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+                by_model["prompt_tokens"] += prompt
+                by_model["completion_tokens"] += completion
+                by_model["total_tokens"] += total
             else:
                 print_event(event, ui)
                 update_history_from_event(next_history, event)
 
+    from apsara_cli.engine.executor import SYSTEM_PROMPT
+    from apsara_cli.engine.llm import estimate_request_tokens
+
+    current_tokens = estimate_request_tokens(
+        [{"role": "system", "content": SYSTEM_PROMPT}] + next_history,
+        model=model,
+    )
+    ui.set_context_usage(current_tokens, input_token_budget(model))
     entry = lookup_model(model)
     ui.finish_turn(
         model_label=entry.display_name if entry else model.split("/")[-1],
         mode=turn_mode_word(options),
     )
-    return next_history, latest_usage
+    return next_history, aggregate_usage
 
 
 def save_if_needed(

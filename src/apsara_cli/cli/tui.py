@@ -70,7 +70,12 @@ from apsara_cli.cli.chat import (
 from apsara_cli.cli.input import SlashCompleter
 from apsara_cli.cli.options import resolve_runtime_options
 from apsara_cli.cli.session import load_session_messages, sanitize_session_name
-from apsara_cli.engine.models import format_context_window, is_key_available, lookup_model
+from apsara_cli.engine.models import (
+    format_context_window,
+    is_key_available,
+    lookup_model,
+    model_price_label,
+)
 from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
 
 # Accent / chrome colors (ANSI truecolor), kept in one place.
@@ -323,16 +328,21 @@ def _sidebar_text(
     lines(f"   {ui.style(session_started, _DIMTXT)}")
     lines("")
 
-    # Context: usage meter + tokens + cost.
+    # Context is current request capacity. Session tokens are cumulative usage.
     total = ui._session_total_tokens
+    context_tokens = ui._context_tokens
+    context_budget = ui._context_budget
     entry = lookup_model(current_model)
     lines(_section(ui, "◍", "Context", _C_CONTEXT))
-    if entry and entry.context_window:
-        pct = min(100, int(total / entry.context_window * 100))
+    if context_budget:
+        pct = min(100, int(context_tokens / context_budget * 100))
         lines(f"   {_meter(ui, pct)}")
-    tok_str = f"{total:,}" if total else "0"
-    lines(f"   {ui.style(tok_str, _C_VALUE)} {ui.style('tokens', _DIMTXT)}")
-    lines(f"   {ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')} {ui.style('spent', _DIMTXT)}")
+    lines(
+        f"   {ui.style(f'{context_tokens:,}', _C_VALUE)} "
+        f"{ui.style(f'/ {context_budget:,} context', _DIMTXT)}"
+    )
+    lines(f"   {ui.style(f'{total:,}', _C_VALUE)} {ui.style('session tokens', _DIMTXT)}")
+    lines(f"   {ui.style(ui.session_cost_label(), '38;2;130;210;160')} {ui.style('cost', _DIMTXT)}")
     lines("")
 
     # Model: name, provider · tier, context window, key status.
@@ -346,6 +356,7 @@ def _sidebar_text(
             f"   {ui.style(entry.provider.capitalize(), '38;2;190;200;220')}"
             f" {ui.style('·', _DIMTXT)} {ui.style(entry.tier, tier_color)}"
         )
+        lines(f"   {ui.style(model_price_label(entry.model_id), _DIMTXT)}")
         lines(f"   {ui.style(format_context_window(entry.context_window) + ' ctx', _DIMTXT)}")
         lines(
             f"   {ui.style('✓ key set', '38;2;120;200;150')}"
@@ -445,10 +456,9 @@ def _status_left(options: Any) -> ANSI:
 def _status_right(ui: TuiConsoleUI, current_model: str) -> ANSI:
     total = ui._session_total_tokens
     tok = f"{total / 1000:.1f}K" if total >= 1000 else str(total)
-    entry = lookup_model(current_model)
     pct = ""
-    if entry and entry.context_window and total:
-        pct = f" ({min(100, int(total / entry.context_window * 100))}%)"
+    if ui._context_budget:
+        pct = f" ({min(100, int(ui._context_tokens / ui._context_budget * 100))}% ctx)"
     right = (
         f"\x1b[{_DIMTXT}m{tok}{pct}\x1b[0m   "
         f"\x1b[1;38;2;210;216;228mctrl+b\x1b[0m \x1b[{_DIMTXT}mdetails\x1b[0m   "
@@ -518,6 +528,21 @@ def _restore_history(ui: TuiConsoleUI, history: list[dict[str, Any]]) -> None:
             ui.assistant(content)
 
 
+def _refresh_context_usage(
+    ui: TuiConsoleUI, history: list[dict[str, Any]], model: str
+) -> None:
+    """Keep the sidebar's capacity meter tied to the current request."""
+    from apsara_cli.cli.history import input_token_budget
+    from apsara_cli.engine.executor import SYSTEM_PROMPT
+    from apsara_cli.engine.llm import estimate_request_tokens
+
+    tokens = estimate_request_tokens(
+        [{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        model=model,
+    )
+    ui.set_context_usage(tokens, input_token_budget(model))
+
+
 async def tui_loop(args: object, config: object) -> int:
     options = resolve_runtime_options(args, config.defaults)
 
@@ -534,6 +559,7 @@ async def tui_loop(args: object, config: object) -> int:
     history: list[dict[str, Any]] = []
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+    _refresh_context_usage(ui, history, options.model)
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
 
     # First run (nothing to resume) opens on the OpenCode-style welcome
@@ -1017,11 +1043,13 @@ async def tui_loop(args: object, config: object) -> int:
             input_buffer.reset()
         return raw.strip() or None
 
-    async def _prompt_yes_no(question: str) -> bool:
+    async def _prompt_yes_no(
+        question: str, yes_label: str = "y  save", no_label: str = "n  session only"
+    ) -> bool:
         ui.lines.append(
             f"  {question}  "
-            f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
-            f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
+            f"{ui.badge(yes_label, '17', '48;2;80;170;140')}  "
+            f"{ui.badge(no_label, '17', '48;2;120;100;80')}"
         )
         keyprompt["future"] = asyncio.get_event_loop().create_future()
         keyprompt["mode"] = "yesno"
@@ -1044,9 +1072,18 @@ async def tui_loop(args: object, config: object) -> int:
         resolved = resolve_model_id(raw_name)
         entry = lookup_model(raw_name)
         if entry is None:
-            ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+            ui.warning(
+                f"'{raw_name}' is not in the built-in registry. Its pricing is unknown "
+                "and the provider may bill requests."
+            )
+            if resolved != state["model"] and not await _prompt_yes_no(
+                "Switch to this custom model?", "y  switch", "n  cancel"
+            ):
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return state["model"]
             if resolved != state["model"]:
                 ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+            _refresh_context_usage(ui, history, resolved)
             return resolved
 
         ctx = format_context_window(entry.context_window)
@@ -1056,6 +1093,18 @@ async def tui_loop(args: object, config: object) -> int:
             f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
             f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
         )
+        ui.print_line(f"  {ui.dim(model_price_label(entry.model_id))}")
+        if entry.tier == "paid" and resolved != state["model"]:
+            ui.warning(
+                f"{entry.display_name} is a paid model. Requests may be billed by "
+                f"{entry.provider.capitalize()} at its current rates."
+            )
+            confirmed = await _prompt_yes_no(
+                "Switch to this paid model?", "y  switch", "n  cancel"
+            )
+            if not confirmed:
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return state["model"]
         if entry.tier == "local":
             ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
         elif is_key_available(entry):
@@ -1086,6 +1135,7 @@ async def tui_loop(args: object, config: object) -> int:
 
         if resolved != state["model"]:
             ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+        _refresh_context_usage(ui, history, resolved)
         return resolved
 
     def _native_confirm(action: str, payload: dict[str, Any]) -> bool:
@@ -1275,6 +1325,14 @@ async def tui_loop(args: object, config: object) -> int:
                 await _run_model_picker(text[len("/models"):].strip().lower())
                 return
 
+            if text.startswith("/model "):
+                raw_name = text[len("/model "):].strip()
+                if not raw_name:
+                    ui.error("Usage: /model <model-id-or-alias>")
+                    return
+                state["model"] = await _switch_model_tui(raw_name)
+                return
+
             if text.startswith("/"):
                 keep, new_model = handle_chat_command(
                     text, history, state["model"], options, config, ui
@@ -1291,9 +1349,11 @@ async def tui_loop(args: object, config: object) -> int:
                     execute_instruction(text, state["model"], list(history), options, ui)
                 )
 
-            new_history, _usage = await asyncio.to_thread(_run_agent_turn)
+            new_history, usage = await asyncio.to_thread(_run_agent_turn)
             history[:] = new_history
             save_if_needed(history, state["model"], options, ui)
+            if usage and usage.get("total_tokens") is not None:
+                ui.usage(usage)
         finally:
             state["busy"] = False
             ui._invalidate()

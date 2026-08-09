@@ -195,6 +195,10 @@ def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
         ui.hide_event("status", message, message)
         return
 
+    if event_type == "warning":
+        ui.warning(str(event.get("message", "")).strip() or "Warning")
+        return
+
     if event_type == "assistant_dispatch":
         content = str(event.get("content") or "").strip()
         tool_calls = event.get("tool_calls", [])
