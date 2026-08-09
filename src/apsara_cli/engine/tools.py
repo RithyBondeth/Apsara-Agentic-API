@@ -1,4 +1,3 @@
-import ast
 import difflib
 import importlib.util
 import glob as _glob
@@ -188,7 +187,7 @@ def classify_tool_risk(tool_name: str) -> ToolRisk:
         return ToolRisk.EXTERNAL
     if tool_name in {"delete_file"}:
         return ToolRisk.DESTRUCTIVE
-    if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "move_file", "create_directory", "undo_last_checkpoint", "remember_project_note"}:
+    if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "replace_symbol", "move_file", "create_directory", "undo_last_checkpoint", "undo_turn_checkpoint", "remember_project_note"}:
         return ToolRisk.WRITE
     if tool_name in {"run_bash_command", "start_process", "stop_process"}:
         return ToolRisk.EXECUTE
@@ -387,6 +386,20 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+def _syntax_diagnostic_suffix(path: Path) -> str:
+    """Give the agent immediate parser feedback after a source-file edit."""
+    try:
+        from apsara_cli.engine.intelligence import LANGUAGES, format_diagnostics, syntax_diagnostics
+        if path.suffix.lower() not in LANGUAGES:
+            return ""
+        issues = syntax_diagnostics(path)
+    except (OSError, UnicodeError):
+        return ""
+    if not issues:
+        return "\nSyntax diagnostics: clean."
+    return "\nSyntax diagnostics:\n" + format_diagnostics(_workspace_root(), issues)
+
+
 def _read_confirmation_text(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return ""
@@ -444,7 +457,21 @@ def _checkpoint(paths: list[Path], label: str) -> Optional[str]:
         return None
     try:
         from apsara_cli.engine.checkpoints import create_checkpoint
+        from apsara_cli.engine.turn_checkpoints import capture_turn_paths
 
+        workspace = _workspace_root().resolve()
+        turn_paths = list(paths)
+        for path in paths:
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(workspace)
+            except ValueError:
+                continue
+            parent = resolved.parent
+            while parent != workspace and not parent.exists():
+                turn_paths.append(parent)
+                parent = parent.parent
+        capture_turn_paths(workspace, turn_paths)
         return create_checkpoint(_workspace_root(), paths, label)
     except Exception:
         return None
@@ -532,6 +559,7 @@ def create_directory(path: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully created directory: {_display_path(resolved_path)} (simulated)"
 
+        _checkpoint([resolved_path], f"Before creating directory {_display_path(resolved_path)}")
         resolved_path.mkdir(parents=True, exist_ok=True)
         return f"Created directory: {_display_path(resolved_path)}"
     except Exception as exc:
@@ -680,7 +708,7 @@ def write_to_file(path: str, content: str) -> str:
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         with resolved_path.open("w", encoding="utf-8") as file_handle:
             file_handle.write(content)
-        return f"Successfully wrote to {resolved_path}"
+        return f"Successfully wrote to {resolved_path}" + _syntax_diagnostic_suffix(resolved_path)
     except Exception as exc:
         return _format_exception("Error writing file", exc)
 
@@ -832,6 +860,8 @@ def run_bash_command(command: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully executed command: {command} (simulated)"
 
+        from apsara_cli.engine.turn_checkpoints import capture_turn_workspace
+        capture_turn_workspace(_workspace_root())
         timeout_seconds = _bash_timeout()
         result = subprocess.run(
             command,
@@ -871,6 +901,8 @@ def start_process(command: str) -> str:
         return f"Error: Background command '{command}' was not approved."
     if _dry_run():
         return f"[Dry Run] Would start background process: {command}"
+    from apsara_cli.engine.turn_checkpoints import capture_turn_workspace
+    capture_turn_workspace(_workspace_root())
     from apsara_cli.engine.processes import PROCESS_MANAGER
     item = PROCESS_MANAGER.start(command, _workspace_root())
     return f"Started process {item.process_id}: {command}"
@@ -1067,7 +1099,7 @@ def replace_file_lines(
         return (
             "Successfully replaced lines "
             f"{start_line} to {end_line} in {resolved_path}."
-        )
+        ) + _syntax_diagnostic_suffix(resolved_path)
     except Exception as exc:
         return _format_exception("Error replacing lines", exc)
 
@@ -1166,7 +1198,7 @@ def edit_file(
 
         return (
             f"Successfully replaced {replaced} occurrence{plural} in {resolved_path}."
-        )
+        ) + _syntax_diagnostic_suffix(resolved_path)
     except Exception as exc:
         return _format_exception("Error editing file", exc)
 
@@ -1274,37 +1306,49 @@ def undo_last_checkpoint(checkpoint_id: str = "") -> str:
     )
 
 
+def list_turn_checkpoints_tool() -> str:
+    """List atomic checkpoints grouped by complete agent turn."""
+    from apsara_cli.engine.turn_checkpoints import format_turn_checkpoint, list_turn_checkpoints
+
+    turns = list_turn_checkpoints(_workspace_root())
+    if not turns:
+        return "No turn checkpoints available."
+    return "\n".join(format_turn_checkpoint(item) for item in turns[:20])
+
+
+def undo_turn_checkpoint(turn_id: str = "") -> str:
+    """Restore every built-in file mutation from one agent turn."""
+    if _read_only():
+        return "Error: Turn rollback is disabled in read-only mode."
+    from apsara_cli.engine.turn_checkpoints import restore_turn_checkpoint
+
+    try:
+        result = restore_turn_checkpoint(_workspace_root(), turn_id or None)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        return f"Error: {exc}"
+    rollback = result.get("rollback") or {}
+    changed = list(rollback.get("restored") or []) + list(rollback.get("removed") or [])
+    conflicts = list(rollback.get("conflicts") or [])
+    suffix = f" Conflicts left untouched: {', '.join(conflicts)}." if conflicts else ""
+    return f"Rolled back turn {result['id']}. Updated {len(changed)} path(s): {', '.join(changed) or 'none'}.{suffix}"
+
+
 def list_symbols(path: str) -> str:
-    """List functions, classes, and important definitions in a source file.
-    Currently supports Python (.py) files."""
+    """List semantic definitions in any supported source file."""
     try:
         resolved_path = _resolve_path(path, must_exist=True)
         if not resolved_path.is_file():
             return f"Error: '{path}' is not a file."
-
-        if not str(resolved_path).endswith(".py"):
-            return "Error: Symbol listing is currently only supported for Python (.py) files."
-
-        content = resolved_path.read_text(encoding="utf-8")
-        tree = ast.parse(content)
-
-        symbols = []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                if isinstance(node, ast.ClassDef):
-                    sym_type = "Class"
-                elif isinstance(node, ast.AsyncFunctionDef):
-                    sym_type = "Async Function"
-                else:
-                    sym_type = "Function"
-                symbols.append(f"{sym_type}: {node.name} (line {node.lineno})")
-
+        from apsara_cli.engine.intelligence import LANGUAGES, symbols_in_file
+        if resolved_path.suffix.lower() not in LANGUAGES:
+            return f"Error: '{path}' is not a supported source file."
+        symbols = symbols_in_file(resolved_path)
         if not symbols:
             return f"No symbols found in {path}."
-
-        return "\n".join(symbols)
-    except SyntaxError as exc:
-        return f"Error parsing Python file: {exc}"
+        return "\n".join(
+            f"{item.kind.title()}: {item.name} (lines {item.start_line}-{item.end_line}, {item.provider})"
+            for item in symbols
+        )
     except Exception as exc:
         return _format_exception("Error listing symbols", exc)
 
@@ -1319,6 +1363,87 @@ def find_symbol(query: str) -> str:
     """Find symbol definitions across supported source languages."""
     from apsara_cli.engine.intelligence import find_symbol as search_symbols
     return search_symbols(_workspace_root(), query)
+
+
+def go_to_definition(name: str, path_hint: str = "") -> str:
+    """Resolve exact definitions, preferring an optional path hint."""
+    from apsara_cli.engine.intelligence import definitions
+    matches = [item for item in definitions(_workspace_root(), name, path_hint) if item.name == name]
+    if not matches:
+        return f"No definition found for '{name}'."
+    return "\n".join(
+        f"{item.location(_workspace_root())}: {item.name} ({item.kind}, {item.provider})"
+        for item in matches
+    )
+
+
+def find_references(name: str, path: str = "") -> str:
+    """Find source references and label known definitions."""
+    from apsara_cli.engine.intelligence import references
+    matches = references(_workspace_root(), name, path)
+    if not matches:
+        return f"No references found for '{name}'."
+    lines = []
+    for item in matches:
+        relative = item.path.relative_to(_workspace_root())
+        label = "definition" if item.is_definition else "reference"
+        lines.append(f"{relative}:{item.line}:{item.column + 1}: {label} ({item.provider})")
+    return "\n".join(lines)
+
+
+def code_diagnostics(path: str = "", project: bool = False) -> str:
+    """Run syntax diagnostics for a file or an explicit native project check."""
+    from apsara_cli.engine.intelligence import format_diagnostics, project_diagnostics, syntax_diagnostics
+    if project:
+        checker, issues = project_diagnostics(_workspace_root())
+        if checker == "none":
+            return "No supported project checker found (pyright, tsc, go, or cargo)."
+        return format_diagnostics(_workspace_root(), issues) or f"Project diagnostics clean ({checker})."
+    if not path:
+        return "Error: path is required unless project=true."
+    resolved_path = _resolve_path(path, must_exist=True)
+    issues = syntax_diagnostics(resolved_path)
+    return format_diagnostics(_workspace_root(), issues) or f"Syntax diagnostics clean for {_display_path(resolved_path)}."
+
+
+def replace_symbol(path: str, symbol: str, replacement: str) -> str:
+    """Replace one complete semantic definition by its parser-derived span."""
+    try:
+        if _read_only():
+            return "Error: Destructive operations are disabled in read-only mode."
+        resolved_path = _resolve_path(path, must_exist=True)
+        from apsara_cli.engine.intelligence import symbols_in_file
+        matches = [item for item in symbols_in_file(resolved_path) if item.name == symbol]
+        if not matches:
+            return f"Error replacing symbol: definition '{symbol}' was not found in '{path}'."
+        if len(matches) > 1:
+            locations = ", ".join(str(item.start_line) for item in matches)
+            return f"Error replacing symbol: '{symbol}' is ambiguous at lines {locations}."
+        target = matches[0]
+        if target.provider == "pattern":
+            return "Error replacing symbol: a precise parser span is unavailable. Install 'apsara-agentic[intelligence]' or use edit_file."
+        content = resolved_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        normalized = replacement
+        if normalized and not normalized.endswith("\n"):
+            normalized += "\n"
+        updated = "".join(lines[:target.start_line - 1]) + normalized + "".join(lines[target.end_line:])
+        display = _display_path(resolved_path)
+        diff_preview, diff_full, diff_editor, diff_truncated = _build_text_diff(content, updated, display)
+        if not _confirm_action("replace_symbol", {
+            "path": str(resolved_path), "display_path": display, "symbol": symbol,
+            "start_line": target.start_line, "end_line": target.end_line,
+            "diff_preview": diff_preview, "diff_full": diff_full,
+            "diff_editor": diff_editor, "diff_truncated": diff_truncated,
+        }):
+            return f"Error replacing symbol: update to '{resolved_path}' was not approved."
+        if _dry_run():
+            return f"[Dry Run] Replaced symbol '{symbol}' in {resolved_path} (simulated)."
+        _checkpoint([resolved_path], f"Before replacing symbol {symbol} in {display}")
+        resolved_path.write_text(updated, encoding="utf-8")
+        return f"Replaced symbol '{symbol}' in {resolved_path}." + _syntax_diagnostic_suffix(resolved_path)
+    except Exception as exc:
+        return _format_exception("Error replacing symbol", exc)
 
 
 def read_project_memory() -> str:
@@ -1567,7 +1692,7 @@ def get_agent_tools() -> list[Dict[str, Any]]:
         _tool_definition("git_blame", "Show line authorship for a file or line range.", {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, ["path"]),
         _tool_definition(
             "list_symbols",
-            "List classes and functions in a source file. Currently supports Python (.py) files.",
+            "List parser-derived classes, functions, methods, types, interfaces, and enums in a supported source file.",
             {
                 "path": {
                     "type": "string",
@@ -1586,6 +1711,12 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             "Restore an automatic file checkpoint. Omit checkpoint_id to undo the latest mutation.",
             {"checkpoint_id": {"type": "string", "description": "Optional checkpoint id."}},
         ),
+        _tool_definition("list_turn_checkpoints_tool", "List atomic checkpoints grouped by agent turn.", {}),
+        _tool_definition(
+            "undo_turn_checkpoint",
+            "Roll back every captured file mutation from an agent turn.",
+            {"turn_id": {"type": "string", "description": "Optional turn/run id; defaults to latest."}},
+        ),
         _tool_definition(
             "repository_map",
             "Build a compact multi-language repository map with manifests and symbols.",
@@ -1596,6 +1727,42 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             "Find matching class, function, type, interface, or enum definitions across the repository.",
             {"query": {"type": "string", "description": "Case-insensitive symbol name fragment."}},
             ["query"],
+        ),
+        _tool_definition(
+            "go_to_definition",
+            "Resolve an exact symbol definition across the repository. Use path_hint to narrow ambiguous names.",
+            {
+                "name": {"type": "string", "description": "Exact symbol name."},
+                "path_hint": {"type": "string", "description": "Optional path fragment used to narrow results."},
+            },
+            ["name"],
+        ),
+        _tool_definition(
+            "find_references",
+            "Find definitions and references for an identifier across supported source files.",
+            {
+                "name": {"type": "string", "description": "Exact identifier to locate."},
+                "path": {"type": "string", "description": "Optional path fragment used to limit the search."},
+            },
+            ["name"],
+        ),
+        _tool_definition(
+            "code_diagnostics",
+            "Check one source file for syntax errors, or run the project's native checker when project=true. Project checks may take time.",
+            {
+                "path": {"type": "string", "description": "Source file for a fast syntax check."},
+                "project": {"type": "boolean", "description": "Run pyright, tsc, go test, or cargo check for the whole project."},
+            },
+        ),
+        _tool_definition(
+            "replace_symbol",
+            "Replace one complete function, class, method, or type using its parser-derived source span. Requires confirmation and creates a checkpoint.",
+            {
+                "path": {"type": "string", "description": "Supported source file containing the definition."},
+                "symbol": {"type": "string", "description": "Exact definition name; it must be unique in the file."},
+                "replacement": {"type": "string", "description": "Complete replacement definition, including indentation."},
+            },
+            ["path", "symbol", "replacement"],
         ),
         _tool_definition("read_project_memory", "Read persistent workspace-specific notes.", {}),
         _tool_definition(
@@ -1661,8 +1828,14 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "list_symbols": list_symbols,
         "list_workspace_checkpoints": list_workspace_checkpoints,
         "undo_last_checkpoint": undo_last_checkpoint,
+        "list_turn_checkpoints_tool": list_turn_checkpoints_tool,
+        "undo_turn_checkpoint": undo_turn_checkpoint,
         "repository_map": repository_map,
         "find_symbol": find_symbol,
+        "go_to_definition": go_to_definition,
+        "find_references": find_references,
+        "code_diagnostics": code_diagnostics,
+        "replace_symbol": replace_symbol,
         "read_project_memory": read_project_memory,
         "remember_project_note": remember_project_note,
     }

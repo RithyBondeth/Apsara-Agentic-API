@@ -20,6 +20,14 @@ middle.
 pipx install apsara-agentic
 ```
 
+Python code intelligence works out of the box. For parser-accurate symbols and
+syntax diagnostics in JavaScript, TypeScript, Go, Rust, Java, Ruby, PHP, C#,
+C++, and C, install the optional Tree-sitter extra:
+
+```bash
+pipx install 'apsara-agentic[intelligence]'
+```
+
 Or, if you'd rather install through npm (it wraps the same Python package):
 
 ```bash
@@ -73,10 +81,11 @@ inside the workspace root; attempts to escape it fail.
 
 **Reading** — `read_file`, `parallel_read_files`, `read_file_lines`, `glob_search`,
 `search_files`, `repository_map`, `find_symbol`, `list_project_structure`,
-`list_symbols`, `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
+`list_symbols`, `go_to_definition`, `find_references`, `code_diagnostics`,
+`git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
 
 **Writing** — `edit_file`, `replace_file_lines`, `write_to_file`,
-`create_directory`, `move_file`, `delete_file`
+`replace_symbol`, `create_directory`, `move_file`, `delete_file`
 
 **Commands** — `run_bash_command` plus cancellable background processes via
 `start_process`, `process_output`, `list_processes`, and `stop_process`; off by
@@ -84,12 +93,28 @@ default, see below.
 
 Before every file mutation Apsara creates a recoverable checkpoint under
 `.apsara/checkpoints/`. Use `/undo` for the latest edit, `/checkpoints` to list
-snapshots, or `/undo <id>` to restore a specific one.
+snapshots, or `/undo <id>` to restore a specific one. `/diff` shows Git status
+plus staged and unstaged patches before you accept or undo a change.
+
+Every agent turn also owns an atomic checkpoint under `.apsara/turns/`.
+`/turns` lists completed and interrupted turns, while `/undo-turn [id]` restores
+all captured paths from one turn. Built-in file tools are captured lazily;
+before an enabled command runs, Apsara snapshots the workspace up to 100 MB
+(excluding dependency, build, Git, and Apsara state directories). Set
+`APSARA_TURN_SNAPSHOT_MAX_MB` to change that ceiling. Set
+`APSARA_ROLLBACK_FAILED_TURNS=1` to automatically roll back changed turns that
+end failed or blocked; the default preserves work for review.
 
 `edit_file` is the primary editing tool: it replaces an exact snippet of text
 and refuses ambiguous or missing matches, so an edit can't silently land in the
 wrong place after earlier changes shift the file. `replace_file_lines` still
 exists for the rare case with no unique text to match on.
+
+`replace_symbol` uses an AST or Tree-sitter source span to replace one complete
+definition and refuses ambiguous or pattern-only matches. Every source edit is
+followed by a fast syntax check. The agent can request a full project diagnostic
+separately; Apsara selects Pyright, `tsc`, `go test`, or `cargo check` from the
+project manifest and installed tools.
 
 Every write shows a diff preview and asks for approval. In the prompt, `Enter`
 approves, `n` rejects, `a` approves the rest of the session, `v` shows the full
@@ -179,7 +204,9 @@ apsara trust --reset   # revoke them all
 ## Configuration
 
 Settings resolve in this order: CLI flags → project `.apsara/config.toml` →
-global `~/.apsara/config.toml` → `.env`.
+global `~/.apsara/config.toml` → built-in defaults. A project `.env` is read
+only for an explicit allowlist of provider credential keys; repository files
+cannot change token limits, fallbacks, pricing paths, or provider endpoints.
 
 ```toml
 [defaults]
@@ -208,11 +235,16 @@ different provider for confidential repositories. `--model` and the config
 file can still select any supported LiteLLM model.
 
 For provider resilience, set a comma-separated fallback chain. Apsara switches
-only when a request fails before emitting output:
+only when a request fails before emitting output. A free or local model will
+only fall back automatically to another known free/local model, so a temporary
+outage cannot silently create a provider bill:
 
 ```bash
-export APSARA_FALLBACK_MODELS="openai/gpt-5-mini,anthropic/claude-sonnet-4-5"
+export APSARA_FALLBACK_MODELS="ollama/llama3.2,groq/llama-3.3-70b-versatile"
 ```
+
+Paid models remain available through `--model` or `/model`; Apsara shows a
+billing warning and requires confirmation before an interactive switch.
 
 Useful flags:
 
@@ -233,18 +265,57 @@ stays on disk.
 
 The budget is derived from the selected model's context window, so a
 200k-window model gets a far larger working set than a 32k one. `/status` shows
-the current usage against both. Override it with `APSARA_INPUT_TOKEN_BUDGET` if
-you want to trade cost for memory, and cap the agent's per-turn tool calls with
-`APSARA_MAX_STEPS`.
+the current usage against both. `APSARA_INPUT_TOKEN_BUDGET` may lower the
+working budget, but it cannot exceed the selected model's safety allowance or
+the global 128k input ceiling. Cap per-turn tool calls with `APSARA_MAX_STEPS`.
+
+Token counts are provider-reported and aggregated across every model call in an
+agent turn, including automatic conversation summaries. If a streaming provider
+omits usage—or a call is interrupted—Apsara keeps a separate local estimate and
+never adds it to provider-reported totals or cost. These counters measure session
+telemetry and context capacity, not an Apsara fee, secure quota, or billing ledger.
+The provider dashboard remains authoritative.
+
+Big Pickle currently displays `$0.0000 promo`, based on OpenCode's temporary-free
+listing verified on 2026-08-09. Promotional pricing expires from Apsara's trusted
+snapshot after 30 days unless re-verified, so the CLI cannot silently claim that a
+temporary model stays free forever. Local models remain `$0`; when current pricing
+is unavailable Apsara displays `provider billed` instead of inventing a cost.
+
+Usage totals persist with named sessions and are restored when a session is
+reopened. The CLI separates input, output, cache-read, cache-write, and reasoning
+tokens when the provider reports those fields. Provider rate-limit counters and
+reset times also appear in `/status` and the TUI sidebar when available.
+`/usage` provides a local-only rollup for the current session, saved sessions,
+and each model. It reads editable local JSON files and never uploads telemetry;
+deleting or modifying those files changes the local display but cannot alter the
+provider's metering, limits, or invoice.
+
+For paid models, Apsara calculates a directional cost from provider-reported
+tokens and LiteLLM's maintained public list-price metadata. That metadata is
+cached under `~/.apsara/pricing.json` and refreshed in the background every 24
+hours. The UI marks these amounts as `list` because free quotas, negotiated
+rates, batching, regional pricing, taxes, and provider-side rounding can make
+the final invoice different. Missing pricing remains `provider billed`; Apsara
+never substitutes an invented rate.
 
 Each turn also writes an append-only event trace and typed run state beneath
 `.apsara/runs/`. `/report` exports the latest run as Markdown. Durable project
 facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
 `/memory add <note>` to manage them.
 
+`apsara eval evals/coding-core.json --live` runs disposable Python, TypeScript,
+Go, and Rust coding tasks and scores verification, edit scope, tool efficiency,
+and tokens. Saved `results.json` evidence can be re-scored offline with
+`--results`; see [the evaluation strategy](docs/EVALUATION_STRATEGY.md).
+
 In chat, `/help` lists the complete command surface, including `/details`,
 `/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,
-`/stop`, `/undo`, `/memory`, `/report`, `/save`, and `/bug`.
+`/stop`, `/diff`, `/turns`, `/undo-turn`, `/undo`, `/usage`, `/memory`,
+`/report`, `/save`, and `/bug`.
+
+In the full-screen TUI, press `Ctrl+C` while a turn is running to cancel that
+turn without closing Apsara. Press it again while idle to exit.
 
 ## Extending with local plugins
 

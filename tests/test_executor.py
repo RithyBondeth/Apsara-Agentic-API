@@ -120,7 +120,7 @@ def test_stream_error_aborts():
 
 
 def test_stream_error_falls_back_before_output(monkeypatch):
-    monkeypatch.setenv("APSARA_FALLBACK_MODELS", "backup/model")
+    monkeypatch.setenv("APSARA_FALLBACK_MODELS", "ollama/llama3.2")
     seen = []
 
     async def fake(messages, model):
@@ -133,9 +133,48 @@ def test_stream_error_falls_back_before_output(monkeypatch):
     with patch.object(executor, "call_llm_stream", fake):
         events = _run([{"role": "user", "content": "hi"}])
 
-    assert seen == [executor.DEFAULT_MODEL, "backup/model"]
+    assert seen == [executor.DEFAULT_MODEL, "ollama/llama3.2"]
     assert events[-1]["type"] == "final_answer"
     assert any("falling back" in e.get("message", "") for e in events)
+
+
+def test_free_model_never_falls_back_to_paid_or_unknown(monkeypatch):
+    monkeypatch.setenv("APSARA_FALLBACK_MODELS", "gpt-4o,custom/maybe-paid")
+    seen = []
+
+    async def fake(messages, model):
+        seen.append(model)
+        yield {"type": "stream_error", "error": "primary unavailable"}
+
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "hi"}])
+
+    assert seen == [executor.DEFAULT_MODEL]
+    assert events[-1]["type"] == "error"
+    assert not any("falling back" in e.get("message", "") for e in events)
+    assert any("Skipped paid or unknown" in e.get("message", "") for e in events)
+
+
+def test_usage_event_identifies_the_model_that_generated_it():
+    fake, _ = _scripted_llm([[_final_event("Done.", usage={"total_tokens": 12})]])
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "hi"}])
+
+    usage = next(e["data"] for e in events if e["type"] == "usage")
+    assert usage["apsara_model"] == executor.DEFAULT_MODEL
+    assert usage["provider_reported_calls"] == 1
+
+
+def test_missing_provider_usage_is_kept_as_separate_estimate():
+    fake, _ = _scripted_llm([[_final_event("Done.")]])
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "estimate_request_tokens", return_value=321):
+        events = _run([{"role": "user", "content": "hi"}])
+
+    usage = next(e["data"] for e in events if e["type"] == "usage")
+    assert usage["estimated_input_tokens"] == 321
+    assert usage["unreported_calls"] == 1
+    assert usage.get("total_tokens", 0) == 0
 
 
 def test_repeated_erroring_tool_calls_trigger_blocked():

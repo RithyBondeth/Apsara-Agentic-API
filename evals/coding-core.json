@@ -1,0 +1,48 @@
+{
+  "kind": "coding-benchmark",
+  "schema_version": 1,
+  "name": "apsara-coding-core",
+  "description": "Small deterministic repository tasks covering correctness, constrained edits, tool efficiency, and token use.",
+  "cases": [
+    {
+      "name": "python-order-preserving-dedupe",
+      "language": "python",
+      "fixture": "fixtures/python-order-preserving-dedupe",
+      "instruction": "Fix the implementation so all tests pass. Preserve first-seen order, handle generators, and do not modify the tests.",
+      "verify": [["python3", "-m", "unittest", "-q"]],
+      "allowed_changes": ["dedupe.py"],
+      "max_tool_calls": 12,
+      "max_tokens": 50000
+    },
+    {
+      "name": "typescript-safe-chunking",
+      "language": "typescript",
+      "fixture": "fixtures/typescript-safe-chunking",
+      "instruction": "Fix chunk.mjs so the Node test suite passes, including invalid sizes and trailing items. Do not modify tests.",
+      "verify": [["node", "test.mjs"]],
+      "allowed_changes": ["chunk.mjs"],
+      "max_tool_calls": 12,
+      "max_tokens": 50000
+    },
+    {
+      "name": "go-normalize-tags",
+      "language": "go",
+      "fixture": "fixtures/go-normalize-tags",
+      "instruction": "Fix NormalizeTags so tests pass. Normalize whitespace and case, remove empty and duplicate tags, and preserve first-seen order. Do not edit tests.",
+      "verify": [["go", "test", "./..."]],
+      "allowed_changes": ["tags.go"],
+      "max_tool_calls": 12,
+      "max_tokens": 50000
+    },
+    {
+      "name": "rust-validated-port",
+      "language": "rust",
+      "fixture": "fixtures/rust-validated-port",
+      "instruction": "Fix parse_port so the Rust tests pass. Accept only trimmed numeric ports from 1 through 65535. Do not modify tests.",
+      "verify": [["cargo", "test", "--quiet"]],
+      "allowed_changes": ["src/lib.rs"],
+      "max_tool_calls": 12,
+      "max_tokens": 50000
+    }
+  ]
+}

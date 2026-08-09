@@ -82,6 +82,13 @@ def _chunk(content=None, tool_calls=None, usage=None):
     return chunk
 
 
+def _usage_only_chunk(usage):
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(model_dump=lambda: usage),
+    )
+
+
 def _tc(index, call_id=None, name=None, arguments=None):
     function = SimpleNamespace(name=name, arguments=arguments)
     return SimpleNamespace(index=index, id=call_id, function=function)
@@ -93,10 +100,13 @@ def test_call_llm_stream_aggregates_text_and_tool_calls():
         _chunk(content="lo"),
         _chunk(tool_calls=[_tc(0, call_id="c1", name="read_file", arguments='{"path":')]),
         _chunk(tool_calls=[_tc(0, arguments='"a.txt"}')]),
-        _chunk(usage={"total_tokens": 42}),
+        _usage_only_chunk({"total_tokens": 42}),
     ]
 
+    request = {}
+
     async def fake_acompletion(**kwargs):
+        request.update(kwargs)
         async def gen():
             for c in chunks:
                 yield c
@@ -112,6 +122,7 @@ def test_call_llm_stream_aggregates_text_and_tool_calls():
     done = next(e for e in events if e["type"] == "stream_done")
     assert done["content"] == "Hello"
     assert done["usage"] == {"total_tokens": 42}
+    assert request["stream_options"] == {"include_usage": True}
     assert done["tool_calls"] is not None
     assert len(done["tool_calls"]) == 1
 
@@ -120,6 +131,21 @@ def test_call_llm_stream_aggregates_text_and_tool_calls():
     assert tool_call["function"]["name"] == "read_file"
     # Arguments streamed across two deltas are concatenated.
     assert tool_call["function"]["arguments"] == '{"path":"a.txt"}'
+
+
+def test_rate_limit_headers_are_normalized_without_other_headers():
+    response = SimpleNamespace(_hidden_params={"additional_headers": {
+        "llm_provider-x-ratelimit-remaining-requests": "42",
+        "x-ratelimit-remaining-tokens": "9000",
+        "llm_provider-x-ratelimit-reset-requests": "2s",
+        "llm_provider-authorization": "secret",
+    }})
+
+    assert llm._rate_limits_from_response(response) == {
+        "remaining_requests": "42",
+        "remaining_tokens": "9000",
+        "reset": "2s",
+    }
 
 
 def test_call_llm_stream_retries_on_rate_limit():

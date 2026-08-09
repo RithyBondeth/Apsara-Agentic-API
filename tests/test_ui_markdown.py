@@ -1,4 +1,4 @@
-from apsara_cli.shared.ui import ConsoleUI
+from apsara_cli.shared.ui import ConsoleUI, describe_action
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
 
 from apsara_cli.cli.tui import TuiConsoleUI, _approval_footer, _approval_text, _restore_history
@@ -69,7 +69,8 @@ def test_tui_uses_the_same_padded_markdown_card():
     assert "▌" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
-    assert max(len(line) for line in ui.lines) <= 76
+    assert ui.content_width() == 80
+    assert max(len(line) for line in ui.lines) == 80
 
 
 def test_tui_user_turn_has_a_clear_role_label():
@@ -84,7 +85,97 @@ def test_tui_user_turn_has_a_clear_role_label():
     assert "you" in output
 
 
-def test_native_approval_overlay_renders_diff_and_shortcuts():
+def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 800,
+        "completion_tokens": 200,
+        "total_tokens": 1000,
+        "apsara_model": "opencode/big-pickle",
+    })
+
+    assert ui.calculate_session_cost() == 0.0
+    assert "$0.0000 promo" in capsys.readouterr().out
+
+
+def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 800,
+        "completion_tokens": 200,
+        "total_tokens": 1000,
+        "apsara_model": "custom/paid-model",
+    })
+
+    assert ui.calculate_session_cost() is None
+    output = capsys.readouterr().out
+    assert "provider billed" in output
+    assert "$0.0100" not in output
+
+
+def test_aggregated_usage_costs_each_model_without_double_counting(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 150,
+        "completion_tokens": 50,
+        "total_tokens": 200,
+        "model_usage": {
+            "opencode/big-pickle": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+            },
+            "ollama/llama3.2": {
+                "prompt_tokens": 50,
+                "completion_tokens": 0,
+                "total_tokens": 50,
+            },
+        },
+    })
+
+    assert ui._session_total_tokens == 200
+    assert ui.calculate_session_cost() == 0.0
+    capsys.readouterr()
+
+
+def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 30,
+        "total_tokens": 130,
+        "prompt_tokens_details": {"cached_tokens": 40},
+        "completion_tokens_details": {"reasoning_tokens": 10},
+        "rate_limits": {"remaining_requests": "9", "reset": "3s"},
+        "apsara_model": "opencode/big-pickle",
+    })
+    output = capsys.readouterr().out
+    assert "in 100 · out 30 · cached 40 · reasoning 10" in output
+    assert "9 requests left · reset 3s" in output
+
+    restored = ConsoleUI(use_color=False, typing_delay=0)
+    restored.restore_usage(ui.usage_snapshot())
+    assert restored._session_total_tokens == 130
+    assert restored._session_cached_tokens == 40
+    assert restored._session_reasoning_tokens == 10
+    assert restored.rate_limit_label() == "9 requests left · reset 3s"
+
+
+def test_unreported_usage_stays_separate_from_provider_totals(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "estimated_input_tokens": 900,
+        "unreported_calls": 1,
+        "apsara_model": "opencode/big-pickle",
+    })
+
+    assert ui._session_total_tokens == 0
+    assert ui._session_estimated_tokens == 900
+    assert ui.usage_snapshot()["unreported_calls"] == 1
+    assert "~900 estimated input/unreported" in capsys.readouterr().out
+
+
+def test_inline_approval_card_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     approval = {
         "action": "edit file",
@@ -105,6 +196,16 @@ def test_native_approval_overlay_renders_diff_and_shortcuts():
     assert "n/esc  deny" in footer
     assert "a  always allow" in footer
     assert "v full diff" in footer
+
+
+def test_bash_approval_includes_command_and_working_directory():
+    title, preview, *_ = describe_action(
+        "run_bash_command",
+        {"command": "pytest -q", "cwd": "/workspace"},
+    )
+
+    assert title == "Run command"
+    assert preview == "$ pytest -q\n  in /workspace"
 
 
 def test_restored_history_shows_conversation_but_hides_tool_internals():

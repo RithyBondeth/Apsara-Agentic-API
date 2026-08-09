@@ -202,6 +202,9 @@ def describe_action(
     if action == "undo_checkpoint":
         return (f"Restore checkpoint {payload.get('checkpoint_id', 'latest')}?", None, None, None, None, None)
 
+    if action == "undo_turn":
+        return (f"Roll back agent turn {payload.get('turn_id', 'latest')}?", None, None, None, None, None)
+
     if action == "remember_project_note":
         return ("Save this note to project memory?", str(payload.get("note", "")), None, None, None, None)
 
@@ -265,6 +268,22 @@ class ConsoleUI:
         self._session_prompt_tokens: int = 0
         self._session_completion_tokens: int = 0
         self._session_total_tokens: int = 0
+        self._session_cached_tokens: int = 0
+        self._session_cache_creation_tokens: int = 0
+        self._session_reasoning_tokens: int = 0
+        self._session_estimated_tokens: int = 0
+        self._session_provider_reported_calls: int = 0
+        self._session_unreported_calls: int = 0
+        self._session_interrupted_calls: int = 0
+        self._session_auxiliary_calls: int = 0
+        self._session_model_usage: dict[str, dict[str, Any]] = {}
+        self._latest_rate_limits: dict[str, Any] = {}
+        self._session_cost_usd: float = 0.0
+        self._session_has_unpriced_usage: bool = False
+        self._session_uses_list_pricing: bool = False
+        self._session_uses_promotional_pricing: bool = False
+        self._context_tokens: int = 0
+        self._context_budget: int = 0
 
         self.spinner_message = "Apsara is working"
         self.spinner_stop_event = threading.Event()
@@ -744,23 +763,177 @@ class ConsoleUI:
             display = session_path
         self.print_line(f"  {self.dim(f'  ↳ saved · {display}')}")
 
-    def calculate_session_cost(self) -> float:
-        return (self._session_total_tokens / 1000) * 0.01
+    def calculate_session_cost(self) -> Optional[float]:
+        """Known session cost, or None if any provider pricing is unknown."""
+        if self._session_has_unpriced_usage:
+            return None
+        return self._session_cost_usd
+
+    def session_cost_label(self) -> str:
+        cost = self.calculate_session_cost()
+        if cost is None:
+            return "provider billed"
+        if self._session_uses_promotional_pricing and self._session_uses_list_pricing:
+            suffix = " mixed"
+        elif self._session_uses_promotional_pricing:
+            suffix = " promo"
+        else:
+            suffix = " list" if self._session_uses_list_pricing else ""
+        return f"${cost:.4f}{suffix}"
+
+    def set_context_usage(self, tokens: int, budget: int) -> None:
+        self._context_tokens = max(0, int(tokens))
+        self._context_budget = max(0, int(budget))
+
+    def usage_snapshot(self) -> dict[str, Any]:
+        return {
+            "prompt_tokens": self._session_prompt_tokens,
+            "completion_tokens": self._session_completion_tokens,
+            "total_tokens": self._session_total_tokens,
+            "cached_tokens": self._session_cached_tokens,
+            "cache_creation_tokens": self._session_cache_creation_tokens,
+            "reasoning_tokens": self._session_reasoning_tokens,
+            "estimated_input_tokens": self._session_estimated_tokens,
+            "provider_reported_calls": self._session_provider_reported_calls,
+            "unreported_calls": self._session_unreported_calls,
+            "interrupted_calls": self._session_interrupted_calls,
+            "auxiliary_calls": self._session_auxiliary_calls,
+            "model_usage": self._session_model_usage,
+            "rate_limits": self._latest_rate_limits,
+        }
+
+    def restore_usage(self, usage_data: dict[str, Any]) -> None:
+        """Restore persisted counters without printing another turn summary."""
+        from apsara_cli.engine.usage import normalize_usage
+
+        data = normalize_usage(usage_data)
+        self._session_prompt_tokens = data["prompt_tokens"]
+        self._session_completion_tokens = data["completion_tokens"]
+        self._session_total_tokens = data["total_tokens"]
+        self._session_cached_tokens = data["cached_tokens"]
+        self._session_cache_creation_tokens = data["cache_creation_tokens"]
+        self._session_reasoning_tokens = data["reasoning_tokens"]
+        self._session_estimated_tokens = data["estimated_input_tokens"]
+        self._session_provider_reported_calls = data["provider_reported_calls"]
+        self._session_unreported_calls = data["unreported_calls"]
+        self._session_interrupted_calls = data["interrupted_calls"]
+        self._session_auxiliary_calls = data["auxiliary_calls"]
+        raw_models = usage_data.get("model_usage")
+        self._session_model_usage = {
+            str(model): normalize_usage(tokens)
+            for model, tokens in raw_models.items()
+            if isinstance(tokens, dict)
+        } if isinstance(raw_models, dict) else {}
+        self._latest_rate_limits = (
+            dict(usage_data["rate_limits"])
+            if isinstance(usage_data.get("rate_limits"), dict) else {}
+        )
+        self._recalculate_session_cost()
+
+    def _recalculate_session_cost(self) -> None:
+        from apsara_cli.engine.pricing import pricing_for_model, usage_cost
+
+        self._session_cost_usd = 0.0
+        self._session_has_unpriced_usage = False
+        self._session_uses_list_pricing = False
+        self._session_uses_promotional_pricing = False
+        for model, tokens in self._session_model_usage.items():
+            if not tokens.get("total_tokens"):
+                continue
+            known_cost = usage_cost(model, tokens)
+            _prices, source = pricing_for_model(model)
+            if source.startswith("temporary provider promotion"):
+                self._session_uses_promotional_pricing = True
+            elif source not in {"local model", "Apsara model registry"}:
+                self._session_uses_list_pricing = True
+            if known_cost is None:
+                self._session_has_unpriced_usage = True
+            else:
+                self._session_cost_usd += known_cost
+
+    def rate_limit_label(self) -> str:
+        limits = self._latest_rate_limits
+        parts = []
+        if limits.get("remaining_requests") is not None:
+            parts.append(f"{limits['remaining_requests']} requests left")
+        if limits.get("remaining_tokens") is not None:
+            parts.append(f"{limits['remaining_tokens']} tokens left")
+        reset = limits.get("reset") or limits.get("retry_after")
+        if reset:
+            parts.append(f"reset {reset}")
+        return " · ".join(parts)
 
     def usage(self, usage_data: dict[str, Any]) -> None:
-        p = usage_data.get("prompt_tokens") or 0
-        c = usage_data.get("completion_tokens") or 0
-        t = usage_data.get("total_tokens") or 0
+        from apsara_cli.engine.usage import add_usage, normalize_usage
+
+        normalized = normalize_usage(usage_data)
+        p = normalized["prompt_tokens"]
+        c = normalized["completion_tokens"]
+        t = normalized["total_tokens"]
         self._session_prompt_tokens     += p
         self._session_completion_tokens += c
         self._session_total_tokens      += t
+        self._session_cached_tokens += normalized["cached_tokens"]
+        self._session_cache_creation_tokens += normalized["cache_creation_tokens"]
+        self._session_reasoning_tokens += normalized["reasoning_tokens"]
+        self._session_estimated_tokens += normalized["estimated_input_tokens"]
+        self._session_provider_reported_calls += normalized["provider_reported_calls"]
+        self._session_unreported_calls += normalized["unreported_calls"]
+        self._session_interrupted_calls += normalized["interrupted_calls"]
+        self._session_auxiliary_calls += normalized["auxiliary_calls"]
+        if normalized.get("rate_limits"):
+            self._latest_rate_limits = normalized["rate_limits"]
+
+        model_usage = usage_data.get("model_usage")
+        if not isinstance(model_usage, dict):
+            model = usage_data.get("apsara_model")
+            model_usage = {model: usage_data} if model else {}
+        for model, tokens in model_usage.items():
+            if not isinstance(tokens, dict):
+                continue
+            model_total = int(tokens.get("total_tokens") or 0)
+            model_estimated = int(
+                tokens.get("estimated_input_tokens") or tokens.get("estimated_tokens") or 0
+            )
+            if model_total <= 0 and model_estimated <= 0:
+                continue
+            target = self._session_model_usage.setdefault(str(model), {})
+            add_usage(target, tokens)
+        self._recalculate_session_cost()
 
         st = self._session_total_tokens
         session_short = f"{st / 1000:.1f}K" if st >= 1000 else str(st)
-        cost = self.calculate_session_cost()
+        details = [f"in {p:,}", f"out {c:,}"]
+        if normalized["cached_tokens"]:
+            details.append(f"cached {normalized['cached_tokens']:,}")
+        if normalized["cache_creation_tokens"]:
+            details.append(f"cache write {normalized['cache_creation_tokens']:,}")
+        if normalized["reasoning_tokens"]:
+            details.append(f"reasoning {normalized['reasoning_tokens']:,}")
+        if normalized["estimated_input_tokens"]:
+            details.append(
+                f"~{normalized['estimated_input_tokens']:,} estimated input/unreported"
+            )
+        self.print_line(f"    {self.dim(' · '.join(details))}")
         self.print_line(
-            f"    {self.dim(f'{t:,} tok · session {session_short} · ${cost:.4f}')}"
+            f"    {self.dim(f'{t:,} tok · session {session_short} · {self.session_cost_label()}')}"
         )
+        if self.rate_limit_label():
+            self.print_line(f"    {self.dim('limit · ' + self.rate_limit_label())}")
+
+    def record_interrupted_usage(self, estimated_tokens: int, model: str) -> None:
+        """Persist an honest local estimate for a call cancelled mid-stream."""
+        from apsara_cli.engine.usage import add_usage
+
+        data = {
+            "estimated_input_tokens": max(0, int(estimated_tokens)),
+            "unreported_calls": 1,
+            "interrupted_calls": 1,
+        }
+        self._session_estimated_tokens += data["estimated_input_tokens"]
+        self._session_unreported_calls += 1
+        self._session_interrupted_calls += 1
+        add_usage(self._session_model_usage.setdefault(str(model), {}), data)
 
     # ── Assistant message ─────────────────────────────────────────────────────
 

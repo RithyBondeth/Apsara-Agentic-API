@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 
@@ -32,6 +33,18 @@ class ModelEntry:
     env_var: Optional[str]  # Primary env var needed, None for local
     notes: str              # One-line description shown in /models
     aliases: list[str] = field(default_factory=list)  # Short names, e.g. ["sonnet"]
+    input_cost_per_million: Optional[float] = None
+    output_cost_per_million: Optional[float] = None
+    cache_read_cost_per_million: Optional[float] = None
+    cache_write_cost_per_million: Optional[float] = None
+    lifecycle: str = "active"  # active | deprecated | retiring | retired
+    shutdown_date: Optional[str] = None
+    replacement: Optional[str] = None
+    supports_tools: bool = True
+    supports_streaming: bool = True
+    promotional_pricing: bool = False
+    pricing_verified_on: Optional[str] = None
+    pricing_source_url: Optional[str] = None
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -47,9 +60,24 @@ MODELS: list[ModelEntry] = [
         env_var="OPENCODE_API_KEY",
         notes="Reasoning coding model; free temporarily (avoid confidential code)",
         aliases=["big-pickle", "pickle"],
+        input_cost_per_million=0.0,
+        output_cost_per_million=0.0,
+        promotional_pricing=True,
+        pricing_verified_on="2026-08-09",
+        pricing_source_url="https://opencode.ai/docs/zen",
     ),
 
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────
+    ModelEntry(
+        model_id="groq/openai/gpt-oss-120b",
+        display_name="GPT OSS 120B",
+        provider="groq",
+        tier="free",
+        context_window=131_072,
+        env_var="GROQ_API_KEY",
+        notes="Groq-hosted open-weight reasoning and coding model",
+        aliases=["gpt-oss", "oss-120b"],
+    ),
     ModelEntry(
         model_id="groq/llama-3.3-70b-versatile",
         display_name="Llama 3.3 70B",
@@ -59,6 +87,9 @@ MODELS: list[ModelEntry] = [
         env_var="GROQ_API_KEY",
         notes="Fast, general-purpose — default model",
         aliases=["llama", "llama70b", "llama-70b"],
+        lifecycle="retiring",
+        shutdown_date="2026-08-16",
+        replacement="groq/openai/gpt-oss-120b",
     ),
     ModelEntry(
         model_id="groq/deepseek-r1-distill-llama-70b",
@@ -69,6 +100,8 @@ MODELS: list[ModelEntry] = [
         env_var="GROQ_API_KEY",
         notes="Reasoning model, high speed via Groq",
         aliases=["r1-groq", "deepseek-r1-groq"],
+        lifecycle="retired",
+        shutdown_date="2025-10-02",
     ),
 
     # ── OpenAI (paid) ─────────────────────────────────────────────────────────
@@ -113,6 +146,11 @@ MODELS: list[ModelEntry] = [
         env_var="ANTHROPIC_API_KEY",
         notes="Anthropic's best balanced model for coding",
         aliases=["sonnet", "claude-sonnet", "claude"],
+        input_cost_per_million=3.0,
+        output_cost_per_million=15.0,
+        cache_read_cost_per_million=0.30,
+        cache_write_cost_per_million=3.75,
+        lifecycle="deprecated",
     ),
     ModelEntry(
         model_id="anthropic/claude-3-5-haiku-20241022",
@@ -123,6 +161,11 @@ MODELS: list[ModelEntry] = [
         env_var="ANTHROPIC_API_KEY",
         notes="Fast and affordable Claude",
         aliases=["haiku", "claude-haiku"],
+        input_cost_per_million=0.80,
+        output_cost_per_million=4.0,
+        cache_read_cost_per_million=0.08,
+        cache_write_cost_per_million=1.0,
+        lifecycle="deprecated",
     ),
 
     # ── Google Gemini (free quota + paid) ─────────────────────────────────────
@@ -135,6 +178,9 @@ MODELS: list[ModelEntry] = [
         env_var="GEMINI_API_KEY",
         notes="Latest Gemini Flash, 1M context, free quota",
         aliases=["gemini-flash", "flash", "gemini2"],
+        lifecycle="retired",
+        shutdown_date="2026-06-01",
+        replacement="gemini/gemini-2.5-flash",
     ),
     ModelEntry(
         model_id="gemini/gemini-1.5-pro",
@@ -145,6 +191,11 @@ MODELS: list[ModelEntry] = [
         env_var="GEMINI_API_KEY",
         notes="Massive 2M context window, advanced reasoning",
         aliases=["gemini-pro", "pro"],
+        input_cost_per_million=1.25,
+        output_cost_per_million=5.0,
+        cache_read_cost_per_million=0.3125,
+        cache_write_cost_per_million=1.25,
+        lifecycle="deprecated",
     ),
 
     # ── Mistral (paid but affordable) ─────────────────────────────────────────
@@ -234,6 +285,77 @@ def resolve_model_id(name: str) -> str:
     """
     entry = lookup_model(name)
     return entry.model_id if entry else name
+
+
+def model_lifecycle(entry: ModelEntry, today: date | None = None) -> str:
+    """Return lifecycle status, enforcing a registered shutdown date."""
+    if entry.shutdown_date:
+        try:
+            if (today or date.today()) >= date.fromisoformat(entry.shutdown_date):
+                return "retired"
+        except ValueError:
+            pass
+    return entry.lifecycle
+
+
+def model_availability(entry: ModelEntry, today: date | None = None) -> tuple[bool, str]:
+    """Whether Apsara can safely select this model, plus a user-facing reason."""
+    lifecycle = model_lifecycle(entry, today)
+    replacement = f" Use {entry.replacement} instead." if entry.replacement else ""
+    if lifecycle == "retired":
+        date_note = f" on {entry.shutdown_date}" if entry.shutdown_date else ""
+        return False, f"{entry.display_name} was retired{date_note}.{replacement}"
+    if not entry.supports_streaming or not entry.supports_tools:
+        missing = []
+        if not entry.supports_streaming:
+            missing.append("streaming")
+        if not entry.supports_tools:
+            missing.append("tool calling")
+        return False, f"{entry.display_name} does not support {' and '.join(missing)} required by Apsara."
+    if lifecycle == "retiring":
+        return True, f"{entry.display_name} retires on {entry.shutdown_date}.{replacement}"
+    if lifecycle == "deprecated":
+        return True, f"{entry.display_name} is deprecated.{replacement}"
+    return True, ""
+
+
+def model_usage_cost(
+    model: str, prompt_tokens: int, completion_tokens: int
+) -> Optional[float]:
+    """Return known provider cost, or None when pricing is not registered.
+
+    Apsara never invents a blended token price. Local models have no provider
+    token charge, and Big Pickle's explicit zero pricing is stored above.
+    """
+    from apsara_cli.engine.pricing import usage_cost
+
+    return usage_cost(model, {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    })
+
+
+def model_price_label(model: str) -> str:
+    """Short honest pricing label for model-selection surfaces."""
+    entry = lookup_model(model)
+    if entry is None:
+        return "pricing unknown"
+    if entry.tier == "local":
+        return "$0 provider cost"
+    if entry.input_cost_per_million == 0 and entry.output_cost_per_million == 0:
+        return "$0"
+    if entry.tier == "paid":
+        from apsara_cli.engine.pricing import pricing_for_model
+
+        prices, _source = pricing_for_model(model)
+        if prices:
+            return (
+                f"${prices['input'] * 1_000_000:g}/${prices['output'] * 1_000_000:g} "
+                "per 1M in/out"
+            )
+        return "paid · pricing unavailable"
+    return "free quota · provider limits apply"
 
 
 # ── Key hints ────────────────────────────────────────────────────────────────
@@ -326,6 +448,6 @@ def provider_env_var(provider: str) -> Optional[str]:
 
 
 def default_model_for_provider(provider: str) -> Optional[str]:
-    """The default (first-listed) model_id for *provider*, or None if unknown."""
+    """The first active compatible model for *provider*, or None if unavailable."""
     models = models_for_provider(provider)
-    return models[0].model_id if models else None
+    return next((entry.model_id for entry in models if model_availability(entry)[0]), None)

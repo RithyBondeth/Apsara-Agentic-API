@@ -2,8 +2,8 @@ import json
 import os
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator
-from apsara_cli.engine.llm import call_llm_stream
-from apsara_cli.engine.models import DEFAULT_MODEL
+from apsara_cli.engine.llm import call_llm_stream, estimate_request_tokens
+from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model, model_availability
 from apsara_cli.engine.runtime import RunJournal
 from apsara_cli.engine.tools import classify_tool_risk, execute_tool_async, get_mcp_manager
 from apsara_cli.shared.types import AgentRun, AgentRunState, ToolResult
@@ -28,12 +28,33 @@ def _max_steps() -> int:
     return max(1, min(value, 100))
 
 
+def _fallback_allowed(primary: str, candidate: str) -> bool:
+    primary_entry = lookup_model(primary)
+    candidate_entry = lookup_model(candidate)
+    if candidate_entry is not None and not model_availability(candidate_entry)[0]:
+        return False
+    if primary_entry is None or primary_entry.tier not in {"free", "local"}:
+        return True
+    return candidate_entry is not None and candidate_entry.tier in {"free", "local"}
+
+
+def _configured_fallbacks() -> list[str]:
+    return [
+        item.strip()
+        for item in os.environ.get("APSARA_FALLBACK_MODELS", "").split(",")
+        if item.strip()
+    ]
+
+
 def _model_candidates(primary: str) -> list[str]:
-    """Primary model followed by unique APSARA_FALLBACK_MODELS entries."""
+    """Return fallbacks that cannot silently turn a free run into a bill.
+
+    Free/local primaries may only auto-fallback to another known free/local
+    model. Paid and unknown candidates still work when selected explicitly.
+    """
     candidates = [primary]
-    for item in os.environ.get("APSARA_FALLBACK_MODELS", "").split(","):
-        candidate = item.strip()
-        if candidate and candidate not in candidates:
+    for candidate in _configured_fallbacks():
+        if candidate not in candidates and _fallback_allowed(primary, candidate):
             candidates.append(candidate)
     return candidates
 
@@ -65,6 +86,8 @@ async def run_agent_stream(
         workspace=str(_workspace_root()),
     )
     journal = RunJournal(_workspace_root(), run)
+    from apsara_cli.engine.turn_checkpoints import activate_turn_checkpoint
+    activate_turn_checkpoint(run.run_id)
     plan_steps = [
         ("inspect", "Understand the request and repository context"),
         ("implement", "Make the smallest complete set of changes"),
@@ -135,9 +158,32 @@ async def run_agent_stream(
     verification_nudged = False
     verification_capable = _bash_enabled()
     model_candidates = _model_candidates(model)
+    primary_entry = lookup_model(model)
+    if primary_entry is not None:
+        primary_allowed, primary_health = model_availability(primary_entry)
+        if not primary_allowed:
+            journal.transition(AgentRunState.FAILED, primary_health)
+            yield json.dumps({"type": "error", "message": primary_health})
+            return
+        if primary_health:
+            yield json.dumps({"type": "warning", "message": primary_health})
+    blocked_fallbacks = [
+        candidate
+        for candidate in _configured_fallbacks()
+        if candidate != model and not _fallback_allowed(model, candidate)
+    ]
+    if blocked_fallbacks:
+        yield json.dumps({
+            "type": "warning",
+            "message": (
+                "Skipped paid or unknown automatic fallback(s) from this free model: "
+                f"{', '.join(dict.fromkeys(blocked_fallbacks))}. "
+                "Select one explicitly with /model if you accept provider billing."
+            ),
+        })
     active_model_index = 0
     mutation_tools = {
-        "write_to_file", "edit_file", "replace_file_lines", "delete_file",
+        "write_to_file", "edit_file", "replace_file_lines", "replace_symbol", "delete_file",
         "move_file", "create_directory",
     }
 
@@ -168,6 +214,9 @@ async def run_agent_stream(
                         full_content = event["content"]
                         tool_calls = event["tool_calls"]
                         usage = event["usage"]
+                        if event.get("rate_limits"):
+                            usage = dict(usage or {})
+                            usage["rate_limits"] = event["rate_limits"]
 
                     elif etype == "retry_notice":
                         yield json.dumps({"type": "status", "message": f"Provider busy — retrying in {event['delay']}s."})
@@ -192,7 +241,18 @@ async def run_agent_stream(
             return
 
         if usage:
-            yield json.dumps({"type": "usage", "data": usage})
+            usage = dict(usage)
+            usage["provider_reported_calls"] = 1
+        else:
+            # Some OpenAI-compatible providers omit the final usage-only
+            # streaming chunk. Keep a separate local estimate without
+            # pretending it is provider billing data.
+            usage = {
+                "estimated_input_tokens": estimate_request_tokens(messages, model=active_model),
+                "unreported_calls": 1,
+            }
+        usage["apsara_model"] = active_model
+        yield json.dumps({"type": "usage", "data": usage})
 
         assistant_dict: Dict[str, Any] = {"role": "assistant", "content": full_content}
 
@@ -233,7 +293,11 @@ async def run_agent_stream(
                     "tool_call_id": tool_call["id"],
                 })
 
-                tool_result_str = await execute_tool_async(tool_name, arguments)
+                try:
+                    tool_result_str = await execute_tool_async(tool_name, arguments)
+                except asyncio.CancelledError:
+                    journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
+                    raise
                 typed_result = ToolResult.from_text(tool_result_str)
                 journal.tool_result(tool_name, typed_result, arguments, classify_tool_risk(tool_name).value)
 

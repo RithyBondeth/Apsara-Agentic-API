@@ -9,6 +9,7 @@ Apsara ships as the `apsara-agentic` Python package and is installed with
 cd Apsara-Agentic-Cli
 python -m pip install -e ".[dev,release]"
 python -m pytest            # all tests green
+python scripts/pipx_smoke.py # after `python -m build --wheel`
 apsara doctor --live        # environment and selected provider are healthy
 git diff --check
 ```
@@ -52,6 +53,10 @@ python -m venv /tmp/apsara-pypi
 /tmp/apsara-pypi/bin/pip install apsara-agentic==<version>
 /tmp/apsara-pypi/bin/apsara doctor --no-live --no-color
 ```
+
+CI repeats the complete `pipx` lifecycle on macOS, Linux, and Windows with the
+oldest and newest supported Python versions: wheel install, first-run `init`,
+missing-provider/optional-dependency guidance, upgrade, and uninstall.
 
 ## 4. Tag and announce the release
 

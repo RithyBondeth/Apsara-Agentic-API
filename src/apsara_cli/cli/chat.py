@@ -25,6 +25,7 @@ from apsara_cli.cli.session import (
     get_session_path,
     list_sessions,
     load_session_messages,
+    load_session_usage,
     sanitize_session_name,
     save_session_messages,
 )
@@ -37,6 +38,9 @@ from apsara_cli.engine.models import (
     format_context_window,
     is_key_available,
     lookup_model,
+    model_availability,
+    model_lifecycle,
+    model_price_label,
     providers_in_order,
     resolve_model_id,
 )
@@ -119,6 +123,12 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
     entry = lookup_model(raw_name)
 
     if entry:
+        selectable, health_message = model_availability(entry)
+        if not selectable:
+            ui.error(health_message)
+            return current_model
+        if health_message:
+            ui.warning(health_message)
         ctx = format_context_window(entry.context_window)
         has_key = is_key_available(entry)
         ui.print_line()
@@ -127,6 +137,19 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
             f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
             f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
         )
+        ui.print_line(f"  {ui.dim(model_price_label(entry.model_id))}")
+        if entry.tier == "paid" and resolved != current_model:
+            ui.warning(
+                f"{entry.display_name} is a paid model. Requests may be billed by "
+                f"{entry.provider.capitalize()} at its current rates."
+            )
+            ui.print_line(
+                f"  {ui.badge('y  switch', '17', '48;2;80;170;140')}  "
+                f"{ui.badge('n  cancel', '17', '48;2;120;100;80')}"
+            )
+            if ui.read_single_key() not in {"y", "Y"}:
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return current_model
         if entry.tier == "local":
             ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
         elif has_key:
@@ -176,8 +199,19 @@ def _switch_model(raw_name: str, current_model: str, options: "ResolvedOptions",
                 )
         ui.print_line()
     else:
-        # Unknown model — allow it but warn
-        ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+        # Unknown models may be billable, so interactive switches require the
+        # same explicit consent as known paid entries.
+        ui.warning(
+            f"'{raw_name}' is not in the built-in registry. Its pricing is unknown "
+            "and the provider may bill requests."
+        )
+        ui.print_line(
+            f"  {ui.badge('y  switch', '17', '48;2;80;170;140')}  "
+            f"{ui.badge('n  cancel', '17', '48;2;120;100;80')}"
+        )
+        if resolved != current_model and ui.read_single_key() not in {"y", "Y"}:
+            ui.info("Model switch cancelled — continuing with the current model.")
+            return current_model
 
     if resolved != current_model:
         ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
@@ -332,6 +366,7 @@ def build_model_rows(
             name_text  = ui.style(entry.display_name, *name_style)
             tier_badge = ui.style(f"[{tier_label}]", tier_color)
             ctx_text   = ui.dim(f"{ctx} ctx")
+            lifecycle = model_lifecycle(entry)
 
             if has_key or entry.tier == "local":
                 key_text = ui.style("✓ key set", "38;2;120;200;150")
@@ -342,11 +377,19 @@ def build_model_rows(
             if entry.aliases:
                 aliases_hint = "  " + ui.dim("alias: " + ", ".join(entry.aliases[:3]))
 
+            if lifecycle == "retired":
+                health_text = ui.style("[retired]", "38;2;235;110;100")
+            elif lifecycle in {"retiring", "deprecated"}:
+                health_text = ui.style(f"[{lifecycle}]", "38;2;247;200;100")
+            else:
+                health_text = ""
+
             line = (
-                f"{status_icon} {name_text}  {tier_badge}  {ctx_text}  {key_text}  "
+                f"{status_icon} {name_text}  {tier_badge}  "
+                f"{health_text}  {ui.dim(model_price_label(entry.model_id))}  {ctx_text}  {key_text}  "
                 f"{ui.dim(entry.model_id)}{aliases_hint}"
             )
-            provider_rows.append((line, entry.model_id))
+            provider_rows.append((line, entry.model_id if lifecycle != "retired" else None))
 
         if provider_rows:
             rows.append((ui.style(provider.upper(), "1", "38;2;190;200;220"), None))
@@ -372,12 +415,16 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Session", [
         ("/status", "", "Token usage, context health, session cost"),
+        ("/usage", "", "Local token totals by model and saved session"),
         ("/save", "", "Save the current session now"),
         ("/session", "", "Show session and workspace details"),
         ("/sessions", "", "List all saved sessions"),
         ("/sessions", "clear [name]", "Delete all sessions, or one by name"),
     ]),
     ("Workspace", [
+        ("/diff", "", "Show Git status plus staged and unstaged changes"),
+        ("/turns", "", "List atomic checkpoints grouped by agent turn"),
+        ("/undo-turn", "[turn-id]", "Roll back every captured change from one turn"),
         ("/checkpoints", "", "List automatic file snapshots"),
         ("/undo", "[checkpoint-id]", "Restore the latest or selected snapshot"),
         ("/memory", "show", "Show persistent project memory"),
@@ -449,10 +496,44 @@ def handle_chat_command(
         ui.show_hidden_events()
         return True, current_model
 
+    if command_text == "/diff":
+        from apsara_cli.engine.workspace_diff import workspace_diff
+        result = workspace_diff(options.workspace_root)
+        if result.startswith("Error"):
+            ui.error(result)
+        else:
+            ui.info("Git workspace changes")
+            ui.print_block(result)
+        return True, current_model
+
+    if command_text == "/usage":
+        from apsara_cli.engine.usage_reports import format_usage_report
+        snapshot = ui.usage_snapshot() if hasattr(ui, "usage_snapshot") else {}
+        ui.info("Usage summary")
+        ui.print_block(format_usage_report(options.workspace_root, snapshot))
+        return True, current_model
+
     if command_text == "/checkpoints":
         from apsara_cli.engine.tools import list_workspace_checkpoints
         with agent_runtime_context(workspace_root=options.workspace_root):
             ui.info(list_workspace_checkpoints())
+        return True, current_model
+
+    if command_text == "/turns":
+        from apsara_cli.engine.tools import list_turn_checkpoints_tool
+        with agent_runtime_context(workspace_root=options.workspace_root):
+            ui.info(list_turn_checkpoints_tool())
+        return True, current_model
+
+    if command_text == "/undo-turn" or command_text.startswith("/undo-turn "):
+        from apsara_cli.engine.tools import undo_turn_checkpoint
+        turn_id = command_text[len("/undo-turn"):].strip()
+        if not ui.confirm_action("undo_turn", {"turn_id": turn_id or "latest"}):
+            ui.info("Turn rollback cancelled.")
+            return True, current_model
+        with agent_runtime_context(workspace_root=options.workspace_root, read_only=options.read_only):
+            result = undo_turn_checkpoint(turn_id)
+        (ui.error if result.startswith("Error:") else ui.success)(result)
         return True, current_model
 
     if command_text == "/undo" or command_text.startswith("/undo "):
@@ -858,7 +939,6 @@ def handle_chat_command(
         session_label = (
             sanitize_session_name(options.session) if not options.stateless else "stateless"
         )
-        cost = ui.calculate_session_cost()
 
         if pct < 70:
             health_color = "38;2;120;200;150"
@@ -894,7 +974,27 @@ def handle_chat_command(
             f"{ui.style(f'{tokens:,}', health_color)} "
             f"{ui.dim(f'/ {budget:,} budget  ({pct}%  {health_label}){window_note}')}"
         )
-        ui.print_line(f"  {ui.dim('  cost     ')} {ui.style(f'${cost:.4f}', '38;2;120;200;150')} {ui.dim('(est. session total)')}")
+        ui.print_line(
+            f"  {ui.dim('  cost     ')} "
+            f"{ui.style(ui.session_cost_label(), '38;2;120;200;150')} "
+            f"{ui.dim('(local estimate; provider dashboard is authoritative)')}"
+        )
+        ui.print_line(
+            f"  {ui.dim('  usage    ')} "
+            f"{ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', '38;2;220;216;210')}"
+        )
+        if ui._session_estimated_tokens:
+            ui.print_line(
+                f"  {ui.dim('  estimated')} "
+                f"{ui.style(f'~{ui._session_estimated_tokens:,} input tokens · {ui._session_unreported_calls} unreported call(s)', '38;2;247;200;100')}"
+            )
+        if ui._session_cached_tokens or ui._session_cache_creation_tokens or ui._session_reasoning_tokens:
+            ui.print_line(
+                f"  {ui.dim('  details  ')} "
+                f"{ui.style(f'cached {ui._session_cached_tokens:,} · cache write {ui._session_cache_creation_tokens:,} · reasoning {ui._session_reasoning_tokens:,}', '38;2;220;216;210')}"
+            )
+        if ui.rate_limit_label():
+            ui.print_line(f"  {ui.dim('  limits   ')} {ui.dim(ui.rate_limit_label())}")
         ui.print_line()
         return True, current_model
 
@@ -1026,8 +1126,20 @@ async def execute_instruction(
 
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
-    latest_usage = None
+    aggregate_usage: Optional[dict[str, Any]] = None
+    turn_checkpoint_id: Optional[str] = None
     ui.begin_turn()
+
+    def merge_usage(data: dict[str, Any]) -> None:
+        nonlocal aggregate_usage
+        from apsara_cli.engine.usage import add_usage, normalize_usage
+
+        if aggregate_usage is None:
+            aggregate_usage = {"model_usage": {}}
+        add_usage(aggregate_usage, data)
+        usage_model = str(data.get("apsara_model") or model)
+        by_model = aggregate_usage["model_usage"].setdefault(usage_model, {})
+        add_usage(by_model, normalize_usage(data))
 
     with agent_runtime_context(
         workspace_root=options.workspace_root,
@@ -1043,6 +1155,9 @@ async def execute_instruction(
         trust_callback=ui.confirm_action,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
+        if trim_result.auxiliary_usage:
+            merge_usage(trim_result.auxiliary_usage)
+        ui.set_context_usage(trim_result.trimmed_tokens, input_token_budget(model))
         if trim_result.dropped_turns:
             ui.warning(
                 f"Trimmed {trim_result.dropped_turns} earlier turn(s) "
@@ -1058,20 +1173,56 @@ async def execute_instruction(
             # Use the trimmed history (including summary) for the rest of this turn
             next_history = list(trim_result.request_history)
 
-        async for chunk_str in run_agent_stream(next_history, model=model):
-            event = json.loads(chunk_str)
-            if event.get("type") == "usage":
-                latest_usage = event.get("data")
-            else:
-                print_event(event, ui)
-                update_history_from_event(next_history, event)
+        try:
+            async for chunk_str in run_agent_stream(next_history, model=model):
+                event = json.loads(chunk_str)
+                if event.get("run_id"):
+                    turn_checkpoint_id = str(event["run_id"])
+                if event.get("type") == "usage":
+                    merge_usage(event.get("data") or {})
+                else:
+                    print_event(event, ui)
+                    update_history_from_event(next_history, event)
+        except asyncio.CancelledError:
+            # Completed calls may already have provider totals; retain them,
+            # then record the in-flight request separately as an estimate.
+            if aggregate_usage:
+                ui.usage(aggregate_usage)
+            ui.record_interrupted_usage(trim_result.trimmed_tokens, model)
+            save_if_needed(history, model, options, ui)
+            raise
 
+    if turn_checkpoint_id:
+        try:
+            from apsara_cli.engine.turn_checkpoints import list_turn_checkpoints
+            manifest = next(
+                (item for item in list_turn_checkpoints(options.workspace_root)
+                 if item.get("id") == turn_checkpoint_id),
+                None,
+            )
+            if manifest and manifest.get("changes"):
+                ui.info(f"Turn checkpoint {turn_checkpoint_id} · rollback with /undo-turn {turn_checkpoint_id}")
+                ui.print_block("\n".join(
+                    f"{change.get('action', 'changed'):>8}  {change.get('path', '')}"
+                    for change in manifest["changes"]
+                ))
+        except (OSError, ValueError):
+            pass
+
+    from apsara_cli.engine.executor import SYSTEM_PROMPT
+    from apsara_cli.engine.llm import estimate_request_tokens
+
+    current_tokens = estimate_request_tokens(
+        [{"role": "system", "content": SYSTEM_PROMPT}] + next_history,
+        model=model,
+    )
+    ui.set_context_usage(current_tokens, input_token_budget(model))
     entry = lookup_model(model)
     ui.finish_turn(
         model_label=entry.display_name if entry else model.split("/")[-1],
         mode=turn_mode_word(options),
     )
-    return next_history, latest_usage
+    return next_history, aggregate_usage
 
 
 def save_if_needed(
@@ -1087,6 +1238,7 @@ def save_if_needed(
         session_name=options.session,
         model=model,
         messages=history,
+        usage=ui.usage_snapshot() if hasattr(ui, "usage_snapshot") else {},
     )
     ui.session_saved(session_path)
 
@@ -1108,6 +1260,7 @@ async def run_once(args: object, config: object) -> int:
 
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
 
     async with mcp_session(config, options, ui):
         updated_history, latest_usage = await execute_instruction(
@@ -1118,9 +1271,9 @@ async def run_once(args: object, config: object) -> int:
             ui=ui,
         )
 
-    save_if_needed(updated_history, options.model, options, ui)
     if latest_usage and latest_usage.get("total_tokens") is not None:
         ui.usage(latest_usage)
+    save_if_needed(updated_history, options.model, options, ui)
 
     return 0
 
@@ -1146,6 +1299,7 @@ async def chat_loop(args: object, config: object) -> int:
 
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
 
     print_welcome_banner(ui, config)
 
@@ -1317,8 +1471,8 @@ async def chat_loop(args: object, config: object) -> int:
                 ui=ui,
             )
 
-            save_if_needed(history, current_model, options, ui)
             if latest_usage and latest_usage.get("total_tokens") is not None:
                 ui.usage(latest_usage)
+            save_if_needed(history, current_model, options, ui)
 
         return 0

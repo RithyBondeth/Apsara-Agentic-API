@@ -113,3 +113,4 @@ class ContextTrimResult:
     original_tokens: int
     trimmed_tokens: int
     summary: Optional[str] = None
+    auxiliary_usage: Optional[dict[str, Any]] = None

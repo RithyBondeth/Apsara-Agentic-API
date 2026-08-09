@@ -1,7 +1,20 @@
 import argparse
+import sys
 from typing import Optional, Sequence
 
 from apsara_cli.config.cli_config import DEFAULT_CONFIG_PATH
+
+
+def _configure_output_streams() -> None:
+    """Keep Unicode UI glyphs from crashing legacy Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -104,9 +117,16 @@ def build_parser() -> argparse.ArgumentParser:
     trust_parser.add_argument("--no-color", dest="color", action="store_false",
                               help="Disable colored terminal output.")
 
-    eval_parser = subparsers.add_parser("eval", help="Score recorded agent runs against a JSON regression suite.")
+    eval_parser = subparsers.add_parser("eval", help="Score recorded runs or execute coding benchmark suites.")
     eval_parser.add_argument("suite", help="Path to an evaluation suite JSON file.")
     eval_parser.add_argument("--workspace", default=None, help="Workspace containing .apsara/runs.")
+    eval_parser.add_argument("--live", action="store_true", default=False,
+                             help="Run coding benchmark cases with the configured model (uses provider tokens).")
+    eval_parser.add_argument("--model", default=None, help="Model used by a live coding benchmark.")
+    eval_parser.add_argument("--output", default=None,
+                             help="Directory for disposable benchmark workspaces and result evidence.")
+    eval_parser.add_argument("--results", default=None,
+                             help="Re-score an existing benchmark results.json without provider calls.")
 
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
@@ -151,9 +171,35 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
         return trust_command(args, config)
     if args.command == "eval":
         from pathlib import Path
-        from apsara_cli.engine.evals import run_suite
+        from apsara_cli.engine.evals import (
+            is_benchmark_suite,
+            run_benchmark_suite,
+            run_suite,
+            score_benchmark_results,
+        )
+        suite_path = Path(args.suite).resolve()
+        if is_benchmark_suite(suite_path):
+            if args.results:
+                results = score_benchmark_results(suite_path, Path(args.results).resolve())
+            elif args.live:
+                output = Path(args.output or ".apsara/benchmarks")
+                results, results_path = await run_benchmark_suite(
+                    suite_path,
+                    output,
+                    args.model or config.defaults.model,
+                )
+                print(f"Evidence: {results_path}")
+            else:
+                print("Coding benchmark suites require --live or --results <results.json>.")
+                return 2
+            for result in results:
+                print(
+                    f"{'PASS' if result.passed else 'FAIL'} {result.name} "
+                    f"[{result.language}] {result.score}/100: {'; '.join(result.checks)}"
+                )
+            return 0 if all(result.passed for result in results) else 1
         workspace = Path(args.workspace or ".").resolve()
-        results = run_suite(Path(args.suite).resolve(), workspace)
+        results = run_suite(suite_path, workspace)
         for result in results:
             print(f"{'PASS' if result.passed else 'FAIL'} {result.name}: {'; '.join(result.checks)}")
         return 0 if all(result.passed for result in results) else 1
@@ -168,18 +214,20 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import asyncio
-    import sys
 
     from apsara_cli.config.cli_config import load_cli_config
     from apsara_cli.cli.options import load_cli_environment
     from apsara_cli.cli.auth import apply_credentials_to_env
 
+    _configure_output_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
         config = load_cli_config(args.config, getattr(args, "workspace", None))
         load_cli_environment(args, config)
+        from apsara_cli.engine.pricing import refresh_pricing_if_stale
+        refresh_pricing_if_stale()
         # Make stored BYO-key provider keys visible to LiteLLM (env/.env keys win).
         apply_credentials_to_env()
         return asyncio.run(dispatch_command(args, config))

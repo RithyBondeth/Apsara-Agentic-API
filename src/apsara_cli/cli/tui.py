@@ -70,13 +70,51 @@ from apsara_cli.cli.chat import (
 )
 from apsara_cli.cli.input import SlashCompleter
 from apsara_cli.cli.options import resolve_runtime_options
-from apsara_cli.cli.session import load_session_messages, sanitize_session_name
-from apsara_cli.engine.models import format_context_window, is_key_available, lookup_model
+from apsara_cli.cli.session import load_session_messages, load_session_usage, sanitize_session_name
+from apsara_cli.engine.models import (
+    format_context_window,
+    is_key_available,
+    lookup_model,
+    model_availability,
+    model_price_label,
+)
 from apsara_cli.shared.ui import ConsoleUI, Theme, describe_action, terminal_width
 
 # Accent / chrome colors (ANSI truecolor), kept in one place.
 _ACCENT = "38;2;96;150;250"      # blue left-bar / user accent
 _DIMTXT = "38;2;120;125;138"
+
+
+class TurnController:
+    """Own the worker event loop so the UI can cancel an active agent task."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._task: Optional[asyncio.Task] = None
+
+    def run(self, coroutine):
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(coroutine)
+        with self._lock:
+            self._loop = loop
+            self._task = task
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            with self._lock:
+                self._loop = None
+                self._task = None
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    def cancel(self) -> bool:
+        with self._lock:
+            loop, task = self._loop, self._task
+        if loop is None or task is None or task.done():
+            return False
+        loop.call_soon_threadsafe(task.cancel)
+        return True
 
 
 class TuiConsoleUI(ConsoleUI):
@@ -98,7 +136,7 @@ class TuiConsoleUI(ConsoleUI):
         self.native_confirmation_handler = None
 
     def content_width(self, fallback: Optional[int] = None) -> int:
-        """Size transcript panels to the pane, not the whole terminal."""
+        """Use the full conversation pane, stopping at the sidebar."""
         from apsara_cli.shared.ui import terminal_width
 
         columns = terminal_width()
@@ -108,9 +146,10 @@ class TuiConsoleUI(ConsoleUI):
             except Exception:
                 pass
         sidebar_width = 35 if self.sidebar_visible else 0
-        available = columns - sidebar_width - 6
-        preferred = fallback or self.theme.content_width
-        return max(16, min(preferred, max(16, available)))
+        available = max(16, columns - sidebar_width)
+        if fallback is not None:
+            return max(16, min(fallback, available))
+        return available
 
     def attach(self, app: Application) -> None:
         self.app = app
@@ -349,16 +388,36 @@ def _sidebar_text(
     lines(f"   {ui.style(session_started, _DIMTXT)}")
     lines("")
 
-    # Context: usage meter + tokens + cost.
+    # Context is current request capacity. Session tokens are cumulative usage.
     total = ui._session_total_tokens
+    context_tokens = ui._context_tokens
+    context_budget = ui._context_budget
     entry = lookup_model(current_model)
     lines(_section(ui, "◍", "Context", _C_CONTEXT))
-    if entry and entry.context_window:
-        pct = min(100, int(total / entry.context_window * 100))
+    if context_budget:
+        pct = min(100, int(context_tokens / context_budget * 100))
         lines(f"   {_meter(ui, pct)}")
-    tok_str = f"{total:,}" if total else "0"
-    lines(f"   {ui.style(tok_str, _C_VALUE)} {ui.style('tokens', _DIMTXT)}")
-    lines(f"   {ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')} {ui.style('spent', _DIMTXT)}")
+    lines(
+        f"   {ui.style(f'{context_tokens:,}', _C_VALUE)} "
+        f"{ui.style(f'/ {context_budget:,} context', _DIMTXT)}"
+    )
+    lines(f"   {ui.style(f'{total:,}', _C_VALUE)} {ui.style('session tokens', _DIMTXT)}")
+    if ui._session_estimated_tokens:
+        lines(
+            f"   {ui.style(f'~{ui._session_estimated_tokens:,}', '38;2;247;200;100')} "
+            f"{ui.style('estimated input · provider omitted usage', _DIMTXT)}"
+        )
+    lines(
+        f"   {ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', _DIMTXT)}"
+    )
+    if ui._session_cached_tokens or ui._session_cache_creation_tokens or ui._session_reasoning_tokens:
+        lines(
+            f"   {ui.style(f'cached {ui._session_cached_tokens:,} · cache write {ui._session_cache_creation_tokens:,}', _DIMTXT)}"
+        )
+        lines(f"   {ui.style(f'reasoning {ui._session_reasoning_tokens:,}', _DIMTXT)}")
+    lines(f"   {ui.style(ui.session_cost_label(), '38;2;130;210;160')} {ui.style('cost', _DIMTXT)}")
+    if ui.rate_limit_label():
+        lines(f"   {ui.style(ui.rate_limit_label(), _DIMTXT)}")
     lines("")
 
     # Model: name, provider · tier, context window, key status.
@@ -372,6 +431,7 @@ def _sidebar_text(
             f"   {ui.style(entry.provider.capitalize(), '38;2;190;200;220')}"
             f" {ui.style('·', _DIMTXT)} {ui.style(entry.tier, tier_color)}"
         )
+        lines(f"   {ui.style(model_price_label(entry.model_id), _DIMTXT)}")
         lines(f"   {ui.style(format_context_window(entry.context_window) + ' ctx', _DIMTXT)}")
         lines(
             f"   {ui.style('✓ key set', '38;2;120;200;150')}"
@@ -485,8 +545,11 @@ def _status_right(ui: TuiConsoleUI, options: Any, current_model: str) -> ANSI:
         "DRY-RUN": "48;2;112;84;35",
         "READ-ONLY": "48;2;105;72;38",
     }.get(mode, "48;2;78;64;122")
+    pct = ""
+    if ui._context_budget:
+        pct = f" ({min(100, int(ui._context_tokens / ui._context_budget * 100))}% ctx)"
     right = (
-        f"{ui.style(f'ctx {tok}/{context}', _DIMTXT)}  "
+        f"{ui.style(f'ctx {tok}/{context}{pct}', _DIMTXT)}  "
         f"{ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')}  "
         f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)} "
     )
@@ -565,6 +628,21 @@ def _restore_history(ui: TuiConsoleUI, history: list[dict[str, Any]]) -> None:
             ui.assistant(content)
 
 
+def _refresh_context_usage(
+    ui: TuiConsoleUI, history: list[dict[str, Any]], model: str
+) -> None:
+    """Keep the sidebar's capacity meter tied to the current request."""
+    from apsara_cli.cli.history import input_token_budget
+    from apsara_cli.engine.executor import SYSTEM_PROMPT
+    from apsara_cli.engine.llm import estimate_request_tokens
+
+    tokens = estimate_request_tokens(
+        [{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        model=model,
+    )
+    ui.set_context_usage(tokens, input_token_budget(model))
+
+
 async def tui_loop(args: object, config: object) -> int:
     options = resolve_runtime_options(args, config.defaults)
 
@@ -581,6 +659,8 @@ async def tui_loop(args: object, config: object) -> int:
     history: list[dict[str, Any]] = []
     if not options.stateless:
         history = load_session_messages(options.workspace_root, options.session)
+        ui.restore_usage(load_session_usage(options.workspace_root, options.session))
+    _refresh_context_usage(ui, history, options.model)
     session_label = sanitize_session_name(options.session) if not options.stateless else "stateless"
 
     # First run (nothing to resume) opens on the OpenCode-style welcome
@@ -589,6 +669,7 @@ async def tui_loop(args: object, config: object) -> int:
     state = {"model": options.model, "welcome": not history, "busy": False}
     # Preserve the transcript as the primary surface. Session details remain
     # one shortcut away but never shrink the conversation on launch.
+    turn_controller = TurnController()
     sidebar_state = {"visible": terminal_width() >= 110}
     ui.sidebar_visible = sidebar_state["visible"]
 
@@ -1146,11 +1227,13 @@ async def tui_loop(args: object, config: object) -> int:
             input_buffer.reset()
         return raw.strip() or None
 
-    async def _prompt_yes_no(question: str) -> bool:
+    async def _prompt_yes_no(
+        question: str, yes_label: str = "y  save", no_label: str = "n  session only"
+    ) -> bool:
         ui.lines.append(
             f"  {question}  "
-            f"{ui.badge('y  save', '17', '48;2;80;170;140')}  "
-            f"{ui.badge('n  session only', '17', '48;2;120;100;80')}"
+            f"{ui.badge(yes_label, '17', '48;2;80;170;140')}  "
+            f"{ui.badge(no_label, '17', '48;2;120;100;80')}"
         )
         keyprompt["future"] = asyncio.get_event_loop().create_future()
         keyprompt["mode"] = "yesno"
@@ -1173,10 +1256,26 @@ async def tui_loop(args: object, config: object) -> int:
         resolved = resolve_model_id(raw_name)
         entry = lookup_model(raw_name)
         if entry is None:
-            ui.warning(f"'{raw_name}' is not in the built-in registry (custom/unsupported model).")
+            ui.warning(
+                f"'{raw_name}' is not in the built-in registry. Its pricing is unknown "
+                "and the provider may bill requests."
+            )
+            if resolved != state["model"] and not await _prompt_yes_no(
+                "Switch to this custom model?", "y  switch", "n  cancel"
+            ):
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return state["model"]
             if resolved != state["model"]:
                 ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+            _refresh_context_usage(ui, history, resolved)
             return resolved
+
+        selectable, health_message = model_availability(entry)
+        if not selectable:
+            ui.error(health_message)
+            return state["model"]
+        if health_message:
+            ui.warning(health_message)
 
         ctx = format_context_window(entry.context_window)
         ui.print_line()
@@ -1185,6 +1284,18 @@ async def tui_loop(args: object, config: object) -> int:
             f"{ui.style(entry.display_name, '1', '38;2;220;225;240')}  "
             f"{ui.dim(entry.model_id)}  {ui.dim(ctx + ' ctx')}"
         )
+        ui.print_line(f"  {ui.dim(model_price_label(entry.model_id))}")
+        if entry.tier == "paid" and resolved != state["model"]:
+            ui.warning(
+                f"{entry.display_name} is a paid model. Requests may be billed by "
+                f"{entry.provider.capitalize()} at its current rates."
+            )
+            confirmed = await _prompt_yes_no(
+                "Switch to this paid model?", "y  switch", "n  cancel"
+            )
+            if not confirmed:
+                ui.info("Model switch cancelled — continuing with the current model.")
+                return state["model"]
         if entry.tier == "local":
             ui.print_line(f"  {ui.style('✓ local model — no API key required', '38;2;120;200;150')}")
         elif is_key_available(entry):
@@ -1215,6 +1326,7 @@ async def tui_loop(args: object, config: object) -> int:
 
         if resolved != state["model"]:
             ui.info(f"Switched to {ui.style(resolved, '1', '38;2;188;218;255')}")
+        _refresh_context_usage(ui, history, resolved)
         return resolved
 
     def _native_confirm(action: str, payload: dict[str, Any]) -> bool:
@@ -1251,8 +1363,12 @@ async def tui_loop(args: object, config: object) -> int:
 
     kb = KeyBindings()
 
-    @kb.add("c-c", filter=~approval_active)
+    @kb.add("c-c", filter=~approval_active & ~picker_active & ~kp_any)
     def _interrupt(event) -> None:
+        if state["busy"]:
+            if turn_controller.cancel():
+                ui.warning("Cancelling the active turn…")
+            return
         event.app.exit()
 
     @kb.add("c-d", filter=~approval_active)
@@ -1413,6 +1529,14 @@ async def tui_loop(args: object, config: object) -> int:
                 await _run_model_picker(text[len("/models"):].strip().lower())
                 return
 
+            if text.startswith("/model "):
+                raw_name = text[len("/model "):].strip()
+                if not raw_name:
+                    ui.error("Usage: /model <model-id-or-alias>")
+                    return
+                state["model"] = await _switch_model_tui(raw_name)
+                return
+
             if text.startswith("/"):
                 keep, new_model = handle_chat_command(
                     text, history, state["model"], options, config, ui
@@ -1425,12 +1549,19 @@ async def tui_loop(args: object, config: object) -> int:
             # execute_instruction drives begin_turn/finish_turn, which render the
             # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.
             def _run_agent_turn():
-                return asyncio.run(
+                return turn_controller.run(
                     execute_instruction(text, state["model"], list(history), options, ui)
                 )
 
-            new_history, _usage = await asyncio.to_thread(_run_agent_turn)
+            try:
+                new_history, usage = await asyncio.to_thread(_run_agent_turn)
+            except asyncio.CancelledError:
+                ui.stop_spinner()
+                ui.warning("Turn cancelled. Your previous conversation and file checkpoints are preserved.")
+                return
             history[:] = new_history
+            if usage and usage.get("total_tokens") is not None:
+                ui.usage(usage)
             save_if_needed(history, state["model"], options, ui)
         finally:
             state["busy"] = False

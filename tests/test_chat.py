@@ -82,6 +82,7 @@ class _RecordingUI:
     def style(self, text, *codes): return text
     def dim(self, text): return text
     def muted(self, text): return text
+    def print_block(self, text, *args): self._record(text)
     def info(self, text): self._record(f"INFO {text}")
     def success(self, text): self._record(f"OK {text}")
     def warning(self, text): self._record(f"WARN {text}")
@@ -91,6 +92,15 @@ class _RecordingUI:
     @property
     def text(self):
         return "\n".join(self.lines)
+
+
+class _ChoiceUI(_RecordingUI):
+    def __init__(self, choice):
+        super().__init__()
+        self.choice = choice
+
+    def read_single_key(self):
+        return self.choice
 
 
 @pytest.fixture
@@ -110,6 +120,40 @@ def _run_cmd(cmd, options, ui=None):
     ui = ui or _RecordingUI()
     keep, model = chat.handle_chat_command(cmd, [], "groq/llama-3.3-70b-versatile", options, object(), ui)
     return keep, model, ui
+
+
+def test_diff_and_usage_commands_render_local_reports(key_env):
+    keep, _model, diff_ui = _run_cmd("/diff", key_env)
+    assert keep is True
+    assert "Git workspace changes" in diff_ui.text
+
+    keep, _model, usage_ui = _run_cmd("/usage", key_env)
+    assert keep is True
+    assert "LOCAL USAGE" in usage_ui.text
+    assert "no usage data is uploaded" in usage_ui.text
+
+
+def test_paid_model_switch_requires_explicit_confirmation(key_env, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    ui = _ChoiceUI("n")
+
+    keep, model, ui = _run_cmd("/model gpt-4o", key_env, ui)
+
+    assert keep is True
+    assert model == "groq/llama-3.3-70b-versatile"
+    assert "paid model" in ui.text
+    assert "cancelled" in ui.text
+
+
+def test_paid_model_switch_proceeds_after_confirmation(key_env, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    ui = _ChoiceUI("y")
+
+    keep, model, ui = _run_cmd("/model gpt-4o", key_env, ui)
+
+    assert keep is True
+    assert model == "gpt-4o"
+    assert "paid model" in ui.text
 
 
 def test_key_list_shows_all_keyed_providers(key_env):
