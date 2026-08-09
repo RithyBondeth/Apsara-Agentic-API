@@ -12,7 +12,7 @@ cd Apsara-Agentic-Cli
 
 ## 2. Create a virtual environment
 
-Python 3.10 or newer is required.
+Python 3.10 through 3.14 is supported.
 
 ```bash
 python3 -m venv .venv
@@ -119,7 +119,7 @@ code that came from the project rather than from you.
 editable install didn't finish. Re-run step 3.
 
 **`Python 3.10+ is required`** — check `python3 --version`. On macOS the system
-`python3` is often 3.9; install a newer one (e.g. `brew install python@3.13`)
+`python3` is often 3.9; install a supported one (e.g. `brew install python@3.14`)
 and create the venv with that interpreter.
 
 **Old packaging tools break `pip install -e .`** —

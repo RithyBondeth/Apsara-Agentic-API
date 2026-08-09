@@ -46,7 +46,7 @@ provider-specific token and tool-call budgets.
 ## Release coverage targets
 
 - 100% of transaction restoration and scoring decision branches have tests.
-- All offline tests pass on Python 3.10–3.13, macOS and Ubuntu.
+- All offline tests pass on Python 3.10–3.14, macOS and Ubuntu.
 - Windows smoke packaging remains green.
 - Before a release candidate, run the live core suite with the default model
   and retain its `results.json` as release evidence.

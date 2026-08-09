@@ -56,6 +56,7 @@ The focus of this release is:
 
 ### Local CLI Workflow
 
+- tested on Python 3.10 through 3.14
 - `init` command for project-first setup
 - `doctor` command for environment checks
 - `chat`, `run`, and `sessions` commands

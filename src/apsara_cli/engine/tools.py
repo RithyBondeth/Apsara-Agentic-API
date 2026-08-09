@@ -555,13 +555,23 @@ def create_directory(path: str) -> str:
         resolved_path = _resolve_path(path)
         if resolved_path.exists() and resolved_path.is_dir():
             return f"Directory already exists: {_display_path(resolved_path)}"
-        
-        if _dry_run():
-            return f"[Dry Run] Successfully created directory: {_display_path(resolved_path)} (simulated)"
 
-        _checkpoint([resolved_path], f"Before creating directory {_display_path(resolved_path)}")
+        display = _display_path(resolved_path)
+        if not _confirm_action(
+            "create_directory",
+            {
+                "path": str(resolved_path),
+                "display_path": display,
+            },
+        ):
+            return f"Error creating directory: creation of '{display}' was not approved."
+
+        if _dry_run():
+            return f"[Dry Run] Successfully created directory: {display} (simulated)"
+
+        _checkpoint([resolved_path], f"Before creating directory {display}")
         resolved_path.mkdir(parents=True, exist_ok=True)
-        return f"Created directory: {_display_path(resolved_path)}"
+        return f"Created directory: {display}"
     except Exception as exc:
         return _format_exception("Error creating directory", exc)
 
@@ -1293,6 +1303,9 @@ def undo_last_checkpoint(checkpoint_id: str = "") -> str:
     """Restore a checkpoint, defaulting to the most recent snapshot."""
     if _read_only():
         return "Error: Undo is disabled in read-only mode."
+    requested = checkpoint_id or "latest"
+    if not _confirm_action("undo_checkpoint", {"checkpoint_id": requested}):
+        return f"Error: restore of checkpoint '{requested}' was not approved."
     from apsara_cli.engine.checkpoints import restore_checkpoint
 
     try:
@@ -1320,6 +1333,9 @@ def undo_turn_checkpoint(turn_id: str = "") -> str:
     """Restore every built-in file mutation from one agent turn."""
     if _read_only():
         return "Error: Turn rollback is disabled in read-only mode."
+    requested = turn_id or "latest"
+    if not _confirm_action("undo_turn", {"turn_id": requested}):
+        return f"Error: rollback of turn '{requested}' was not approved."
     from apsara_cli.engine.turn_checkpoints import restore_turn_checkpoint
 
     try:
@@ -1543,7 +1559,7 @@ def get_agent_tools() -> list[Dict[str, Any]]:
         ),
         _tool_definition(
             "create_directory",
-            "Create a directory (and any missing parent directories) inside the workspace.",
+            "Create a directory (and any missing parent directories) inside the workspace after user approval.",
             {
                 "path": {
                     "type": "string",
@@ -1708,13 +1724,13 @@ def get_agent_tools() -> list[Dict[str, Any]]:
         ),
         _tool_definition(
             "undo_last_checkpoint",
-            "Restore an automatic file checkpoint. Omit checkpoint_id to undo the latest mutation.",
+            "Restore an automatic file checkpoint after user approval. Omit checkpoint_id to undo the latest mutation.",
             {"checkpoint_id": {"type": "string", "description": "Optional checkpoint id."}},
         ),
         _tool_definition("list_turn_checkpoints_tool", "List atomic checkpoints grouped by agent turn.", {}),
         _tool_definition(
             "undo_turn_checkpoint",
-            "Roll back every captured file mutation from an agent turn.",
+            "Roll back every captured file mutation from an agent turn after user approval.",
             {"turn_id": {"type": "string", "description": "Optional turn/run id; defaults to latest."}},
         ),
         _tool_definition(

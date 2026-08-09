@@ -4,7 +4,7 @@ Welcome to the Apsara alpha test! Follow these steps to get the AI coding agent 
 
 ## 1. Installation
 
-Ensure you have **Python 3.10+**, **pipx**, and **Git** installed.
+Ensure you have **Python 3.10–3.14**, **pipx**, and **Git** installed.
 
 ```bash
 # Install the exact private-alpha build

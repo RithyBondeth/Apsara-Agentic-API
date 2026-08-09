@@ -111,6 +111,7 @@ DEFAULT_THEME = Theme()
 # changes. Unknown and newly added actions therefore require an explicit
 # decision until they have been reviewed here.
 _BLANKET_APPROVAL_ACTIONS = frozenset({
+    "create_directory",
     "write_to_file",
     "edit_file",
     "replace_file_lines",
@@ -159,6 +160,10 @@ def describe_action(
             payload.get("diff_editor") if isinstance(payload.get("diff_editor"), str) else None,
             path,
         )
+
+    if action == "create_directory":
+        path = payload.get("display_path") or payload.get("path", "<unknown>")
+        return (f"Create directory {path}", None, None, None, None, path)
 
     if action == "edit_file":
         path = payload.get("display_path") or payload.get("path", "<unknown>")
@@ -428,11 +433,11 @@ class ConsoleUI:
         from rich.markdown import Markdown
         from rich.text import Text
 
-        panel_width = width or self.content_width()
-        card_width = max(32, panel_width - 2)
-        body_width = max(29, card_width - 1)
-        horizontal_padding = 3
-        render_width = max(23, body_width - (horizontal_padding * 2))
+        panel_width = max(4, width or self.content_width())
+        card_width = max(2, panel_width - 2)
+        body_width = max(1, card_width - 1)
+        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
+        render_width = max(1, body_width - (horizontal_padding * 2))
         rendered = StringIO()
         console = Console(
             file=rendered,
@@ -467,7 +472,7 @@ class ConsoleUI:
         for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
             lines.append(card_line(line))
         lines.append(card_line(" " * render_width))
-        footer = f"apsara  {timestamp}".ljust(render_width)
+        footer = f"apsara  {timestamp}"[:render_width].ljust(render_width)
         if self.use_color:
             footer = self.style(footer, "38;2;132;136;146").replace(
                 "\033[0m", f"\033[0m\033[{background}m"

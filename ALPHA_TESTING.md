@@ -34,7 +34,7 @@ Start with 3 to 10 trusted testers who:
 
 Each tester should have:
 
-- Python 3.10 or newer
+- Python 3.10 through 3.14
 - a local terminal
 - an OpenCode Zen API key
 - a repo or sample project they can safely test on
@@ -187,7 +187,7 @@ Testers should know:
 - this is an alpha CLI, not a final public release
 - editable installation failures should include the Python and pip versions used
 - live model access depends on the tester's own API billing and rate limits
-- automated tests are still limited
+- live-provider tests are intentionally limited to avoid spending tester API credits
 
 ## 8. Feedback Template
 

@@ -92,6 +92,15 @@ _DIMTXT = "38;2;120;125;138"
 _PANEL_GUTTER = 3
 _SIDEBAR_CONTENT_WIDTH = 34
 _SIDEBAR_TOTAL_WIDTH = _SIDEBAR_CONTENT_WIDTH + (_PANEL_GUTTER * 2)
+_MIN_CONVERSATION_WIDTH = 20
+_MIN_CARD_PANEL_WIDTH = 8
+
+
+def _welcome_panel_width(columns: int) -> int:
+    """Keep the centered composer inside even very narrow terminals."""
+    columns = max(1, columns)
+    margin = min(16, max(4, columns // 5), max(columns - 1, 0))
+    return max(1, min(84, columns - margin))
 
 
 class TurnController:
@@ -159,19 +168,25 @@ class TuiConsoleUI(ConsoleUI):
 
     def content_width(self, fallback: Optional[int] = None) -> int:
         """Use the full conversation pane, stopping at the sidebar."""
-        from apsara_cli.shared.ui import terminal_width
+        columns = self.terminal_columns()
+        sidebar_width = (_SIDEBAR_TOTAL_WIDTH + 1) if self.sidebar_is_rendered() else 0
+        available = max(8, columns - sidebar_width)
+        if fallback is not None:
+            return max(8, min(fallback, available))
+        return available
 
+    def terminal_columns(self) -> int:
         columns = terminal_width()
         if self.app is not None:
             try:
                 columns = self.app.output.get_size().columns
             except Exception:
                 pass
-        sidebar_width = (_SIDEBAR_TOTAL_WIDTH + 1) if self.sidebar_visible else 0
-        available = max(16, columns - sidebar_width)
-        if fallback is not None:
-            return max(16, min(fallback, available))
-        return available
+        return max(1, columns)
+
+    def sidebar_is_rendered(self) -> bool:
+        required = _SIDEBAR_TOTAL_WIDTH + 1 + _MIN_CONVERSATION_WIDTH
+        return self.sidebar_visible and self.terminal_columns() >= required
 
     def attach(self, app: Application) -> None:
         self.app = app
@@ -195,10 +210,10 @@ class TuiConsoleUI(ConsoleUI):
 
     def _user_card_lines(self, card: "_ResponsiveCard", width: int) -> list[str]:
         """Reflow a user card against the conversation pane's live width."""
-        card_width = max(32, width - 2)
-        body_width = max(29, card_width - 1)
-        horizontal_padding = 3
-        inner_width = max(23, body_width - (horizontal_padding * 2))
+        card_width = max(2, width - 2)
+        body_width = max(1, card_width - 1)
+        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
+        inner_width = max(1, body_width - (horizontal_padding * 2))
         bar = self.style("▌", "1", _ACCENT)
         bg = "48;2;14;16;21"
 
@@ -227,7 +242,7 @@ class TuiConsoleUI(ConsoleUI):
     def rendered_lines(self) -> list[str]:
         """Expand responsive cards using the terminal's current dimensions."""
         rendered: list[str] = []
-        card_width = max(35, self.content_width() - 3)
+        card_width = max(_MIN_CARD_PANEL_WIDTH, self.content_width() - 3)
         for item in self.lines:
             if isinstance(item, _ResponsiveCard):
                 if item.rendered_width != card_width:
@@ -580,12 +595,14 @@ def _status_left(ui: TuiConsoleUI, options: Any) -> ANSI:
     from apsara_cli import __version__
 
     workspace = Path(options.workspace_root)
-    path_width = max(12, min(38, terminal_width() - 58))
+    columns = ui.terminal_columns()
+    path_width = max(8, min(38, columns - 58))
     label = _shorten_path(str(workspace), width=path_width)
+    workspace_label = "" if columns < 64 else f"  {ui.style(label, _C_WORKSPACE)}"
     return ANSI(
         f"{' ' * _PANEL_GUTTER}{ui.style('apsara', '1', '38;2;210;216;242')} "
-        f"{ui.style('v' + __version__, _DIMTXT)}  "
-        f"{ui.style(label, _C_WORKSPACE)}"
+        f"{ui.style('v' + __version__, _DIMTXT)}"
+        f"{workspace_label}"
     )
 
 
@@ -602,12 +619,19 @@ def _status_right(ui: TuiConsoleUI, options: Any, current_model: str) -> ANSI:
     pct = ""
     if ui._context_budget:
         pct = f" ({min(100, int(ui._context_tokens / ui._context_budget * 100))}% ctx)"
-    right = (
-        f"{ui.style(f'ctx {tok}/{context}{pct}', _DIMTXT)}  "
-        f"{ui.style(f'${ui.calculate_session_cost():.2f}', '38;2;130;210;160')}  "
-        f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)}"
-        f"{' ' * _PANEL_GUTTER}"
-    )
+    cost_label = ui.session_cost_label()
+    if ui.terminal_columns() < 64:
+        right = (
+            f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)}"
+            f"{' ' * _PANEL_GUTTER}"
+        )
+    else:
+        right = (
+            f"{ui.style(f'ctx {tok}/{context}{pct}', _DIMTXT)}  "
+            f"{ui.style(cost_label, '38;2;130;210;160')}  "
+            f"{ui.style(f' {mode} ', '1', '38;2;238;232;255', mode_color)}"
+            f"{' ' * _PANEL_GUTTER}"
+        )
     return ANSI(right)
 
 
@@ -645,19 +669,53 @@ def _approval_text(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
 
 
 def _approval_footer(ui: TuiConsoleUI, approval: dict[str, Any]) -> ANSI:
+    allow_always = approval.get("allow_always", not approval.get("is_trust"))
+    has_full_diff = approval.get("full") and approval.get("full") != approval.get("preview")
+    width = ui.content_width()
+    if width < 60:
+        # Account for the outer/card gutters so the deny key cannot be
+        # clipped off-screen on narrow terminals.
+        available = max(8, width - 12)
+        if available < 20:
+            hints = [
+                ui.style("↵", "1", "38;2;130;210;160") + " allow",
+                ui.style("n", "1", "38;2;225;125;115") + " deny",
+            ]
+            visible_length = len("↵ allow · n deny")
+        else:
+            hints = [
+                ui.style("enter", "1", "38;2;130;210;160") + " allow",
+                ui.style("n", "1", "38;2;225;125;115") + " deny",
+            ]
+            visible_length = len("enter allow · n deny")
+        optional: list[tuple[str, str]] = []
+        if allow_always:
+            optional.append(
+                (ui.style("a", "1", "38;2;120;165;235") + " always", "a always")
+            )
+        if has_full_diff:
+            optional.append(
+                (ui.style("v", "1", "38;2;190;150;250") + " diff", "v diff")
+            )
+        for styled_hint, visible_hint in optional:
+            candidate_length = visible_length + len(" · ") + len(visible_hint)
+            if candidate_length <= available:
+                hints.append(styled_hint)
+                visible_length = candidate_length
+        return ANSI(" · ".join(hints))
+
     hints = [
         ui.style(" enter ", "1", "38;2;18;24;20", "48;2;130;210;160")
         + ui.style(" allow once", "38;2;170;224;188"),
         ui.style(" n/esc ", "1", "38;2;30;18;18", "48;2;225;125;115")
         + ui.style(" deny", "38;2;242;172;164"),
     ]
-    allow_always = approval.get("allow_always", not approval.get("is_trust"))
     if allow_always:
         hints.append(
             ui.style(" a ", "1", "38;2;15;21;32", "48;2;120;165;235")
             + ui.style(" always allow", "38;2;166;198;246")
         )
-    if approval.get("full") and approval.get("full") != approval.get("preview"):
+    if has_full_diff:
         label = "preview" if approval.get("show_full") else "full diff"
         hints.append(ui.style("v", "1", "38;2;190;150;250") + ui.dim(f" {label}"))
     hints.append(ui.dim("↑↓ scroll"))
@@ -873,7 +931,7 @@ async def tui_loop(args: object, config: object) -> int:
                     if state["busy"]
                     else ui.style(
                         "enter send · esc+enter newline"
-                        if terminal_width() >= 100
+                        if ui.terminal_columns() >= 100
                         else "enter send",
                         _DIMTXT,
                     )
@@ -948,7 +1006,7 @@ async def tui_loop(args: object, config: object) -> int:
     # ── Chat layout: transcript + detail sidebar + boxed input + status bar ─
     def _transcript_container():
         conversation = HSplit([chat_window, approval_inline])
-        if sidebar_state["visible"]:
+        if sidebar_state["visible"] and ui.sidebar_is_rendered():
             return VSplit([
                 conversation,
                 Window(width=1, char="│", style="class:sep"),
@@ -966,9 +1024,10 @@ async def tui_loop(args: object, config: object) -> int:
     # ── Welcome layout: everything vertically centered, OpenCode-style ─────
     from apsara_cli import __version__
 
-    box_w = max(50, min(terminal_width() - 16, 84))
+    box_w = _welcome_panel_width(ui.terminal_columns())
+    box_dimension = Dimension(min=1, preferred=box_w, max=box_w)
     welcome_box, welcome_input_window = _make_input_box(
-        Dimension(min=1, preferred=1, max=4), width=box_w
+        Dimension(min=1, preferred=1, max=4), width=box_dimension
     )
 
     if terminal_width() >= logo_width() + 2:
@@ -1001,7 +1060,7 @@ async def tui_loop(args: object, config: object) -> int:
     )
     hints_row = VSplit([
         Window(),
-        Window(FormattedTextControl(hints_ansi, focusable=False), width=box_w, height=1),
+        Window(FormattedTextControl(hints_ansi, focusable=False), width=box_dimension, height=1),
         Window(),
     ], height=1)
 
@@ -1148,7 +1207,7 @@ async def tui_loop(args: object, config: object) -> int:
         search_color = "38;2;205;212;232" if query else _DIMTXT
         lines = [
             f" {ui.style('⌕', '38;2;140;180;255')} {ui.style(search, search_color)}",
-            f" {ui.style('─' * 52, '38;2;48;55;78')}",
+            f" {ui.style('─' * max(4, min(52, ui.content_width() - 6)), '38;2;48;55;78')}",
             "",
         ]
         lines.extend(
@@ -1181,7 +1240,7 @@ async def tui_loop(args: object, config: object) -> int:
             HSplit([picker_window, Window(height=1), picker_footer]),
             title="Select model",
             style="class:picker",
-            width=Dimension(min=48, preferred=64, max=72),
+            width=Dimension(min=1, preferred=64, max=72),
         ),
         filter=picker_active,
     )
