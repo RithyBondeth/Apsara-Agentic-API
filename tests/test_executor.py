@@ -119,6 +119,25 @@ def test_stream_error_aborts():
     assert state["calls"] == 1  # aborted immediately, no further steps
 
 
+def test_stream_error_falls_back_before_output(monkeypatch):
+    monkeypatch.setenv("APSARA_FALLBACK_MODELS", "backup/model")
+    seen = []
+
+    async def fake(messages, model):
+        seen.append(model)
+        if model == executor.DEFAULT_MODEL:
+            yield {"type": "stream_error", "error": "primary unavailable"}
+        else:
+            yield _final_event("Recovered.")
+
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "hi"}])
+
+    assert seen == [executor.DEFAULT_MODEL, "backup/model"]
+    assert events[-1]["type"] == "final_answer"
+    assert any("falling back" in e.get("message", "") for e in events)
+
+
 def test_repeated_erroring_tool_calls_trigger_blocked():
     # Every LLM turn returns the identical failing tool call.
     fake, state = _scripted_llm([[_tool_call_event()]])

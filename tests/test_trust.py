@@ -78,6 +78,26 @@ def test_plugin_loads_when_user_approves(tmp_path):
     assert registry["shout"]() == "SHOUTED"
 
 
+def test_plugin_manifest_can_disable_and_describe_tool(tmp_path):
+    workspace = _workspace_with_plugin(tmp_path)
+    manifest = workspace / ".apsara" / "tools" / "shout.json"
+    manifest.write_text('{"enabled": false, "permissions": []}', encoding="utf-8")
+    with agent_runtime_context(workspace_root=workspace, trust_callback=lambda action, payload: True):
+        assert "shout" not in get_tool_registry()
+
+    manifest.write_text(
+        '{"enabled": true, "description": "Manifest description", "permissions": ["read"]}',
+        encoding="utf-8",
+    )
+    tools_mod._plugin_cache.clear()
+    with agent_runtime_context(workspace_root=workspace, trust_callback=lambda action, payload: True):
+        registry = get_tool_registry()
+        definitions = tools_mod.get_agent_tools()
+    assert "shout" in registry
+    shout = next(item for item in definitions if item["function"]["name"] == "shout")
+    assert shout["function"]["description"] == "Manifest description"
+
+
 def test_auto_approve_does_not_imply_trust(tmp_path):
     """--auto-approve waives write confirmation, not code execution."""
     workspace = _workspace_with_plugin(tmp_path)

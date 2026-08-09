@@ -166,6 +166,21 @@ def _tool_result_summary(tool_name: str, result: str) -> tuple[bool, str]:
 def print_event(event: dict[str, Any], ui: "ConsoleUI") -> None:
     event_type = event.get("type")
 
+    if event_type == "plan":
+        steps = event.get("steps") or []
+        titles = [str(step.get("title", "")) for step in steps if isinstance(step, dict)]
+        ui.hide_event("plan", f"Plan · {len(titles)} steps", "\n".join(titles))
+        return
+
+    if event_type == "run_state":
+        state = str(event.get("state", ""))
+        if state == "verifying":
+            ui.update_spinner_action("Apsara is verifying")
+            ui.work_notice_shown = False
+            ui.note_working("Apsara is verifying")
+        ui.hide_event("state", f"Run state: {state}", str(event.get("objective", "")))
+        return
+
     if event_type == "retry_notice":
         delay = event.get("delay", 5)
         attempt = event.get("attempt", 1)

@@ -1,6 +1,78 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
+from time import time
 from typing import Any, Optional, Set
+from uuid import uuid4
+
+
+class AgentRunState(str, Enum):
+    CREATED = "created"
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    VERIFYING = "verifying"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ToolRisk(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+    EXTERNAL = "external"
+    DESTRUCTIVE = "destructive"
+
+
+@dataclass
+class ToolResult:
+    ok: bool
+    content: str = ""
+    error: Optional[str] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_text(self) -> str:
+        if self.ok:
+            return self.content
+        message = self.error or self.content or "Tool failed"
+        return message if message.lstrip().lower().startswith("error") else f"Error: {message}"
+
+    @classmethod
+    def from_text(cls, value: Any) -> "ToolResult":
+        text = str(value or "")
+        failed = text.lstrip().lower().startswith("error")
+        return cls(ok=not failed, content="" if failed else text, error=text if failed else None)
+
+
+@dataclass
+class AgentStep:
+    kind: str
+    title: str
+    status: str = "pending"
+    detail: str = ""
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+
+
+@dataclass
+class AgentRun:
+    objective: str
+    model: str
+    workspace: str
+    run_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    state: AgentRunState = AgentRunState.CREATED
+    steps: list[AgentStep] = field(default_factory=list)
+    started_at: float = field(default_factory=time)
+    finished_at: Optional[float] = None
+    changed_files: list[str] = field(default_factory=list)
+    verification: list[str] = field(default_factory=list)
+    error: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["state"] = self.state.value
+        return data
 
 
 @dataclass
