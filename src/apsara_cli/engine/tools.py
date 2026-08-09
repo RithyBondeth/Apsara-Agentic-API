@@ -301,7 +301,7 @@ def _load_local_plugins() -> list[dict[str, Any]]:
         ):
             print(
                 f"Skipped untrusted local plugin {py_file.name}. "
-                "Run `apsara chat` in this project to review and approve it."
+                "Run `apsara` in this project to review and approve it."
             )
             continue
 

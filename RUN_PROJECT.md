@@ -37,15 +37,18 @@ If you don't want the console script, the module form works too:
 python -m apsara_cli.cli.parser --help
 ```
 
-## 4. Add a provider key
+## 4. Start Apsara
 
 ```bash
-apsara login
+cd /path/to/some/project
+apsara
 ```
 
-Keys are stored in `~/.apsara/credentials.json` (owner-only). Alternatively, put
-provider variables in a `.env` file at the workspace root or export them — an
-explicitly exported variable always wins over the stored key.
+The full-screen UI opens immediately with `opencode/big-pickle` selected. If its
+key is missing, Apsara requests it inline on the first prompt. You can keep it
+for the session or store it in `~/.apsara/credentials.json` (owner-only).
+Alternatively, export the provider key or put it in a workspace `.env`; an
+explicitly exported variable always wins over stored credentials.
 
 ```env
 OPENCODE_API_KEY=your_opencode_zen_api_key
@@ -55,7 +58,7 @@ AGENT_ALLOWED_COMMANDS=pwd,ls,find,rg,cat,sed,head,tail,wc
 AGENT_MAX_FILE_SIZE_BYTES=1000000
 ```
 
-`opencode/big-pickle` is the default model. It is free for a limited period,
+Big Pickle is free for a limited period,
 but OpenCode states that submitted data may be used to improve the model during
 that period; do not use it with confidential repositories.
 
@@ -70,14 +73,21 @@ loading, workspace access, session storage, the tool list, MCP server status,
 and whether credentials for the selected model are present. Add `--live` to make
 a real model call as a final check (this spends tokens).
 
-## 6. Run it
+## 6. Optional project initialization
 
 ```bash
 cd /path/to/some/project
 apsara init      # sets up .apsara/ and opens chat
 ```
 
-Or without initializing:
+The bare command does not require initialization:
+
+```bash
+cd /path/to/some/project
+apsara
+```
+
+The explicit compatibility form remains available for scripts:
 
 ```bash
 apsara chat --workspace /path/to/some/project
@@ -129,7 +139,7 @@ python -m pip install --upgrade pip setuptools wheel
 ```
 
 **A local plugin or MCP server won't load** — it needs approval. Run
-`apsara chat` in that project once and approve it when prompted; the decision is
+`apsara` in that project once and approve it when prompted; the decision is
 recorded in `~/.apsara/trust.json`.
 
 ## Related docs

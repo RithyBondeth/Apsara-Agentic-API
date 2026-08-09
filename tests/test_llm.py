@@ -39,7 +39,7 @@ def test_call_llm_requires_auth():
         message, usage = _run(llm.call_llm([{"role": "user", "content": "hi"}]))
     assert isinstance(message, dict)
     assert "error" in message
-    assert "login" in message["error"].lower()
+    assert "start `apsara`" in message["error"].lower()
     assert usage == {}
 
 
@@ -70,7 +70,7 @@ def test_call_llm_stream_requires_auth():
         events = _drain(llm.call_llm_stream([{"role": "user", "content": "hi"}]))
     assert len(events) == 1
     assert events[0]["type"] == "stream_error"
-    assert "login" in events[0]["error"].lower()
+    assert "start `apsara`" in events[0]["error"].lower()
 
 
 def _chunk(content=None, tool_calls=None, usage=None):

@@ -9,6 +9,7 @@ from apsara_cli.cli.tui import (
     _restore_history,
     _status_right,
     _welcome_panel_width,
+    _model_needs_key,
 )
 from apsara_cli.shared.ui import ConsoleUI, describe_action
 
@@ -162,6 +163,16 @@ def test_tui_sidebar_is_enabled_by_default_on_wide_terminals():
     assert ui.sidebar_visible is True
     assert ui.sidebar_is_rendered() is True
     assert ui.content_width() == 59
+
+
+def test_tui_detects_when_default_model_needs_inline_key(monkeypatch):
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+
+    assert _model_needs_key("opencode/big-pickle") is True
+
+    monkeypatch.setenv("OPENCODE_API_KEY", "test-key")
+    assert _model_needs_key("opencode/big-pickle") is False
+    assert _model_needs_key("ollama/llama3.2") is False
 
 
 def test_welcome_panel_never_exceeds_terminal_width():

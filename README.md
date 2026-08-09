@@ -31,31 +31,30 @@ pipx install 'apsara-agentic[intelligence]==0.1.0a1'
 ## Quickstart
 
 ```bash
-apsara login
+cd /path/to/your/project
+apsara
 ```
 
-Pick a provider (OpenCode Zen, OpenAI, Anthropic, Google, Groq, Mistral,
-DeepSeek, or local Ollama) and paste your own API key. It's verified immediately and stored in
+That immediately opens the full-screen agent with Big Pickle selected. On the
+first request, Apsara asks for the OpenCode key inline if one is not already
+available. The key can remain session-only or be stored in
 `~/.apsara/credentials.json` with owner-only permissions. Nothing is sent to an
-Apsara server — there isn't one.
+Apsara server—there isn't one.
+
+Project initialization remains optional:
 
 ```bash
-cd /path/to/your/project
 apsara init
 ```
 
 That creates `.apsara/config.toml`, adds Apsara's local artifacts to
-`.gitignore`, and opens chat in the current project. After that:
-
-```bash
-apsara chat
-```
+`.gitignore`, and opens the same UI.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `apsara chat` | Interactive session in the current workspace |
+| `apsara` | Open the interactive Big Pickle agent in the current workspace |
 | `apsara run "<instruction>"` | One-shot instruction, then exit |
 | `apsara init` | Set up `.apsara/` in this project and start chatting |
 | `apsara sessions` | List saved sessions for a workspace |
@@ -63,10 +62,12 @@ apsara chat
 | `apsara trust` | Review or revoke approvals for this project's plugins and MCP servers |
 | `apsara doctor` | Check environment, config, tools, and credentials |
 | `apsara eval suite.json` | Score recorded runs against regression expectations |
-| `apsara login` / `logout` | Manage stored provider keys |
+| `/key set <provider>` | Add a provider key securely from inside the UI |
 | `apsara --version` | Print the installed version |
 
 Run `apsara <command> --help` for the full flag list.
+Interactive flags work directly too, for example `apsara --read-only` or
+`apsara --model ollama/llama3.2`.
 
 ## Tools
 
@@ -129,7 +130,7 @@ directly into the transcript.
 The bash tool is disabled by default. Enable it with an explicit allowlist:
 
 ```bash
-apsara chat --allow-bash --allowed-commands @verify,git
+apsara --allow-bash --allowed-commands @verify,git
 ```
 
 `@verify` is a preset covering the usual test and build tools — `pytest`,
@@ -230,8 +231,8 @@ welcome_animation = true
 ```
 
 The default is `opencode/big-pickle`, called through OpenCode Zen's
-OpenAI-compatible endpoint. Set `OPENCODE_API_KEY`, or choose OpenCode during
-`apsara login`. Big Pickle is free for a limited period; OpenCode states that
+OpenAI-compatible endpoint. Set `OPENCODE_API_KEY`, or let the UI request it
+inline on first use. Big Pickle is free for a limited period; OpenCode states that
 submitted data may be used to improve the model during that period, so choose a
 different provider for confidential repositories. `--model` and the config
 file can still select any supported LiteLLM model.
