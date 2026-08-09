@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import subprocess
 import threading
@@ -165,3 +166,16 @@ def test_supported_python_versions_include_current_feature_release():
     assert "Programming Language :: Python :: 3.14" in classifiers
     assert 'python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]' in workflow
     assert 'python-version: ["3.10", "3.14"]' in workflow
+
+
+def test_core_benchmark_has_repeatable_release_gates_and_multifile_case():
+    suite = json.loads((ROOT / "evals" / "coding-core.json").read_text(encoding="utf-8"))
+    thresholds = suite["thresholds"]
+    cases = {case["name"]: case for case in suite["cases"]}
+
+    assert suite["verification_repeats"] >= 2
+    assert thresholds["min_pass_rate"] == 0.8
+    assert thresholds["max_verification_flaky_trials"] == 0
+    assert thresholds["max_unstable_cases"] == 0
+    assert thresholds["max_unsafe_trials"] == 0
+    assert cases["python-layered-settings"]["allowed_changes"] == ["settings/*.py"]

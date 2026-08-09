@@ -6,7 +6,9 @@ import json
 import re
 import shlex
 import shutil
+import statistics
 import subprocess
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +88,28 @@ def _matches_any(path: str, patterns: list[str]) -> bool:
     return any(Path(path).match(pattern) for pattern in patterns)
 
 
+def _verification_signature(results: list[dict[str, Any]]) -> tuple[tuple[Any, Any], ...]:
+    return tuple((item.get("status"), item.get("returncode")) for item in results)
+
+
+def verification_is_flaky(runs: list[list[dict[str, Any]]]) -> bool:
+    """Return whether repeated verification produced inconsistent outcomes."""
+    return len({_verification_signature(run) for run in runs}) > 1
+
+
+def _verification_passed(runs: list[list[dict[str, Any]]]) -> bool:
+    return bool(runs) and all(
+        bool(run) and all(item.get("status") == "passed" for item in run)
+        for run in runs
+    )
+
+
+def _unexpected_changes(case: dict[str, Any], details: dict[str, Any]) -> list[str]:
+    changed = [str(path) for path in details.get("changed_files") or []]
+    allowed = [str(pattern) for pattern in case.get("allowed_changes") or []]
+    return [path for path in changed if allowed and not _matches_any(path, allowed)]
+
+
 def score_benchmark_case(case: dict[str, Any], details: dict[str, Any]) -> BenchmarkResult:
     """Score stored benchmark evidence without making a provider request."""
     checks: list[str] = []
@@ -95,15 +119,24 @@ def score_benchmark_case(case: dict[str, Any], details: dict[str, Any]) -> Bench
     checks.append(f"agent state: {details.get('agent_state', 'unknown')}")
 
     verification = details.get("verification") or []
-    verification_ok = bool(verification) and all(item.get("status") == "passed" for item in verification)
+    verification_runs = details.get("verification_runs") or [verification]
+    verification_ok = _verification_passed(verification_runs)
+    flaky = bool(details.get("verification_flaky")) or verification_is_flaky(
+        verification_runs
+    )
     score += 50 if verification_ok else 0
     checks.append("verification passed" if verification_ok else "verification failed or unavailable")
+    if flaky:
+        checks.append("verification outcomes were flaky")
     baseline_valid = bool(details.get("baseline_failed", True))
-    checks.append("fixture failed before agent" if baseline_valid else "invalid fixture: baseline already passed")
+    checks.append(
+        "fixture failed before agent"
+        if baseline_valid
+        else "invalid fixture: baseline did not fail consistently"
+    )
 
     changed = [str(path) for path in details.get("changed_files") or []]
-    allowed = [str(pattern) for pattern in case.get("allowed_changes") or []]
-    unexpected = [path for path in changed if allowed and not _matches_any(path, allowed)]
+    unexpected = _unexpected_changes(case, details)
     change_ok = bool(changed) and not unexpected
     score += 15 if change_ok else 0
     checks.append(
@@ -123,7 +156,13 @@ def score_benchmark_case(case: dict[str, Any], details: dict[str, Any]) -> Bench
     score += 10 if tokens_ok else 0
     checks.append(f"tokens: {usage['total_tokens']}/{max_tokens}")
 
-    passed = baseline_valid and verification_ok and change_ok and score >= int(case.get("pass_score") or 80)
+    passed = (
+        baseline_valid
+        and verification_ok
+        and not flaky
+        and change_ok
+        and score >= int(case.get("pass_score") or 80)
+    )
     return BenchmarkResult(
         name=str(case.get("name") or "unnamed"),
         language=str(case.get("language") or "unknown"),
@@ -137,12 +176,186 @@ def score_benchmark_case(case: dict[str, Any], details: dict[str, Any]) -> Bench
 def score_benchmark_results(suite_path: Path, results_path: Path) -> list[BenchmarkResult]:
     suite = json.loads(suite_path.read_text(encoding="utf-8"))
     evidence = json.loads(results_path.read_text(encoding="utf-8"))
-    by_name = {str(item.get("name")): item for item in evidence.get("cases", [])}
+    by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in evidence.get("cases", []):
+        if isinstance(item, dict):
+            by_name[str(item.get("name"))].append(item)
     results: list[BenchmarkResult] = []
     for case in suite.get("cases", []):
-        details = by_name.get(str(case.get("name")), {"agent_state": "missing", "verification": []})
-        results.append(score_benchmark_case(case, details))
+        matching = by_name.get(str(case.get("name"))) or [
+            {"agent_state": "missing", "verification": []}
+        ]
+        results.extend(score_benchmark_case(case, details) for details in matching)
     return results
+
+
+def benchmark_failure_categories(
+    case: dict[str, Any], result: BenchmarkResult
+) -> list[str]:
+    """Return stable machine-readable reasons for a failed benchmark trial."""
+    details = result.details
+    categories: list[str] = []
+    if details.get("agent_state") != "completed":
+        categories.append("agent_state")
+    verification = details.get("verification") or []
+    verification_runs = details.get("verification_runs") or [verification]
+    if not _verification_passed(verification_runs):
+        categories.append("verification_failed")
+    if bool(details.get("verification_flaky")) or verification_is_flaky(
+        verification_runs
+    ):
+        categories.append("verification_flaky")
+    if not bool(details.get("baseline_failed", True)):
+        categories.append("baseline_invalid")
+    changed = [str(path) for path in details.get("changed_files") or []]
+    if not changed:
+        categories.append("no_changes")
+    if _unexpected_changes(case, details):
+        categories.append("unsafe_edit")
+    if int(details.get("tool_calls") or 0) > int(case.get("max_tool_calls") or 25):
+        categories.append("tool_budget")
+    usage = normalize_usage(details.get("usage") or {})
+    if usage["total_tokens"] > int(case.get("max_tokens") or 100_000):
+        categories.append("token_budget")
+    if not categories and not result.passed:
+        categories.append("score_threshold")
+    return categories
+
+
+def _thresholds(suite: dict[str, Any], min_pass_rate: Any = None) -> dict[str, Any]:
+    configured = suite.get("thresholds", {})
+    if configured is None:
+        configured = {}
+    if not isinstance(configured, dict):
+        raise ValueError("Benchmark thresholds must be an object")
+    rate = configured.get("min_pass_rate", 1.0) if min_pass_rate is None else min_pass_rate
+    try:
+        rate = float(rate)
+        max_flaky = int(configured.get("max_verification_flaky_trials", 0))
+        max_unstable = int(configured.get("max_unstable_cases", 0))
+        max_unsafe = int(configured.get("max_unsafe_trials", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Benchmark thresholds must be numeric") from exc
+    if not 0 <= rate <= 1:
+        raise ValueError("min_pass_rate must be between 0 and 1")
+    if min(max_flaky, max_unstable, max_unsafe) < 0:
+        raise ValueError("Benchmark count thresholds cannot be negative")
+    return {
+        "min_pass_rate": rate,
+        "max_verification_flaky_trials": max_flaky,
+        "max_unstable_cases": max_unstable,
+        "max_unsafe_trials": max_unsafe,
+    }
+
+
+def _metric_summary(values: list[int]) -> dict[str, float | int]:
+    if not values:
+        return {"average": 0, "variance": 0, "minimum": 0, "maximum": 0}
+    return {
+        "average": round(statistics.mean(values), 4),
+        "variance": round(statistics.pvariance(values), 4),
+        "minimum": min(values),
+        "maximum": max(values),
+    }
+
+
+def aggregate_benchmark_results(
+    suite_path: Path,
+    results: list[BenchmarkResult],
+    *,
+    min_pass_rate: Any = None,
+) -> dict[str, Any]:
+    """Aggregate repeated trials and evaluate release thresholds."""
+    suite = json.loads(suite_path.read_text(encoding="utf-8"))
+    thresholds = _thresholds(suite, min_pass_rate)
+    cases_by_name = {
+        str(case.get("name")): case for case in suite.get("cases", [])
+    }
+    grouped: dict[str, list[BenchmarkResult]] = defaultdict(list)
+    failures: Counter[str] = Counter()
+    unsafe_trials = 0
+    flaky_trials = 0
+    for result in results:
+        grouped[result.name].append(result)
+        case = cases_by_name.get(result.name, {})
+        categories = benchmark_failure_categories(case, result)
+        failures.update(categories)
+        unsafe_trials += int("unsafe_edit" in categories)
+        flaky_trials += int("verification_flaky" in categories)
+
+    case_summaries: list[dict[str, Any]] = []
+    unstable_cases = 0
+    for name, trials in grouped.items():
+        passed = sum(result.passed for result in trials)
+        outcomes = {result.passed for result in trials}
+        unstable = len(outcomes) > 1
+        unstable_cases += int(unstable)
+        if unstable:
+            failures.update(["unstable_case"])
+        case_summaries.append({
+            "name": name,
+            "language": trials[0].language,
+            "trials": len(trials),
+            "passed_trials": passed,
+            "pass_rate": round(passed / len(trials), 4),
+            "average_score": round(statistics.mean(result.score for result in trials), 4),
+            "unstable": unstable,
+        })
+
+    total = len(results)
+    passed_trials = sum(result.passed for result in results)
+    pass_rate = passed_trials / total if total else 0.0
+    release_passed = (
+        total > 0
+        and pass_rate >= thresholds["min_pass_rate"]
+        and flaky_trials <= thresholds["max_verification_flaky_trials"]
+        and unstable_cases <= thresholds["max_unstable_cases"]
+        and unsafe_trials <= thresholds["max_unsafe_trials"]
+    )
+    return {
+        "passed": release_passed,
+        "thresholds": thresholds,
+        "trials": total,
+        "passed_trials": passed_trials,
+        "pass_rate": round(pass_rate, 4),
+        "verification_flaky_trials": flaky_trials,
+        "unstable_cases": unstable_cases,
+        "unsafe_trials": unsafe_trials,
+        "scores": _metric_summary([result.score for result in results]),
+        "tool_calls": _metric_summary([
+            int(result.details.get("tool_calls") or 0) for result in results
+        ]),
+        "tokens": _metric_summary([
+            normalize_usage(result.details.get("usage") or {})["total_tokens"]
+            for result in results
+        ]),
+        "failure_categories": dict(sorted(failures.items())),
+        "cases": sorted(case_summaries, key=lambda item: item["name"]),
+    }
+
+
+def format_benchmark_aggregate(aggregate: dict[str, Any]) -> str:
+    status = "PASS" if aggregate.get("passed") else "FAIL"
+    rate = float(aggregate.get("pass_rate") or 0) * 100
+    scores = aggregate.get("scores") or {}
+    tools = aggregate.get("tool_calls") or {}
+    tokens = aggregate.get("tokens") or {}
+    lines = [
+        f"{status} aggregate: {aggregate.get('passed_trials', 0)}/{aggregate.get('trials', 0)} "
+        f"trials passed ({rate:.1f}%)",
+        f"score avg {scores.get('average', 0)}; "
+        f"tool calls avg {tools.get('average', 0)} var {tools.get('variance', 0)}; "
+        f"tokens avg {tokens.get('average', 0)} var {tokens.get('variance', 0)}",
+        f"stability: {aggregate.get('verification_flaky_trials', 0)} flaky trial(s), "
+        f"{aggregate.get('unstable_cases', 0)} unstable case(s), "
+        f"{aggregate.get('unsafe_trials', 0)} unsafe trial(s)",
+    ]
+    failures = aggregate.get("failure_categories") or {}
+    if failures:
+        lines.append(
+            "failures: " + ", ".join(f"{key}={value}" for key, value in failures.items())
+        )
+    return "\n".join(lines)
 
 
 def _verification_command(raw: Any) -> list[str]:
@@ -189,15 +402,29 @@ async def _run_verification_commands(
     return results
 
 
+async def _run_verification_repeated(
+    commands: list[list[str]], workspace: Path, timeout: int, repeat_count: int
+) -> list[list[dict[str, Any]]]:
+    return [
+        await _run_verification_commands(commands, workspace, timeout)
+        for _ in range(repeat_count)
+    ]
+
+
 async def run_benchmark_suite(
     suite_path: Path,
     output_root: Path,
     model: str,
+    *,
+    repeats: int = 1,
+    min_pass_rate: Any = None,
 ) -> tuple[list[BenchmarkResult], Path]:
     """Run live model benchmarks in disposable fixture copies and save evidence."""
     from apsara_cli.engine.executor import run_agent_stream
     from apsara_cli.engine.tools import agent_runtime_context
 
+    if not 1 <= repeats <= 10:
+        raise ValueError("Benchmark repeats must be between 1 and 10")
     suite_path = suite_path.resolve()
     suite = json.loads(suite_path.read_text(encoding="utf-8"))
     run_label = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:6]
@@ -217,67 +444,143 @@ async def run_benchmark_suite(
         for candidate in fixture.rglob("*"):
             if candidate.is_symlink():
                 candidate.resolve().relative_to(fixture)
-        workspace = run_root / name
-        shutil.copytree(fixture, workspace)
         commands = [_verification_command(item) for item in case.get("verify", [])]
         verify_timeout = int(case.get("verify_timeout") or 120)
-        baseline_verification = await _run_verification_commands(commands, workspace, verify_timeout)
-        # Baseline test commands may create harmless lockfiles or caches. Treat
-        # that post-verification repository as the state the agent received.
-        before = _hashes(workspace)
-        allowed_commands = {command[0] for command in commands if command}
-        events: list[dict[str, Any]] = []
-        aggregate_usage: dict[str, Any] = {}
+        configured_repeats = case.get("verification_repeats")
+        if configured_repeats is None:
+            configured_repeats = suite.get("verification_repeats", 2)
+        if configured_repeats is None:
+            configured_repeats = 2
+        verification_repeats = int(configured_repeats)
+        if not 1 <= verification_repeats <= 5:
+            raise ValueError("verification_repeats must be between 1 and 5")
 
-        with agent_runtime_context(
-            workspace_root=workspace,
-            enable_bash=bool(commands),
-            allowed_commands=allowed_commands,
-            confirmation_callback=lambda _action, _payload: True,
-            trust_callback=lambda _action, _payload: True,
-        ):
-            async for raw_event in run_agent_stream(
-                [{"role": "user", "content": str(case["instruction"])}], model=model
+        for trial in range(1, repeats + 1):
+            workspace = run_root / name / f"trial-{trial}"
+            shutil.copytree(fixture, workspace)
+            baseline_runs = await _run_verification_repeated(
+                commands, workspace, verify_timeout, verification_repeats
+            )
+            baseline_completed = bool(baseline_runs) and all(
+                bool(run)
+                and all(item.get("status") in {"passed", "failed"} for item in run)
+                for run in baseline_runs
+            )
+            baseline_failed = baseline_completed and all(
+                any(item.get("status") == "failed" for item in run)
+                for run in baseline_runs
+            )
+            baseline_flaky = verification_is_flaky(baseline_runs)
+            # Baseline commands may create harmless lockfiles or caches. Treat
+            # that post-verification repository as the state the agent received.
+            before = _hashes(workspace)
+            if not baseline_failed or baseline_flaky:
+                details = {
+                    "name": name,
+                    "language": case.get("language"),
+                    "trial": trial,
+                    "agent_state": "skipped_invalid_baseline",
+                    "changed_files": [],
+                    "tool_calls": 0,
+                    "usage": normalize_usage({}),
+                    "verification": [],
+                    "verification_runs": [],
+                    "baseline_verification": baseline_runs[-1] if baseline_runs else [],
+                    "baseline_verification_runs": baseline_runs,
+                    "baseline_failed": baseline_failed,
+                    "baseline_verification_flaky": baseline_flaky,
+                    "final_verification_flaky": False,
+                    "verification_flaky": baseline_flaky,
+                    "event_count": 0,
+                }
+                evidence_cases.append(details)
+                scored.append(score_benchmark_case(case, details))
+                events_path = workspace / ".apsara" / "benchmark-events.json"
+                events_path.parent.mkdir(parents=True, exist_ok=True)
+                events_path.write_text("[]", encoding="utf-8")
+                continue
+
+            allowed_commands = {command[0] for command in commands if command}
+            events: list[dict[str, Any]] = []
+            aggregate_usage: dict[str, Any] = {}
+
+            with agent_runtime_context(
+                workspace_root=workspace,
+                enable_bash=bool(commands),
+                allowed_commands=allowed_commands,
+                confirmation_callback=lambda _action, _payload: True,
+                trust_callback=lambda _action, _payload: True,
             ):
-                event = json.loads(raw_event)
-                events.append(event)
-                if event.get("type") == "usage" and isinstance(event.get("data"), dict):
-                    add_usage(aggregate_usage, event["data"])
+                async for raw_event in run_agent_stream(
+                    [{"role": "user", "content": str(case["instruction"])}],
+                    model=model,
+                ):
+                    event = json.loads(raw_event)
+                    events.append(event)
+                    if event.get("type") == "usage" and isinstance(event.get("data"), dict):
+                        add_usage(aggregate_usage, event["data"])
 
-        verification = await _run_verification_commands(commands, workspace, verify_timeout)
-
-        after = _hashes(workspace)
-        terminal_states = [event.get("state") for event in events if event.get("type") == "run_state"]
-        if any(event.get("type") == "error" for event in events):
-            agent_state = "failed"
-        elif any(event.get("type") == "blocked" for event in events):
-            agent_state = "blocked"
-        else:
-            agent_state = str(terminal_states[-1] if terminal_states else "unknown")
-        details = {
-            "name": name,
-            "language": case.get("language"),
-            "agent_state": agent_state,
-            "changed_files": _changed_files(before, after),
-            "tool_calls": sum(1 for event in events if event.get("type") == "tool_call"),
-            "usage": normalize_usage(aggregate_usage),
-            "verification": verification,
-            "baseline_verification": baseline_verification,
-            "baseline_failed": any(item.get("status") == "failed" for item in baseline_verification),
-            "event_count": len(events),
-        }
-        evidence_cases.append(details)
-        scored.append(score_benchmark_case(case, details))
-        (workspace / ".apsara" / "benchmark-events.json").parent.mkdir(parents=True, exist_ok=True)
-        (workspace / ".apsara" / "benchmark-events.json").write_text(
-            json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+            verification_runs = await _run_verification_repeated(
+                commands, workspace, verify_timeout, verification_repeats
+            )
+            after = _hashes(workspace)
+            terminal_states = [
+                event.get("state")
+                for event in events
+                if event.get("type") == "run_state"
+            ]
+            if any(event.get("type") == "error" for event in events):
+                agent_state = "failed"
+            elif any(event.get("type") == "blocked" for event in events):
+                agent_state = "blocked"
+            else:
+                agent_state = str(terminal_states[-1] if terminal_states else "unknown")
+            final_flaky = verification_is_flaky(verification_runs)
+            details = {
+                "name": name,
+                "language": case.get("language"),
+                "trial": trial,
+                "agent_state": agent_state,
+                "changed_files": _changed_files(before, after),
+                "tool_calls": sum(
+                    1 for event in events if event.get("type") == "tool_call"
+                ),
+                "usage": normalize_usage(aggregate_usage),
+                "verification": verification_runs[-1] if verification_runs else [],
+                "verification_runs": verification_runs,
+                "baseline_verification": baseline_runs[-1] if baseline_runs else [],
+                "baseline_verification_runs": baseline_runs,
+                "baseline_failed": baseline_failed,
+                "baseline_verification_flaky": baseline_flaky,
+                "final_verification_flaky": final_flaky,
+                "verification_flaky": baseline_flaky or final_flaky,
+                "event_count": len(events),
+            }
+            evidence_cases.append(details)
+            scored.append(score_benchmark_case(case, details))
+            events_path = workspace / ".apsara" / "benchmark-events.json"
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            events_path.write_text(
+                json.dumps(events, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
 
     results_path = run_root / "results.json"
-    results_path.write_text(json.dumps({
+    aggregate = aggregate_benchmark_results(
+        suite_path, scored, min_pass_rate=min_pass_rate
+    )
+    evidence = {
+        "schema_version": 2,
         "suite": suite.get("name"),
         "model": model,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "repeat_count": repeats,
         "cases": evidence_cases,
-    }, indent=2, ensure_ascii=False), encoding="utf-8")
+        "aggregate": aggregate,
+    }
+    results_path.write_text(
+        json.dumps(evidence, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    (run_root / "summary.json").write_text(
+        json.dumps(aggregate, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return scored, results_path
