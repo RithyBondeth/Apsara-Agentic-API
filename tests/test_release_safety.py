@@ -155,3 +155,13 @@ def test_pypi_readme_does_not_use_relative_markdown_links():
     relative_links = re.findall(r"\[[^]]+\]\(((?!https?://|#)[^)]+)\)", readme)
 
     assert relative_links == []
+
+
+def test_supported_python_versions_include_current_feature_release():
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    classifiers = metadata["project"]["classifiers"]
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "Programming Language :: Python :: 3.14" in classifiers
+    assert 'python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]' in workflow
+    assert 'python-version: ["3.10", "3.14"]' in workflow

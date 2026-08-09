@@ -10,7 +10,7 @@ middle.
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.10 through 3.14
 - `git` on your PATH (for the `git_status` / `git_diff` tools)
 - An API key from a model provider, or a local Ollama install
 
@@ -112,9 +112,11 @@ followed by a fast syntax check. The agent can request a full project diagnostic
 separately; Apsara selects Pyright, `tsc`, `go test`, or `cargo check` from the
 project manifest and installed tools.
 
-Every write shows a diff preview and asks for approval by default. In the prompt,
-`Enter` approves, `n` rejects, `a` approves remaining workspace file mutations,
-`v` shows the full patch, and `e` opens it in `$EDITOR`.
+Every file-content edit shows a diff preview and asks for approval by default.
+Directory creation, moves, deletes, and checkpoint restores show an action
+summary and use the same approval gate. In the prompt, `Enter` approves, `n`
+rejects, `a` approves remaining workspace file mutations, `v` shows the full
+patch, and `e` opens it in `$EDITOR`.
 
 In the full-screen interface, approvals and diff review stay inside Apsara as a
 keyboard-driven overlay (`Enter`/`y` approve, `n`/`Esc` reject, `a` approves

@@ -1,7 +1,16 @@
-from apsara_cli.shared.ui import ConsoleUI, describe_action
+from types import SimpleNamespace
+
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
 
-from apsara_cli.cli.tui import TuiConsoleUI, _approval_footer, _approval_text, _restore_history
+from apsara_cli.cli.tui import (
+    TuiConsoleUI,
+    _approval_footer,
+    _approval_text,
+    _restore_history,
+    _status_right,
+    _welcome_panel_width,
+)
+from apsara_cli.shared.ui import ConsoleUI, describe_action
 
 
 class _FakeApplication:
@@ -121,6 +130,39 @@ def test_tui_user_turn_has_a_clear_role_label():
     assert max(len(line) for line in ui.rendered_lines()) == 36
 
 
+def test_tui_cards_fit_a_narrow_terminal():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=30)
+    ui.sidebar_visible = False
+    ui.append_user_message("Explain this fairly long request without overflowing")
+    ui.render_markdown_panel("## Result\n\nA fairly long response that must wrap.")
+
+    lines = ui.rendered_lines()
+
+    assert ui.content_width() == 30
+    assert max(len(line) for line in lines) <= 27
+
+
+def test_tui_hides_sidebar_when_it_would_starve_conversation():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=60)
+    ui.sidebar_visible = True
+
+    assert ui.sidebar_is_rendered() is False
+    assert ui.content_width() == 60
+
+    ui.app.output.columns = 80
+    assert ui.sidebar_is_rendered() is True
+    assert ui.content_width() == 39
+
+
+def test_welcome_panel_never_exceeds_terminal_width():
+    assert _welcome_panel_width(120) == 84
+    assert _welcome_panel_width(80) == 64
+    assert 1 <= _welcome_panel_width(30) < 30
+    assert _welcome_panel_width(1) == 1
+
+
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
     ui.usage({
@@ -213,6 +255,7 @@ def test_unreported_usage_stays_separate_from_provider_totals(capsys):
 
 def test_inline_approval_card_renders_diff_and_shortcuts():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.sidebar_visible = False
     approval = {
         "action": "edit file",
         "title": "Edit src/app.py",
@@ -236,6 +279,7 @@ def test_inline_approval_card_renders_diff_and_shortcuts():
 
 def test_command_approval_card_does_not_offer_always_allow():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.sidebar_visible = False
     approval = {
         "title": "Run command",
         "preview": "$ pytest -q",
@@ -248,6 +292,42 @@ def test_command_approval_card_does_not_offer_always_allow():
 
     assert "allow once" in footer
     assert "always allow" not in footer
+
+
+def test_narrow_approval_footer_keeps_allow_and_deny_visible():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=30)
+    ui.sidebar_visible = False
+    approval = {
+        "preview": "-old\n+new",
+        "full": "@@ -1 +1 @@\n-old\n+new",
+        "allow_always": True,
+    }
+
+    footer = fragment_list_to_text(to_formatted_text(_approval_footer(ui, approval)))
+
+    assert "allow" in footer
+    assert "n deny" in footer
+    assert len(footer) <= ui.content_width() - 12
+
+
+def test_status_bar_handles_unpriced_model_usage():
+    ui = TuiConsoleUI(use_color=False, typing_delay=0)
+    ui.app = _FakeApplication(columns=100)
+    ui.sidebar_visible = False
+    ui.usage({
+        "prompt_tokens": 8,
+        "completion_tokens": 2,
+        "total_tokens": 10,
+        "apsara_model": "custom/unpriced-model",
+    })
+    options = SimpleNamespace(dry_run=False, read_only=False)
+
+    status = fragment_list_to_text(
+        to_formatted_text(_status_right(ui, options, "custom/unpriced-model"))
+    )
+
+    assert "provider billed" in status
 
 
 def test_bash_approval_includes_command_and_working_directory():
