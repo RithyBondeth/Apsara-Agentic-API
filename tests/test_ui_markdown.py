@@ -1,18 +1,18 @@
 from types import SimpleNamespace
 
 from prompt_toolkit.formatted_text import fragment_list_to_text, to_formatted_text
+from rich.text import Text
 
 from apsara_cli.cli.tui import (
     TuiConsoleUI,
     _approval_footer,
     _approval_text,
-    _composer_edge,
     _restore_history,
     _status_right,
     _welcome_panel_width,
     _model_needs_key,
 )
-from apsara_cli.shared.ui import ConsoleUI, describe_action
+from apsara_cli.shared.ui import ConsoleUI, PANEL_BACKGROUND_ANSI, describe_action
 
 
 class _FakeApplication:
@@ -34,7 +34,7 @@ class _FakeApplication:
         pass
 
 
-def test_assistant_renders_markdown_in_the_rounded_apsara_box(capsys):
+def test_assistant_renders_markdown_in_the_filled_apsara_card(capsys):
     ui = ConsoleUI(use_color=False, typing_delay=0)
 
     ui.assistant(
@@ -43,9 +43,9 @@ def test_assistant_renders_markdown_in_the_rounded_apsara_box(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "Apsara" in output
-    assert "╭" in output and "╰" in output
-    assert "│" in output
+    assert "apsara" in output
+    assert "▌" in output
+    assert "╭" not in output and "╰" not in output
     assert "Result" in output
     assert "• first item" in output
     assert "print('ready')" in output
@@ -63,14 +63,14 @@ def test_streamed_answer_is_buffered_then_rendered_as_markdown(capsys):
     ui.stream_text_end()
 
     output = capsys.readouterr().out
-    assert "Apsara" in output
-    assert "│" in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "Summary" in output
     assert "Ready." in output
     assert "**" not in output
 
 
-def test_tui_uses_the_same_rounded_markdown_box():
+def test_tui_uses_the_same_filled_markdown_card():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
     ui.sidebar_visible = False
@@ -81,8 +81,8 @@ def test_tui_uses_the_same_rounded_markdown_box():
 
     lines = ui.rendered_lines()
     output = "\n".join(lines)
-    assert "Apsara" in output
-    assert "╭" in output and "╰" in output
+    assert "apsara" in output
+    assert "▌" in output
     assert "TUI Ready" in output
     assert "• shared renderer" in output
     assert ui.content_width() == 80
@@ -117,7 +117,7 @@ def test_responsive_markdown_card_is_cached_until_width_changes(monkeypatch):
     assert calls == [77, 117]
 
 
-def test_tui_user_turn_has_a_clear_role_label():
+def test_tui_user_turn_uses_the_filled_question_card():
     ui = TuiConsoleUI(use_color=False, typing_delay=0)
     ui.app = _FakeApplication()
 
@@ -125,8 +125,8 @@ def test_tui_user_turn_has_a_clear_role_label():
 
     output = "\n".join(ui.rendered_lines())
     assert "▌" in output
-    assert "  ▌ Explain this code" in output
-    assert "You" in output
+    assert "Explain this code" in output
+    assert "you" in output
     assert ui.content_width() == 39
     assert max(len(line) for line in ui.rendered_lines()) <= 36
 
@@ -183,12 +183,14 @@ def test_welcome_panel_never_exceeds_terminal_width():
     assert _welcome_panel_width(1) == 1
 
 
-def test_composer_uses_rounded_box_edges():
-    top = _composer_edge("╭", "╮")
-    bottom = _composer_edge("╰", "╯")
+def test_colored_answer_card_keeps_the_requested_width_on_dumb_terminals(monkeypatch):
+    monkeypatch.setenv("TERM", "dumb")
+    ui = ConsoleUI(use_color=True, typing_delay=0)
 
-    assert [window.char for window in top.children] == ["╭", "─", "╮"]
-    assert [window.char for window in bottom.children] == ["╰", "─", "╯"]
+    lines = ui._markdown_card_lines("hello", width=36)
+
+    assert max(Text.from_ansi(line).cell_len for line in lines) == 36
+    assert all(PANEL_BACKGROUND_ANSI in line for line in lines)
 
 
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
@@ -387,7 +389,7 @@ def test_restored_history_shows_conversation_but_hides_tool_internals():
 
     output = "\n".join(ui.rendered_lines())
     assert "Resumed 1 prior turn" in output
-    assert "▌" in output and "Fix the bug" in output and "You" in output
+    assert "▌" in output and "Fix the bug" in output and "you" in output
     assert "Fixed" in output and "The bug is resolved." in output
     assert "I will inspect it" not in output
     assert "secret tool output" not in output
