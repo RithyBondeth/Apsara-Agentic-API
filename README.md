@@ -87,6 +87,15 @@ Before every file mutation Apsara creates a recoverable checkpoint under
 snapshots, or `/undo <id>` to restore a specific one. `/diff` shows Git status
 plus staged and unstaged patches before you accept or undo a change.
 
+Every agent turn also owns an atomic checkpoint under `.apsara/turns/`.
+`/turns` lists completed and interrupted turns, while `/undo-turn [id]` restores
+all captured paths from one turn. Built-in file tools are captured lazily;
+before an enabled command runs, Apsara snapshots the workspace up to 100 MB
+(excluding dependency, build, Git, and Apsara state directories). Set
+`APSARA_TURN_SNAPSHOT_MAX_MB` to change that ceiling. Set
+`APSARA_ROLLBACK_FAILED_TURNS=1` to automatically roll back changed turns that
+end failed or blocked; the default preserves work for review.
+
 `edit_file` is the primary editing tool: it replaces an exact snippet of text
 and refuses ambiguous or missing matches, so an edit can't silently land in the
 wrong place after earlier changes shift the file. `replace_file_lines` still
@@ -268,9 +277,15 @@ Each turn also writes an append-only event trace and typed run state beneath
 facts live in the transparent `.apsara/memory.md` file; use `/memory show` and
 `/memory add <note>` to manage them.
 
+`apsara eval evals/coding-core.json --live` runs disposable Python, TypeScript,
+Go, and Rust coding tasks and scores verification, edit scope, tool efficiency,
+and tokens. Saved `results.json` evidence can be re-scored offline with
+`--results`; see [the evaluation strategy](docs/EVALUATION_STRATEGY.md).
+
 In chat, `/help` lists the complete command surface, including `/details`,
 `/history`, `/tools`, `/model`, `/session`, `/add`, `/processes`, `/logs`,
-`/stop`, `/diff`, `/undo`, `/usage`, `/memory`, `/report`, `/save`, and `/bug`.
+`/stop`, `/diff`, `/turns`, `/undo-turn`, `/undo`, `/usage`, `/memory`,
+`/report`, `/save`, and `/bug`.
 
 In the full-screen TUI, press `Ctrl+C` while a turn is running to cancel that
 turn without closing Apsara. Press it again while idle to exit.

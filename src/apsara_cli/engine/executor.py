@@ -86,6 +86,8 @@ async def run_agent_stream(
         workspace=str(_workspace_root()),
     )
     journal = RunJournal(_workspace_root(), run)
+    from apsara_cli.engine.turn_checkpoints import activate_turn_checkpoint
+    activate_turn_checkpoint(run.run_id)
     plan_steps = [
         ("inspect", "Understand the request and repository context"),
         ("implement", "Make the smallest complete set of changes"),

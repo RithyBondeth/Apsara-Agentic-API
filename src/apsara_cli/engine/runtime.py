@@ -69,6 +69,7 @@ class RunJournal:
 
     def __init__(self, workspace: Path, run: AgentRun):
         self.run = run
+        self.workspace = workspace.resolve()
         self.directory = workspace / ".apsara" / "runs" / run.run_id
         self.events_path = self.directory / "events.jsonl"
         self.state_path = self.directory / "state.json"
@@ -76,6 +77,8 @@ class RunJournal:
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
             self._write_state()
+            from apsara_cli.engine.turn_checkpoints import begin_turn_checkpoint
+            begin_turn_checkpoint(self.workspace, run.run_id, run.objective)
         except OSError:
             pass
 
@@ -106,6 +109,28 @@ class RunJournal:
         }:
             self.run.finished_at = time()
         self.record("state", state=state.value, error=error)
+        if state in {
+            AgentRunState.BLOCKED,
+            AgentRunState.COMPLETED,
+            AgentRunState.FAILED,
+            AgentRunState.CANCELLED,
+        }:
+            try:
+                from apsara_cli.engine.turn_checkpoints import (
+                    finish_turn_checkpoint,
+                    restore_turn_checkpoint,
+                    rollback_failed_turns_enabled,
+                )
+                manifest = finish_turn_checkpoint(self.workspace, self.run.run_id, state.value)
+                if (
+                    state in {AgentRunState.BLOCKED, AgentRunState.FAILED}
+                    and manifest.get("changes")
+                    and rollback_failed_turns_enabled()
+                ):
+                    restored = restore_turn_checkpoint(self.workspace, self.run.run_id)
+                    self.record("turn_rollback", rollback=restored.get("rollback"))
+            except (OSError, ValueError, FileNotFoundError):
+                pass
 
     def add_step(self, kind: str, title: str, detail: str = "") -> int:
         step = AgentStep(kind=kind, title=title, detail=detail)

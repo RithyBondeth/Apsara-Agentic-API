@@ -198,6 +198,9 @@ def describe_action(
     if action == "undo_checkpoint":
         return (f"Restore checkpoint {payload.get('checkpoint_id', 'latest')}?", None, None, None, None, None)
 
+    if action == "undo_turn":
+        return (f"Roll back agent turn {payload.get('turn_id', 'latest')}?", None, None, None, None, None)
+
     if action == "remember_project_note":
         return ("Save this note to project memory?", str(payload.get("note", "")), None, None, None, None)
 
