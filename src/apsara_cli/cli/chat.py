@@ -1162,6 +1162,7 @@ async def execute_instruction(
         # Always ask, even under --auto-approve: that flag waives confirmation
         # for file writes, not for executing code shipped with the project.
         trust_callback=ui.confirm_action,
+        model=model,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
         if trim_result.auxiliary_usage:

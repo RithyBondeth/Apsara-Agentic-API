@@ -11,6 +11,10 @@ flowchart LR
   TOOLS --> FS[Workspace tools]
   TOOLS --> PROC[Process manager]
   TOOLS --> MCP[MCP governance]
+  TOOLS --> VERIFY[Verification engine]
+  VERIFY --> ISO[Disposable worktree]
+  EX --> CRITIC[Read-only critic]
+  EX --> HOOKS[Trusted lifecycle hooks]
   EX --> RUN[Run journal]
   FS --> CP[Checkpoints]
   FS --> TURN[Turn transactions]
@@ -51,8 +55,11 @@ error, and metadata contract.
 
 ## Reliability
 
-After a successful workspace mutation, the executor requests command-based
-verification when bash is enabled. Repeated identical actions and failed calls
+Before the first workspace mutation, the executor requires a baseline
+`verify_project` attempt. Only a passing full structured verification satisfies
+the completion gate; unrelated successful shell commands do not. Multi-file
+changes receive a separate read-only critic pass after verification. Repeated
+identical actions and failed calls
 are detected and redirected before the step budget is exhausted. Set
 `APSARA_FALLBACK_MODELS` to a comma-separated model chain for failures that
 occur before response output begins.
@@ -67,6 +74,10 @@ and preserves the application, prior conversation, and automatic checkpoints.
 Repository maps and symbol search cover common Python, JavaScript/TypeScript,
 Go, Rust, Java, Ruby, PHP, C#, and C/C++ definitions without a heavyweight
 index. Persistent user-maintained context lives in `.apsara/memory.md`.
+
+Installed language servers add an on-demand type-aware tier for definitions and
+references. The existing AST, Tree-sitter, and text contracts remain the
+dependency-free fallback.
 
 `apsara eval` scores recorded traces deterministically. This separates runtime
 regression checks from paid, nondeterministic model calls and makes tool-use

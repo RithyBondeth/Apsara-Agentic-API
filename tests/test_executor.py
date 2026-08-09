@@ -234,6 +234,103 @@ def test_completed_turn_has_no_budget_warning():
     assert not any(e["type"] == "blocked" for e in events)
 
 
+def test_first_mutation_requires_a_baseline_attempt():
+    scripts = [
+        [_tool_call_event(name="write_to_file", arguments='{"path":"a.py","content":"x"}')],
+        [_final_event("Stopped.")],
+    ]
+    fake, _ = _scripted_llm(scripts)
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", AsyncMock(return_value="wrote")) as execute:
+        events = _run([{"role": "user", "content": "change a.py"}])
+
+    execute.assert_not_called()
+    result = next(event["result"] for event in events if event["type"] == "tool_result")
+    assert "phase=baseline" in result
+
+
+def test_generic_bash_success_does_not_replace_full_verification():
+    scripts = [
+        [_tool_call_event(name="verify_project", arguments='{"phase":"baseline"}', call_id="baseline")],
+        [_tool_call_event(name="write_to_file", arguments='{"path":"a.py","content":"x"}', call_id="write")],
+        [_tool_call_event(name="run_bash_command", arguments='{"command":"echo ok"}', call_id="bash")],
+        [_final_event("Done without structured verification.")],
+        [_tool_call_event(name="verify_project", arguments='{"phase":"full"}', call_id="full")],
+        [_final_event("Verified.")],
+    ]
+    fake, state = _scripted_llm(scripts)
+
+    async def execute(name, _arguments):
+        if name == "verify_project":
+            return "Verification passed."
+        return "ok"
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", execute):
+        events = _run([{"role": "user", "content": "change and test"}])
+
+    assert state["calls"] == 6
+    assert events[-1]["type"] == "final_answer"
+    assert events[-1]["content"] == "Verified."
+    assert any(event.get("state") == "verifying" for event in events)
+
+
+def test_multi_file_change_requires_read_only_critic_after_full_verification():
+    scripts = [
+        [_tool_call_event(name="verify_project", arguments='{"phase":"baseline"}', call_id="baseline")],
+        [_tool_call_event(name="write_to_file", arguments='{"path":"a.py","content":"a"}', call_id="a")],
+        [_tool_call_event(name="write_to_file", arguments='{"path":"b.py","content":"b"}', call_id="b")],
+        [_tool_call_event(name="verify_project", arguments='{"phase":"full"}', call_id="full")],
+        [_final_event("Ready without review.")],
+        [_tool_call_event(name="request_critic", arguments='{"objective":"change two files"}', call_id="critic")],
+        [_final_event("Verified and reviewed.")],
+    ]
+    fake, state = _scripted_llm(scripts)
+    calls = []
+
+    async def execute(name, arguments):
+        calls.append((name, arguments))
+        if name == "verify_project":
+            return "Verification passed."
+        if name == "request_critic":
+            return "APPROVED"
+        return "ok"
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", execute):
+        events = _run([{"role": "user", "content": "change two files"}])
+
+    assert state["calls"] == 7
+    critic_arguments = next(arguments for name, arguments in calls if name == "request_critic")
+    assert critic_arguments["_changed_files"] == ["a.py", "b.py"]
+    assert any("independent review" in event.get("message", "") for event in events)
+    assert events[-1]["content"] == "Verified and reviewed."
+
+
+def test_mutation_after_full_verification_requires_fresh_full_verification():
+    scripts = [
+        [_tool_call_event(name="verify_project", arguments='{"phase":"baseline"}', call_id="baseline")],
+        [_tool_call_event(name="write_to_file", arguments='{"path":"a.py","content":"one"}', call_id="write-1")],
+        [_tool_call_event(name="verify_project", arguments='{"phase":"full"}', call_id="full-1")],
+        [_tool_call_event(name="write_to_file", arguments='{"path":"a.py","content":"two"}', call_id="write-2")],
+        [_final_event("Done with stale verification.")],
+        [_tool_call_event(name="verify_project", arguments='{"phase":"full"}', call_id="full-2")],
+        [_final_event("Done with fresh verification.")],
+    ]
+    fake, state = _scripted_llm(scripts)
+
+    async def execute(name, _arguments):
+        return "Verification passed." if name == "verify_project" else "ok"
+
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "execute_tool_async", execute):
+        events = _run([{"role": "user", "content": "change a file twice"}])
+
+    assert state["calls"] == 7
+    assert events[-1]["content"] == "Done with fresh verification."
+    assert sum(event.get("state") == "verifying" for event in events) == 1
+
+
 # ── cycle detection ───────────────────────────────────────────────────────────
 
 def test_alternating_tool_calls_are_detected_as_a_loop():

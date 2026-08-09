@@ -5,7 +5,12 @@ from typing import List, Dict, Any, AsyncGenerator
 from apsara_cli.engine.llm import call_llm_stream, estimate_request_tokens
 from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model, model_availability
 from apsara_cli.engine.runtime import RunJournal
-from apsara_cli.engine.tools import classify_tool_risk, execute_tool_async, get_mcp_manager
+from apsara_cli.engine.tools import (
+    classify_tool_risk,
+    consume_auxiliary_usage,
+    execute_tool_async,
+    get_mcp_manager,
+)
 from apsara_cli.shared.types import AgentRun, AgentRunState, ToolResult
 
 DEFAULT_MAX_STEPS = 25
@@ -61,7 +66,7 @@ def _model_candidates(primary: str) -> list[str]:
 
 SYSTEM_PROMPT = """You are an expert autonomous software engineer named Apsara Agent.
 You are equipped with workspace-scoped tools to read files, write files, search the codebase, inspect project structure, and replace file lines. Command tools are not sandboxed and run with the user's normal permissions; use only simple non-interactive commands, and do not access paths outside the workspace unless the user explicitly requests it.
-Analyze problems deeply, execute files or tools as requested to accomplish the goal. Always aim to be succinct when communicating back to the user but highly detailed in tool calls."""
+Analyze problems deeply, execute files or tools as requested to accomplish the goal. For coding changes, call verify_project with phase=baseline before the first edit, phase=targeted while repairing, and phase=full before claiming completion. Prefer isolated=true when the project does not depend on ignored local dependency directories. A successful generic shell command is not verification. For multi-file or risky changes, call request_critic after full verification and address material findings before finishing. Always aim to be succinct when communicating back to the user but highly detailed in tool calls."""
 
 async def run_agent_stream(
     conversation_history: List[Dict[str, Any]],
@@ -71,7 +76,7 @@ async def run_agent_stream(
     Core execution streaming loop for the agent.
     Yields JSON string events tracking the agent's progress and token usage.
     """
-    from apsara_cli.engine.tools import _bash_enabled, _workspace_root
+    from apsara_cli.engine.tools import _workspace_root
     objective = next(
         (
             str(message.get("content") or "")
@@ -143,6 +148,18 @@ async def run_agent_stream(
 
     messages = [{"role": "system", "content": full_system_prompt}] + conversation_history
 
+    from apsara_cli.engine.hooks import run_hooks
+    session_hook = await asyncio.to_thread(
+        run_hooks,
+        "session_start",
+        {"objective": objective, "model": model, "run_id": run.run_id},
+        _workspace_root(),
+    )
+    if not session_hook.allowed:
+        journal.transition(AgentRunState.BLOCKED, session_hook.reason)
+        yield json.dumps({"type": "blocked", "message": f"Session blocked by hook: {session_hook.reason}"})
+        return
+
     max_steps = _max_steps()
     consecutive_errors = 0
     consecutive_repeats = 0
@@ -155,8 +172,11 @@ async def run_agent_stream(
     nudged = False
     changed_workspace = False
     verification_seen = False
+    baseline_attempted = False
     verification_nudged = False
-    verification_capable = _bash_enabled()
+    verification_capable = True
+    critic_seen = False
+    critic_nudged = False
     model_candidates = _model_candidates(model)
     primary_entry = lookup_model(model)
     if primary_entry is not None:
@@ -286,6 +306,10 @@ async def run_agent_stream(
                 except json.JSONDecodeError:
                     arguments = {}
 
+                if tool_name == "verify_project":
+                    if arguments.get("phase", "full") == "baseline":
+                        baseline_attempted = True
+
                 yield json.dumps({
                     "type": "tool_call",
                     "name": tool_name,
@@ -293,11 +317,48 @@ async def run_agent_stream(
                     "tool_call_id": tool_call["id"],
                 })
 
-                try:
-                    tool_result_str = await execute_tool_async(tool_name, arguments)
-                except asyncio.CancelledError:
-                    journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
-                    raise
+                hook_payload = {
+                    "run_id": run.run_id,
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "risk": classify_tool_risk(tool_name).value,
+                }
+                hook_event = "before_verify" if tool_name == "verify_project" else "before_tool"
+                before_hook = await asyncio.to_thread(
+                    run_hooks, hook_event, hook_payload, _workspace_root()
+                )
+                mutation_applied = False
+                if not before_hook.allowed:
+                    tool_result_str = f"Error: Blocked by {hook_event} hook: {before_hook.reason}"
+                elif tool_name in mutation_tools and not changed_workspace and not baseline_attempted:
+                    tool_result_str = (
+                        "Error: Run verify_project with phase=baseline before the first workspace edit. "
+                        "If no verifier is available, that attempt will record the limitation and allow work to continue."
+                    )
+                else:
+                    try:
+                        execution_arguments = dict(arguments)
+                        if tool_name == "request_critic":
+                            execution_arguments["_changed_files"] = list(run.changed_files)
+                        tool_result_str = await execute_tool_async(tool_name, execution_arguments)
+                        mutation_applied = (
+                            tool_name in mutation_tools
+                            and ToolResult.from_text(tool_result_str).ok
+                        )
+                    except asyncio.CancelledError:
+                        journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
+                        raise
+                after_event = "after_verify" if tool_name == "verify_project" else "after_tool"
+                after_hook = await asyncio.to_thread(
+                    run_hooks,
+                    after_event,
+                    {**hook_payload, "result": tool_result_str[-4000:]},
+                    _workspace_root(),
+                )
+                if not after_hook.allowed:
+                    tool_result_str = f"Error: Blocked by {after_event} hook: {after_hook.reason}"
+                for auxiliary_usage in consume_auxiliary_usage():
+                    yield json.dumps({"type": "usage", "data": auxiliary_usage})
                 typed_result = ToolResult.from_text(tool_result_str)
                 journal.tool_result(tool_name, typed_result, arguments, classify_tool_risk(tool_name).value)
 
@@ -306,20 +367,30 @@ async def run_agent_stream(
                 else:
                     consecutive_errors = 0
 
-                if typed_result.ok and tool_name in mutation_tools:
+                if mutation_applied:
                     changed_workspace = True
+                    # Verification and review evidence only applies to the
+                    # exact workspace state that existed when it was produced.
+                    verification_seen = False
+                    critic_seen = False
+                    verification_nudged = False
+                    critic_nudged = False
                     candidate = arguments.get("path") or arguments.get("dest") or arguments.get("src")
                     if candidate and str(candidate) not in run.changed_files:
                         run.changed_files.append(str(candidate))
                     journal.update_step(0, "completed")
                     journal.update_step(1, "in_progress")
-                if typed_result.ok and tool_name == "run_bash_command":
-                    verification_seen = True
-                    command = str(arguments.get("command") or "")
-                    if command and command not in run.verification:
+                if typed_result.ok and tool_name == "verify_project":
+                    phase = str(arguments.get("phase") or "full")
+                    if phase == "full":
+                        verification_seen = True
+                    command = f"verify_project:{phase}"
+                    if command not in run.verification:
                         run.verification.append(command)
                     journal.update_step(1, "completed")
                     journal.update_step(2, "in_progress")
+                if typed_result.ok and tool_name == "request_critic":
+                    critic_seen = True
 
                 # Include the result: identical call + identical output is a
                 # loop; identical call + changed output is the agent making
@@ -407,9 +478,9 @@ async def run_agent_stream(
                     "role": "system",
                     "content": (
                         "Before you finish, verify the changes. Run the most relevant available "
-                        "tests, formatter, linter, type checker, or build command. If command "
-                        "execution is unavailable, inspect git_diff and explicitly report that "
-                        "automated verification could not run."
+                        "tests, formatter, linter, type checker, and build through verify_project "
+                        "with phase=full. A generic bash command does not count. If verification "
+                        "is unavailable, inspect git_diff and explicitly report that limitation."
                     ),
                 })
                 yield json.dumps({
@@ -420,6 +491,44 @@ async def run_agent_stream(
                 })
                 journal.transition(AgentRunState.VERIFYING)
                 continue
+            if changed_workspace and len(run.changed_files) >= 2 and verification_seen and not critic_seen and not critic_nudged:
+                critic_nudged = True
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "This is a multi-file change. Before finishing, call request_critic for an "
+                        "independent read-only review, then address any material findings."
+                    ),
+                })
+                yield json.dumps({
+                    "type": "status",
+                    "message": "Requesting an independent review for the multi-file change.",
+                })
+                continue
+            if changed_workspace and not verification_seen:
+                yield json.dumps({
+                    "type": "warning",
+                    "message": "Workspace changes were not fully verified; review /details before shipping.",
+                })
+            turn_hook = await asyncio.to_thread(
+                run_hooks,
+                "turn_end",
+                {
+                    "run_id": run.run_id,
+                    "objective": objective,
+                    "changed_files": run.changed_files,
+                    "verification": run.verification,
+                },
+                _workspace_root(),
+            )
+            if not turn_hook.allowed:
+                journal.transition(AgentRunState.BLOCKED, turn_hook.reason)
+                yield json.dumps({
+                    "type": "blocked",
+                    "message": f"Completion blocked by turn_end hook: {turn_hook.reason}",
+                })
+                completed = True
+                break
             messages.append(assistant_dict)
             journal.update_step(0, "completed")
             journal.update_step(1, "completed")

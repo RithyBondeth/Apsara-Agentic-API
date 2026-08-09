@@ -50,6 +50,12 @@ _dry_run_override: ContextVar[Optional[bool]] = ContextVar(
 _read_only_override: ContextVar[Optional[bool]] = ContextVar(
     "read_only_override", default=None
 )
+_model_override: ContextVar[Optional[str]] = ContextVar(
+    "model_override", default=None
+)
+_auxiliary_usage_override: ContextVar[Optional[list[dict[str, Any]]]] = ContextVar(
+    "auxiliary_usage_override", default=None
+)
 _trust_callback_override: ContextVar[Optional[TrustCallback]] = ContextVar(
     "trust_callback_override", default=None
 )
@@ -92,6 +98,7 @@ def agent_runtime_context(
     read_only: Optional[bool] = None,
     trust_callback: Optional[TrustCallback] = None,
     bash_timeout_seconds: Optional[int] = None,
+    model: Optional[str] = None,
 ) -> Iterator[None]:
     workspace_token = None
     bash_token = None
@@ -102,6 +109,8 @@ def agent_runtime_context(
     read_only_token = None
     trust_token = None
     bash_timeout_token = None
+    model_token = None
+    auxiliary_usage_token = _auxiliary_usage_override.set([])
 
     try:
         if workspace_root is not None:
@@ -124,8 +133,13 @@ def agent_runtime_context(
             trust_token = _trust_callback_override.set(trust_callback)
         if bash_timeout_seconds is not None:
             bash_timeout_token = _bash_timeout_override.set(bash_timeout_seconds)
+        if model is not None:
+            model_token = _model_override.set(model)
         yield
     finally:
+        _auxiliary_usage_override.reset(auxiliary_usage_token)
+        if model_token is not None:
+            _model_override.reset(model_token)
         if bash_timeout_token is not None:
             _bash_timeout_override.reset(bash_timeout_token)
         if trust_token is not None:
@@ -181,6 +195,23 @@ def _read_only() -> bool:
     return False
 
 
+def _current_model() -> str:
+    from apsara_cli.engine.models import DEFAULT_MODEL
+    return _model_override.get() or DEFAULT_MODEL
+
+
+def consume_auxiliary_usage() -> list[dict[str, Any]]:
+    usage = list(_auxiliary_usage_override.get() or [])
+    _auxiliary_usage_override.set([])
+    return usage
+
+
+def _record_auxiliary_usage(data: dict[str, Any]) -> None:
+    pending = list(_auxiliary_usage_override.get() or [])
+    pending.append(data)
+    _auxiliary_usage_override.set(pending)
+
+
 def classify_tool_risk(tool_name: str) -> ToolRisk:
     """Stable permission category used by journals, policies, and future UIs."""
     if tool_name.startswith("mcp__"):
@@ -189,7 +220,7 @@ def classify_tool_risk(tool_name: str) -> ToolRisk:
         return ToolRisk.DESTRUCTIVE
     if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "replace_symbol", "move_file", "create_directory", "undo_last_checkpoint", "undo_turn_checkpoint", "remember_project_note"}:
         return ToolRisk.WRITE
-    if tool_name in {"run_bash_command", "start_process", "stop_process"}:
+    if tool_name in {"run_bash_command", "start_process", "stop_process", "verify_project"}:
         return ToolRisk.EXECUTE
     return ToolRisk.READ
 
@@ -1407,6 +1438,32 @@ def find_references(name: str, path: str = "") -> str:
     return "\n".join(lines)
 
 
+def lsp_go_to_definition(path: str, line: int, column: int) -> str:
+    """Use an installed language server for type-aware definition lookup."""
+    try:
+        resolved = _resolve_path(path, must_exist=True)
+        from apsara_cli.engine.lsp import query_locations
+        lines = query_locations(
+            _workspace_root(), resolved, line=line, column=column, operation="definition"
+        )
+        return "\n".join(lines) if lines else "No LSP definition found."
+    except Exception as exc:
+        return _format_exception("Error querying language server", exc)
+
+
+def lsp_find_references(path: str, line: int, column: int) -> str:
+    """Use an installed language server for type-aware reference lookup."""
+    try:
+        resolved = _resolve_path(path, must_exist=True)
+        from apsara_cli.engine.lsp import query_locations
+        lines = query_locations(
+            _workspace_root(), resolved, line=line, column=column, operation="references"
+        )
+        return "\n".join(lines) if lines else "No LSP references found."
+    except Exception as exc:
+        return _format_exception("Error querying language server", exc)
+
+
 def code_diagnostics(path: str = "", project: bool = False) -> str:
     """Run syntax diagnostics for a file or an explicit native project check."""
     from apsara_cli.engine.intelligence import format_diagnostics, project_diagnostics, syntax_diagnostics
@@ -1420,6 +1477,56 @@ def code_diagnostics(path: str = "", project: bool = False) -> str:
     resolved_path = _resolve_path(path, must_exist=True)
     issues = syntax_diagnostics(resolved_path)
     return format_diagnostics(_workspace_root(), issues) or f"Syntax diagnostics clean for {_display_path(resolved_path)}."
+
+
+def verify_project(
+    phase: str = "full", isolated: bool = False, timeout: int = 0
+) -> str:
+    """Run manifest-aware project checks and return structured evidence."""
+    from apsara_cli.engine.verification import (
+        detect_verification_commands,
+        format_verification_report,
+        run_verification,
+        verification_digest_source,
+    )
+
+    if _read_only():
+        return "Error: Project verification is disabled in read-only mode because it executes workspace code."
+    try:
+        commands = detect_verification_commands(
+            _workspace_root(), "targeted" if phase == "targeted" else "full"
+        )
+    except (OSError, ValueError) as exc:
+        return f"Error: Verification could not run: {exc}"
+    if not commands:
+        return format_verification_report(
+            run_verification(_workspace_root(), phase=phase, isolated=isolated, timeout=timeout or _bash_timeout())
+        )
+    digest = trust.digest_text(verification_digest_source(commands))
+    if not request_workspace_trust(
+        "verification:project",
+        digest,
+        {
+            "kind": "verification",
+            "display_path": ", ".join(" ".join(item.command) for item in commands),
+            "commands": [list(item.command) for item in commands],
+            "isolated": isolated,
+            "phase": phase,
+        },
+    ):
+        return "Error: Project verification was not approved."
+    if _dry_run():
+        return "Verification skipped in dry-run mode (commands were not executed)."
+    try:
+        report = run_verification(
+            _workspace_root(),
+            phase=phase,
+            isolated=isolated,
+            timeout=timeout or _bash_timeout(),
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"Error: Verification could not run: {exc}"
+    return format_verification_report(report)
 
 
 def replace_symbol(path: str, symbol: str, replacement: str) -> str:
@@ -1763,12 +1870,71 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             ["name"],
         ),
         _tool_definition(
+            "lsp_go_to_definition",
+            "Use an installed language server for type-aware definition lookup at a source position. "
+            "Fall back to go_to_definition when no server is installed.",
+            {
+                "path": {"type": "string", "description": "Source file path."},
+                "line": {"type": "integer", "description": "1-based line."},
+                "column": {"type": "integer", "description": "1-based column."},
+            },
+            ["path", "line", "column"],
+        ),
+        _tool_definition(
+            "lsp_find_references",
+            "Use an installed language server for type-aware references at a source position. "
+            "Fall back to find_references when no server is installed.",
+            {
+                "path": {"type": "string", "description": "Source file path."},
+                "line": {"type": "integer", "description": "1-based line."},
+                "column": {"type": "integer", "description": "1-based column."},
+            },
+            ["path", "line", "column"],
+        ),
+        _tool_definition(
             "code_diagnostics",
             "Check one source file for syntax errors, or run the project's native checker when project=true. Project checks may take time.",
             {
                 "path": {"type": "string", "description": "Source file for a fast syntax check."},
                 "project": {"type": "boolean", "description": "Run pyright, tsc, go test, or cargo check for the whole project."},
             },
+        ),
+        _tool_definition(
+            "verify_project",
+            "Run manifest-aware tests, type checks, lint, and build checks with structured results. "
+            "Use phase=baseline before editing, targeted while repairing, and full before finishing. "
+            "Set isolated=true to run in a disposable snapshot.",
+            {
+                "phase": {
+                    "type": "string",
+                    "enum": ["baseline", "targeted", "full"],
+                    "description": "Verification stage.",
+                },
+                "isolated": {
+                    "type": "boolean",
+                    "description": "Run checks in a disposable workspace snapshot.",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Per-command timeout in seconds; zero uses the configured default.",
+                },
+            },
+        ),
+        _tool_definition(
+            "request_critic",
+            "Ask an independent read-only critic to review the current plan, diff, or tests. "
+            "Use before a risky implementation and after full verification for non-trivial changes.",
+            {
+                "objective": {
+                    "type": "string",
+                    "description": "The user objective the critic should validate.",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Specific plan, implementation, or test concern to review.",
+                },
+            },
+            ["objective"],
         ),
         _tool_definition(
             "replace_symbol",
@@ -1850,7 +2016,10 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "find_symbol": find_symbol,
         "go_to_definition": go_to_definition,
         "find_references": find_references,
+        "lsp_go_to_definition": lsp_go_to_definition,
+        "lsp_find_references": lsp_find_references,
         "code_diagnostics": code_diagnostics,
+        "verify_project": verify_project,
         "replace_symbol": replace_symbol,
         "read_project_memory": read_project_memory,
         "remember_project_note": remember_project_note,
@@ -1878,6 +2047,24 @@ async def execute_tool_async(tool_name: str, arguments: Dict[str, Any]) -> str:
 
     Built-in tools stay synchronous; only remote calls need to await.
     """
+    if tool_name == "request_critic":
+        from apsara_cli.engine.critic import request_critique
+        content, usage = await request_critique(
+            _workspace_root(),
+            objective=str(arguments.get("objective") or "Review the current change"),
+            focus=str(arguments.get("focus") or ""),
+            model=_current_model(),
+            changed_files=[str(item) for item in arguments.get("_changed_files", [])],
+        )
+        usage = dict(usage or {})
+        usage.update({
+            "apsara_model": _current_model(),
+            "auxiliary_calls": 1,
+            "provider_reported_calls": 1 if usage else 0,
+        })
+        _record_auxiliary_usage(usage)
+        return content
+
     manager = _mcp_manager_override.get()
     if manager is not None and manager.has_tool(tool_name):
         remote_name = tool_name.rsplit("__", 1)[-1].lower()

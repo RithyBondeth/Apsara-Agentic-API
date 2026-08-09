@@ -366,6 +366,68 @@ def _verification_command(raw: Any) -> list[str]:
     raise ValueError("Verification commands must be a string or string array")
 
 
+def _validate_benchmark_tree(workspace: Path) -> None:
+    for candidate in workspace.rglob("*"):
+        if candidate.is_symlink():
+            candidate.resolve().relative_to(workspace.resolve())
+
+
+def _materialize_benchmark_case(
+    case: dict[str, Any], suite_path: Path, workspace: Path
+) -> None:
+    """Copy a fixture or checkout a pinned real repository into a trial."""
+    fixture_value = case.get("fixture")
+    repository = case.get("repository")
+    if bool(fixture_value) == bool(repository):
+        raise ValueError("Each benchmark case needs exactly one of fixture or repository")
+    if fixture_value:
+        fixture = (suite_path.parent / str(fixture_value)).resolve()
+        fixture.relative_to(suite_path.parent.resolve())
+        if not fixture.is_dir():
+            raise FileNotFoundError(f"Benchmark fixture does not exist: {fixture}")
+        _validate_benchmark_tree(fixture)
+        shutil.copytree(fixture, workspace)
+        return
+
+    if not isinstance(repository, dict):
+        raise ValueError("repository must be an object with url or path plus a pinned ref")
+    ref = str(repository.get("ref") or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", ref):
+        raise ValueError("Real-repository benchmark refs must be full 40-character commit SHAs")
+    if repository.get("url"):
+        source = str(repository["url"])
+        if not source.startswith("https://"):
+            raise ValueError("Remote benchmark repositories must use an https:// URL")
+    elif repository.get("path"):
+        local = (suite_path.parent / str(repository["path"])).resolve()
+        local.relative_to(suite_path.parent.resolve())
+        if not local.is_dir():
+            raise FileNotFoundError(f"Benchmark repository does not exist: {local}")
+        source = str(local)
+    else:
+        raise ValueError("repository requires url or path")
+
+    cloned = subprocess.run(
+        ["git", "clone", "--no-checkout", "--filter=blob:none", source, str(workspace)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    if cloned.returncode != 0:
+        raise RuntimeError(cloned.stderr.strip() or "benchmark repository clone failed")
+    checked_out = subprocess.run(
+        ["git", "-C", str(workspace), "checkout", "--detach", ref],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if checked_out.returncode != 0:
+        raise RuntimeError(checked_out.stderr.strip() or f"could not checkout {ref}")
+    _validate_benchmark_tree(workspace)
+
+
 async def _run_verification_commands(
     commands: list[list[str]], workspace: Path, timeout: int
 ) -> list[dict[str, Any]]:
@@ -437,13 +499,6 @@ async def run_benchmark_suite(
         name = str(case["name"])
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name in {".", ".."}:
             raise ValueError(f"Unsafe benchmark case name: {name!r}")
-        fixture = (suite_path.parent / str(case["fixture"])).resolve()
-        fixture.relative_to(suite_path.parent.resolve())
-        if not fixture.is_dir():
-            raise FileNotFoundError(f"Benchmark fixture does not exist: {fixture}")
-        for candidate in fixture.rglob("*"):
-            if candidate.is_symlink():
-                candidate.resolve().relative_to(fixture)
         commands = [_verification_command(item) for item in case.get("verify", [])]
         verify_timeout = int(case.get("verify_timeout") or 120)
         configured_repeats = case.get("verification_repeats")
@@ -457,7 +512,8 @@ async def run_benchmark_suite(
 
         for trial in range(1, repeats + 1):
             workspace = run_root / name / f"trial-{trial}"
-            shutil.copytree(fixture, workspace)
+            workspace.parent.mkdir(parents=True, exist_ok=True)
+            _materialize_benchmark_case(case, suite_path, workspace)
             baseline_runs = await _run_verification_repeated(
                 commands, workspace, verify_timeout, verification_repeats
             )
@@ -510,6 +566,7 @@ async def run_benchmark_suite(
                 allowed_commands=allowed_commands,
                 confirmation_callback=lambda _action, _payload: True,
                 trust_callback=lambda _action, _payload: True,
+                model=model,
             ):
                 async for raw_event in run_agent_stream(
                     [{"role": "user", "content": str(case["instruction"])}],
