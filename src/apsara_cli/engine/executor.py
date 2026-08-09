@@ -2,7 +2,7 @@ import json
 import os
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator
-from apsara_cli.engine.llm import call_llm_stream
+from apsara_cli.engine.llm import call_llm_stream, estimate_request_tokens
 from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model, model_availability
 from apsara_cli.engine.runtime import RunJournal
 from apsara_cli.engine.tools import classify_tool_risk, execute_tool_async, get_mcp_manager
@@ -242,8 +242,17 @@ async def run_agent_stream(
 
         if usage:
             usage = dict(usage)
-            usage["apsara_model"] = active_model
-            yield json.dumps({"type": "usage", "data": usage})
+            usage["provider_reported_calls"] = 1
+        else:
+            # Some OpenAI-compatible providers omit the final usage-only
+            # streaming chunk. Keep a separate local estimate without
+            # pretending it is provider billing data.
+            usage = {
+                "estimated_input_tokens": estimate_request_tokens(messages, model=active_model),
+                "unreported_calls": 1,
+            }
+        usage["apsara_model"] = active_model
+        yield json.dumps({"type": "usage", "data": usage})
 
         assistant_dict: Dict[str, Any] = {"role": "assistant", "content": full_content}
 

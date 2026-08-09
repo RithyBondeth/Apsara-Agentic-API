@@ -977,12 +977,17 @@ def handle_chat_command(
         ui.print_line(
             f"  {ui.dim('  cost     ')} "
             f"{ui.style(ui.session_cost_label(), '38;2;120;200;150')} "
-            f"{ui.dim('(provider list price; free quotas may reduce billing)')}"
+            f"{ui.dim('(local estimate; provider dashboard is authoritative)')}"
         )
         ui.print_line(
             f"  {ui.dim('  usage    ')} "
             f"{ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', '38;2;220;216;210')}"
         )
+        if ui._session_estimated_tokens:
+            ui.print_line(
+                f"  {ui.dim('  estimated')} "
+                f"{ui.style(f'~{ui._session_estimated_tokens:,} input tokens · {ui._session_unreported_calls} unreported call(s)', '38;2;247;200;100')}"
+            )
         if ui._session_cached_tokens or ui._session_cache_creation_tokens or ui._session_reasoning_tokens:
             ui.print_line(
                 f"  {ui.dim('  details  ')} "
@@ -1125,6 +1130,17 @@ async def execute_instruction(
     turn_checkpoint_id: Optional[str] = None
     ui.begin_turn()
 
+    def merge_usage(data: dict[str, Any]) -> None:
+        nonlocal aggregate_usage
+        from apsara_cli.engine.usage import add_usage, normalize_usage
+
+        if aggregate_usage is None:
+            aggregate_usage = {"model_usage": {}}
+        add_usage(aggregate_usage, data)
+        usage_model = str(data.get("apsara_model") or model)
+        by_model = aggregate_usage["model_usage"].setdefault(usage_model, {})
+        add_usage(by_model, normalize_usage(data))
+
     with agent_runtime_context(
         workspace_root=options.workspace_root,
         enable_bash=options.allow_bash,
@@ -1139,6 +1155,8 @@ async def execute_instruction(
         trust_callback=ui.confirm_action,
     ):
         trim_result = await trim_history_for_request(next_history, model=model)
+        if trim_result.auxiliary_usage:
+            merge_usage(trim_result.auxiliary_usage)
         ui.set_context_usage(trim_result.trimmed_tokens, input_token_budget(model))
         if trim_result.dropped_turns:
             ui.warning(
@@ -1155,34 +1173,24 @@ async def execute_instruction(
             # Use the trimmed history (including summary) for the rest of this turn
             next_history = list(trim_result.request_history)
 
-        async for chunk_str in run_agent_stream(next_history, model=model):
-            event = json.loads(chunk_str)
-            if event.get("run_id"):
-                turn_checkpoint_id = str(event["run_id"])
-            if event.get("type") == "usage":
-                from apsara_cli.engine.usage import add_usage, normalize_usage
-
-                data = event.get("data") or {}
-                if aggregate_usage is None:
-                    aggregate_usage = {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                        "cached_tokens": 0,
-                        "cache_creation_tokens": 0,
-                        "reasoning_tokens": 0,
-                        "model_usage": {},
-                    }
-                add_usage(aggregate_usage, data)
-                normalized = normalize_usage(data)
-                usage_model = str(data.get("apsara_model") or model)
-                by_model = aggregate_usage["model_usage"].setdefault(
-                    usage_model, {},
-                )
-                add_usage(by_model, normalized)
-            else:
-                print_event(event, ui)
-                update_history_from_event(next_history, event)
+        try:
+            async for chunk_str in run_agent_stream(next_history, model=model):
+                event = json.loads(chunk_str)
+                if event.get("run_id"):
+                    turn_checkpoint_id = str(event["run_id"])
+                if event.get("type") == "usage":
+                    merge_usage(event.get("data") or {})
+                else:
+                    print_event(event, ui)
+                    update_history_from_event(next_history, event)
+        except asyncio.CancelledError:
+            # Completed calls may already have provider totals; retain them,
+            # then record the in-flight request separately as an estimate.
+            if aggregate_usage:
+                ui.usage(aggregate_usage)
+            ui.record_interrupted_usage(trim_result.trimmed_tokens, model)
+            save_if_needed(history, model, options, ui)
+            raise
 
     if turn_checkpoint_id:
         try:

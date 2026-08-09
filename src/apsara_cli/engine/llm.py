@@ -77,18 +77,25 @@ async def summarize_messages(messages: list[dict], model: str = DEFAULT_MODEL) -
     """
     Summarize a list of messages into a concise paragraph.
     """
+    summary, _usage = await summarize_messages_with_usage(messages, model=model)
+    return summary
+
+
+async def summarize_messages_with_usage(
+    messages: list[dict], model: str = DEFAULT_MODEL
+) -> tuple[str, dict[str, Any]]:
+    """Summarize messages and return provider usage for session accounting."""
     summary_prompt = (
         "You are an assistant helping to manage conversation history. "
         "Summarize the following conversation turns into a single concise paragraph. "
         "Focus on the technical problems discussed, the actions taken by the agent, and the current state of the task. "
         "Do not include pleasantries. Be extremely concise."
     )
-    
     summary_messages = [
         {"role": "system", "content": summary_prompt},
-        {"role": "user", "content": json.dumps(messages)}
+        {"role": "user", "content": json.dumps(messages)},
     ]
-    
+
     try:
         resolved_model, provider_options = resolve_litellm_request(model)
         response = await litellm.acompletion(
@@ -97,9 +104,24 @@ async def summarize_messages(messages: list[dict], model: str = DEFAULT_MODEL) -
             max_tokens=300,
             **provider_options,
         )
-        return response.choices[0].message.content.strip()
+        usage = response.usage.model_dump() if response.usage else {}
+        if usage:
+            usage = dict(usage)
+            usage.update({
+                "apsara_model": model,
+                "provider_reported_calls": 1,
+                "auxiliary_calls": 1,
+            })
+        else:
+            usage = {
+                "apsara_model": model,
+                "estimated_input_tokens": estimate_request_tokens(summary_messages, model=model),
+                "unreported_calls": 1,
+                "auxiliary_calls": 1,
+            }
+        return response.choices[0].message.content.strip(), usage
     except Exception as e:
-        return f"[Summary failed: {e}]"
+        return f"[Summary failed: {e}]", {}
 
 
 def _is_malformed_tool_call(exc: Exception) -> bool:

@@ -89,7 +89,7 @@ def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
     })
 
     assert ui.calculate_session_cost() == 0.0
-    assert "$0.0000" in capsys.readouterr().out
+    assert "$0.0000 promo" in capsys.readouterr().out
 
 
 def test_unknown_model_usage_is_provider_billed_not_guessed(capsys):
@@ -153,6 +153,20 @@ def test_detailed_usage_and_rate_limits_are_rendered_and_restorable(capsys):
     assert restored._session_cached_tokens == 40
     assert restored._session_reasoning_tokens == 10
     assert restored.rate_limit_label() == "9 requests left · reset 3s"
+
+
+def test_unreported_usage_stays_separate_from_provider_totals(capsys):
+    ui = ConsoleUI(use_color=False, typing_delay=0)
+    ui.usage({
+        "estimated_input_tokens": 900,
+        "unreported_calls": 1,
+        "apsara_model": "opencode/big-pickle",
+    })
+
+    assert ui._session_total_tokens == 0
+    assert ui._session_estimated_tokens == 900
+    assert ui.usage_snapshot()["unreported_calls"] == 1
+    assert "~900 estimated input/unreported" in capsys.readouterr().out
 
 
 def test_native_approval_overlay_renders_diff_and_shortcuts():

@@ -54,7 +54,13 @@ def test_trim_short_history_unchanged():
 
 
 async def _fake_summarize(messages, model="gpt-3.5-turbo"):
-    return "earlier conversation summary"
+    return "earlier conversation summary", {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+        "provider_reported_calls": 1,
+        "auxiliary_calls": 1,
+    }
 
 
 def test_trim_drops_oldest_turns():
@@ -62,7 +68,7 @@ def test_trim_drops_oldest_turns():
     # Each turn ~4000 chars → ~1000 tokens; 15 turns → ~15000 tokens > 9000 budget
     big_history = _make_history(15, chars_per_turn=4000)
     # Patch the summarizer so trimming stays offline (no LLM/network call).
-    with patch("apsara_cli.engine.llm.summarize_messages", _fake_summarize):
+    with patch("apsara_cli.engine.llm.summarize_messages_with_usage", _fake_summarize):
         result = asyncio.run(trim_history_for_request(big_history, model="gpt-3.5-turbo"))
     assert result.dropped_turns > 0
     assert result.trimmed_tokens <= input_token_budget("gpt-3.5-turbo")
@@ -151,6 +157,19 @@ def test_env_override_wins(monkeypatch):
     assert input_token_budget("nonexistent/model-xyz") == 25_000
 
 
+def test_env_override_cannot_bypass_global_ceiling(monkeypatch):
+    monkeypatch.setenv("APSARA_INPUT_TOKEN_BUDGET", "999999999")
+    assert input_token_budget("nonexistent/model-xyz") == MAX_INPUT_TOKEN_BUDGET
+
+
+def test_env_override_cannot_bypass_model_ceiling(monkeypatch):
+    monkeypatch.setenv("APSARA_INPUT_TOKEN_BUDGET", "999999999")
+    budget = input_token_budget("ollama/qwen2.5-coder:7b")
+    assert budget < model_context_window("ollama/qwen2.5-coder:7b")
+    monkeypatch.delenv("APSARA_INPUT_TOKEN_BUDGET")
+    assert budget == input_token_budget("ollama/qwen2.5-coder:7b")
+
+
 def test_env_override_is_floored(monkeypatch):
     monkeypatch.setenv("APSARA_INPUT_TOKEN_BUDGET", "10")
     assert input_token_budget("gpt-4o") == MIN_INPUT_TOKEN_BUDGET
@@ -175,7 +194,7 @@ def test_large_context_model_keeps_history_that_used_to_be_trimmed():
     # ~15 turns x 4000 chars ~= 15k tokens: over the old 9k budget, well under
     # what a 200k-window model can hold.
     history = _make_history(15, chars_per_turn=4000)
-    with patch("apsara_cli.engine.llm.summarize_messages", _fake_summarize):
+    with patch("apsara_cli.engine.llm.summarize_messages_with_usage", _fake_summarize):
         result = asyncio.run(
             trim_history_for_request(history, model="anthropic/claude-3-5-sonnet-20241022")
         )

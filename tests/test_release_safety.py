@@ -111,3 +111,5 @@ def test_workspace_usage_aggregates_saved_sessions_locally(tmp_path):
     rendered = format_usage_report(tmp_path, {"prompt_tokens": 2, "completion_tokens": 3})
     assert "Current session  5 tokens" in rendered
     assert "Stored locally" in rendered
+    assert "not a billing ledger" in rendered
+    assert "provider dashboard remains authoritative" in rendered

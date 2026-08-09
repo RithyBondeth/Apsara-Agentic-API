@@ -42,6 +42,9 @@ class ModelEntry:
     replacement: Optional[str] = None
     supports_tools: bool = True
     supports_streaming: bool = True
+    promotional_pricing: bool = False
+    pricing_verified_on: Optional[str] = None
+    pricing_source_url: Optional[str] = None
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
@@ -59,6 +62,9 @@ MODELS: list[ModelEntry] = [
         aliases=["big-pickle", "pickle"],
         input_cost_per_million=0.0,
         output_cost_per_million=0.0,
+        promotional_pricing=True,
+        pricing_verified_on="2026-08-09",
+        pricing_source_url="https://opencode.ai/docs/zen",
     ),
 
     # ── Groq (free tier — fastest hosted inference) ───────────────────────────

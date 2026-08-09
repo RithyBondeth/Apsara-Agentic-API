@@ -44,6 +44,10 @@ precedence over a stored key:
 export OPENCODE_API_KEY="your-key"  # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 ```
 
+For safety, project `.env` files load provider credential keys only. Export
+advanced runtime settings in your shell; a checked-out project cannot use its
+`.env` to redirect the API or raise Apsara's token budget.
+
 Big Pickle is free for a limited period. OpenCode states that submitted data
 may be used to improve the model during that period, so do not test it with
 confidential repositories.

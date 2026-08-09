@@ -375,6 +375,11 @@ def _sidebar_text(
         f"{ui.style(f'/ {context_budget:,} context', _DIMTXT)}"
     )
     lines(f"   {ui.style(f'{total:,}', _C_VALUE)} {ui.style('session tokens', _DIMTXT)}")
+    if ui._session_estimated_tokens:
+        lines(
+            f"   {ui.style(f'~{ui._session_estimated_tokens:,}', '38;2;247;200;100')} "
+            f"{ui.style('estimated input · provider omitted usage', _DIMTXT)}"
+        )
     lines(
         f"   {ui.style(f'in {ui._session_prompt_tokens:,} · out {ui._session_completion_tokens:,}', _DIMTXT)}"
     )

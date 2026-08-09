@@ -18,8 +18,9 @@ SAFE_INPUT_TOKEN_BUDGET = FALLBACK_INPUT_TOKEN_BUDGET
 WINDOW_FRACTION = 0.75
 
 # Ceiling regardless of window size: past this, latency and per-request cost
-# dominate, and on a bring-your-own-key tool that bill is the user's. Raise it
-# deliberately with APSARA_INPUT_TOKEN_BUDGET.
+# dominate, and on a bring-your-own-key tool that bill is the user's. The
+# environment override may lower this value, but cannot bypass the model-aware
+# safety ceiling.
 MAX_INPUT_TOKEN_BUDGET = 128_000
 MIN_INPUT_TOKEN_BUDGET = 4_000
 
@@ -60,22 +61,29 @@ def model_context_window(model: str) -> Optional[int]:
 
 def input_token_budget(model: str) -> int:
     """How many tokens of conversation we're willing to send for `model`."""
+    window = model_context_window(model)
+    if window:
+        from apsara_cli.engine.llm import DEFAULT_MAX_COMPLETION_TOKENS
+
+        safe_ceiling = int(window * WINDOW_FRACTION) - DEFAULT_MAX_COMPLETION_TOKENS
+        safe_ceiling = min(safe_ceiling, MAX_INPUT_TOKEN_BUDGET)
+        safe_ceiling = max(MIN_INPUT_TOKEN_BUDGET, safe_ceiling)
+    else:
+        # Unknown models may still be intentionally routed through LiteLLM, but
+        # an override must never remove Apsara's global request ceiling.
+        safe_ceiling = MAX_INPUT_TOKEN_BUDGET
+
     override = os.environ.get("APSARA_INPUT_TOKEN_BUDGET")
     if override:
         try:
-            return max(MIN_INPUT_TOKEN_BUDGET, int(override))
+            requested = max(MIN_INPUT_TOKEN_BUDGET, int(override))
+            return min(requested, safe_ceiling)
         except ValueError:
             pass
 
-    window = model_context_window(model)
     if not window:
         return FALLBACK_INPUT_TOKEN_BUDGET
-
-    from apsara_cli.engine.llm import DEFAULT_MAX_COMPLETION_TOKENS
-
-    usable = int(window * WINDOW_FRACTION) - DEFAULT_MAX_COMPLETION_TOKENS
-    usable = min(usable, MAX_INPUT_TOKEN_BUDGET)
-    return max(MIN_INPUT_TOKEN_BUDGET, usable)
+    return safe_ceiling
 
 
 def group_conversation_turns(history: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -104,7 +112,7 @@ def flatten_conversation_turns(turns: list[list[dict[str, Any]]]) -> list[dict[s
 
 async def trim_history_for_request(history: list[dict[str, Any]], model: str) -> ContextTrimResult:
     from apsara_cli.engine.executor import SYSTEM_PROMPT
-    from apsara_cli.engine.llm import estimate_request_tokens, summarize_messages
+    from apsara_cli.engine.llm import estimate_request_tokens, summarize_messages_with_usage
 
     base_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     original_tokens = estimate_request_tokens(base_messages + history, model=model)
@@ -153,8 +161,11 @@ async def trim_history_for_request(history: list[dict[str, Any]], model: str) ->
     dropped_messages = flatten_conversation_turns(dropped_turns_list)
     
     summary = None
+    auxiliary_usage = None
     if dropped_messages:
-        summary = await summarize_messages(dropped_messages, model=model)
+        summary, auxiliary_usage = await summarize_messages_with_usage(
+            dropped_messages, model=model
+        )
         # Inject summary as context for the agent
         summary_message = {
             "role": "system", 
@@ -170,6 +181,7 @@ async def trim_history_for_request(history: list[dict[str, Any]], model: str) ->
         original_tokens=original_tokens,
         trimmed_tokens=trimmed_tokens,
         summary=summary,
+        auxiliary_usage=auxiliary_usage,
     )
 
 

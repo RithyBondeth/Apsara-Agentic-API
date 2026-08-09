@@ -40,6 +40,32 @@ COMMAND_PRESETS: dict[str, Set[str]] = {
     "git": {"git"},
 }
 
+# A repository-controlled .env is convenient for BYO provider credentials, but
+# it is not a trusted place for Apsara runtime policy. In particular, projects
+# must not be able to raise token budgets, redirect API endpoints, replace the
+# pricing cache, or enable fallbacks merely because the user opened the folder.
+# Explicit shell environment variables and user config remain available for
+# intentional advanced configuration.
+WORKSPACE_DOTENV_CREDENTIAL_KEYS = frozenset({
+    "ANTHROPIC_API_KEY",
+    "AZURE_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "CEREBRAS_API_KEY",
+    "COHERE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "FIREWORKS_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "NVIDIA_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "TOGETHER_API_KEY",
+    "XAI_API_KEY",
+})
+
 
 def expand_command_presets(commands: Set[str]) -> Set[str]:
     """Replace @preset entries with their commands, leaving others untouched."""
@@ -130,7 +156,11 @@ def load_cli_environment(args: argparse.Namespace, config: Any) -> list[Path]:
         values = dotenv_values(env_path)
         loaded_any = False
         for key, value in values.items():
-            if value is None or key in os.environ:
+            if (
+                value is None
+                or key not in WORKSPACE_DOTENV_CREDENTIAL_KEYS
+                or key in os.environ
+            ):
                 continue
             os.environ[key] = value
             loaded_any = True

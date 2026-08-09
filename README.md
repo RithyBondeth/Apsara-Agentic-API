@@ -204,7 +204,9 @@ apsara trust --reset   # revoke them all
 ## Configuration
 
 Settings resolve in this order: CLI flags → project `.apsara/config.toml` →
-global `~/.apsara/config.toml` → `.env`.
+global `~/.apsara/config.toml` → built-in defaults. A project `.env` is read
+only for an explicit allowlist of provider credential keys; repository files
+cannot change token limits, fallbacks, pricing paths, or provider endpoints.
 
 ```toml
 [defaults]
@@ -263,21 +265,31 @@ stays on disk.
 
 The budget is derived from the selected model's context window, so a
 200k-window model gets a far larger working set than a 32k one. `/status` shows
-the current usage against both. Override it with `APSARA_INPUT_TOKEN_BUDGET` if
-you want to trade cost for memory, and cap the agent's per-turn tool calls with
-`APSARA_MAX_STEPS`.
+the current usage against both. `APSARA_INPUT_TOKEN_BUDGET` may lower the
+working budget, but it cannot exceed the selected model's safety allowance or
+the global 128k input ceiling. Cap per-turn tool calls with `APSARA_MAX_STEPS`.
 
 Token counts are provider-reported and aggregated across every model call in an
-agent turn. They measure session usage and context capacity, not an Apsara fee.
-Big Pickle and local models display `$0`; when Apsara does not have authoritative
-pricing metadata it displays `provider billed` instead of estimating a cost.
+agent turn, including automatic conversation summaries. If a streaming provider
+omits usage—or a call is interrupted—Apsara keeps a separate local estimate and
+never adds it to provider-reported totals or cost. These counters measure session
+telemetry and context capacity, not an Apsara fee, secure quota, or billing ledger.
+The provider dashboard remains authoritative.
+
+Big Pickle currently displays `$0.0000 promo`, based on OpenCode's temporary-free
+listing verified on 2026-08-09. Promotional pricing expires from Apsara's trusted
+snapshot after 30 days unless re-verified, so the CLI cannot silently claim that a
+temporary model stays free forever. Local models remain `$0`; when current pricing
+is unavailable Apsara displays `provider billed` instead of inventing a cost.
 
 Usage totals persist with named sessions and are restored when a session is
 reopened. The CLI separates input, output, cache-read, cache-write, and reasoning
 tokens when the provider reports those fields. Provider rate-limit counters and
 reset times also appear in `/status` and the TUI sidebar when available.
 `/usage` provides a local-only rollup for the current session, saved sessions,
-and each model. It reads the same JSON files and never uploads telemetry.
+and each model. It reads editable local JSON files and never uploads telemetry;
+deleting or modifying those files changes the local display but cannot alter the
+provider's metering, limits, or invoice.
 
 For paid models, Apsara calculates a directional cost from provider-reported
 tokens and LiteLLM's maintained public list-price metadata. That metadata is

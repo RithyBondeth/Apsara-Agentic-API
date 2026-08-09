@@ -162,6 +162,19 @@ def test_usage_event_identifies_the_model_that_generated_it():
 
     usage = next(e["data"] for e in events if e["type"] == "usage")
     assert usage["apsara_model"] == executor.DEFAULT_MODEL
+    assert usage["provider_reported_calls"] == 1
+
+
+def test_missing_provider_usage_is_kept_as_separate_estimate():
+    fake, _ = _scripted_llm([[_final_event("Done.")]])
+    with patch.object(executor, "call_llm_stream", fake), \
+         patch.object(executor, "estimate_request_tokens", return_value=321):
+        events = _run([{"role": "user", "content": "hi"}])
+
+    usage = next(e["data"] for e in events if e["type"] == "usage")
+    assert usage["estimated_input_tokens"] == 321
+    assert usage["unreported_calls"] == 1
+    assert usage.get("total_tokens", 0) == 0
 
 
 def test_repeated_erroring_tool_calls_trigger_blocked():
