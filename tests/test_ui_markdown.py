@@ -6,6 +6,7 @@ from apsara_cli.cli.tui import (
     TuiConsoleUI,
     _approval_footer,
     _approval_text,
+    _composer_edge,
     _restore_history,
     _status_right,
     _welcome_panel_width,
@@ -180,6 +181,14 @@ def test_welcome_panel_never_exceeds_terminal_width():
     assert _welcome_panel_width(80) == 64
     assert 1 <= _welcome_panel_width(30) < 30
     assert _welcome_panel_width(1) == 1
+
+
+def test_composer_uses_rounded_box_edges():
+    top = _composer_edge("╭", "╮")
+    bottom = _composer_edge("╰", "╯")
+
+    assert [window.char for window in top.children] == ["╭", "─", "╮"]
+    assert [window.char for window in bottom.children] == ["╰", "─", "╯"]
 
 
 def test_big_pickle_usage_is_zero_cost_not_an_estimate(capsys):
