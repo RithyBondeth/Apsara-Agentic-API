@@ -79,6 +79,8 @@ from apsara_cli.engine.models import (
 )
 from apsara_cli.shared.ui import (
     ConsoleUI,
+    PANEL_BACKGROUND_ANSI,
+    PANEL_BACKGROUND_HEX,
     Theme,
     action_allows_blanket_approval,
     describe_action,
@@ -100,18 +102,6 @@ def _welcome_panel_width(columns: int) -> int:
     columns = max(1, columns)
     margin = min(16, max(4, columns // 5), max(columns - 1, 0))
     return max(1, min(84, columns - margin))
-
-
-def _composer_edge(left: str, right: str) -> VSplit:
-    """Build one rounded horizontal edge for the typing box."""
-    return VSplit(
-        [
-            Window(width=1, char=left, style="class:inputborder"),
-            Window(char="─", style="class:inputborder"),
-            Window(width=1, char=right, style="class:inputborder"),
-        ],
-        height=1,
-    )
 
 
 def _model_needs_key(model: str) -> bool:
@@ -225,13 +215,23 @@ class TuiConsoleUI(ConsoleUI):
         self._invalidate()
 
     def _user_card_lines(self, card: "_ResponsiveCard", width: int) -> list[str]:
-        """Reflow the original labeled user rail at the live pane width."""
-        inner_width = max(1, width - 4)
-        bar = self.style("▌", _ACCENT)
-        lines = [
-            f"  {self.style('❯', '1', _ACCENT)} "
-            f"{self.style('You', '1', '38;2;210;220;242')}"
-        ]
+        """Reflow a user request on the shared filled panel surface."""
+        card_width = max(2, width - 2)
+        body_width = max(1, card_width - 1)
+        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
+        inner_width = max(1, body_width - (horizontal_padding * 2))
+        bar = self.style("▌", "1", _ACCENT)
+
+        def card_line(content: str = "", color: str = "38;2;225;230;242") -> str:
+            clipped = content[:inner_width]
+            padded = clipped.ljust(inner_width)
+            gutter = " " * horizontal_padding
+            return (
+                f"  {bar}"
+                f"{self.style(gutter + padded + gutter, color, PANEL_BACKGROUND_ANSI)}"
+            )
+
+        lines = [card_line()]
         for raw in card.text.split("\n"):
             wrapped = textwrap.wrap(
                 raw,
@@ -239,10 +239,12 @@ class TuiConsoleUI(ConsoleUI):
                 replace_whitespace=False,
                 drop_whitespace=True,
             ) or [""]
-            lines.extend(
-                f"  {bar} {self.style(line, '38;2;225;230;242')}"
-                for line in wrapped
-            )
+            lines.extend(card_line(line) for line in wrapped)
+        lines.extend([
+            card_line(),
+            card_line(f"you  {card.timestamp}", "38;2;132;136;146"),
+            card_line(),
+        ])
         return lines
 
     def rendered_lines(self) -> list[str]:
@@ -953,19 +955,19 @@ async def tui_loop(args: object, config: object) -> int:
 
         def _row(content, height) -> VSplit:
             return VSplit([
-                Window(width=1, char="│", style="class:inputborder"),
                 Window(width=1, char="▌", style="class:accent"),
-                Window(width=2, char=" "),
+                Window(width=_PANEL_GUTTER, char=" "),
                 content,
-                Window(width=2, char=" "),
+                Window(width=_PANEL_GUTTER, char=" "),
                 Window(width=1, char="│", style="class:inputborder"),
             ], height=height)
 
+        padding_row = lambda: _row(Window(char=" "), 1)
         box = HSplit([
-            _composer_edge("╭", "╮"),
+            padding_row(),
             _row(control_window, input_height),
             _row(composer_meta, 1),
-            _composer_edge("╰", "╯"),
+            padding_row(),
         ], width=width, style="class:composer")
         return box, control_window
 
@@ -1170,10 +1172,10 @@ async def tui_loop(args: object, config: object) -> int:
         "accent": "fg:#6096fa",
         "sep": "fg:#3d4668",
         "inputborder": "fg:#5a6cb4",
-        "composer": "bg:#0e1015",
+        "composer": f"bg:{PANEL_BACKGROUND_HEX}",
         "approvalaccent": "fg:#f0b35f bg:#0e1015",
         "placeholder": "fg:#5a616e",
-        "sidebar": "bg:#0e1015",
+        "sidebar": f"bg:{PANEL_BACKGROUND_HEX}",
         "statusbar": "bg:#0e1015",
         "overlay": "bg:#08090d",
         "approval": "bg:#0e1015 fg:#e1e6f2",

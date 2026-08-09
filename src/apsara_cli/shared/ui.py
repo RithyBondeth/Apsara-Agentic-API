@@ -106,6 +106,12 @@ class Theme:
 
 DEFAULT_THEME = Theme()
 
+# Shared dark surface used by transcript cards and the full-screen TUI's
+# composer/sidebar. Keeping both representations here prevents the three
+# boxed surfaces from drifting apart again.
+PANEL_BACKGROUND_HEX = "#0e1015"
+PANEL_BACKGROUND_ANSI = "48;2;14;16;21"
+
 
 # Blanket approval is intentionally allowlisted to reversible workspace
 # changes. Unknown and newly added actions therefore require an explicit
@@ -440,41 +446,62 @@ class ConsoleUI:
         width: Optional[int] = None,
         timestamp: Optional[str] = None,
     ) -> list[str]:
-        """Format a Markdown response in the original rounded Apsara box."""
-        from rich import box
+        """Format a Markdown response in the original filled answer card."""
         from rich.console import Console
         from rich.markdown import Markdown
-        from rich.panel import Panel
         from rich.text import Text
 
-        # The two-space transcript indent is outside Rich's panel, so reserve
-        # it here and keep the complete line inside the requested pane width.
-        panel_width = max(4, (width or self.content_width()) - 2)
+        panel_width = max(4, width or self.content_width())
+        card_width = max(2, panel_width - 2)
+        body_width = max(1, card_width - 1)
+        horizontal_padding = min(3, max(0, (body_width - 1) // 2))
+        render_width = max(1, body_width - (horizontal_padding * 2))
         rendered = StringIO()
         console = Console(
             file=rendered,
             force_terminal=self.use_color,
             color_system="truecolor" if self.use_color else None,
-            width=panel_width,
+            width=render_width,
+            # Rich 15 ignores an explicit width on a dumb terminal unless a
+            # height is also supplied. Pin both so cards never spill into the
+            # sidebar in captured terminals or CI.
+            height=25,
             legacy_windows=False,
         )
         body = text.strip() or "_No response content._"
-        console.print(Panel(
-            Markdown(body, code_theme="monokai"),
-            title=Text("Apsara", style="bold rgb(225,230,242)"),
-            title_align="left",
-            border_style="rgb(80,100,140)",
-            box=box.ROUNDED,
-            padding=(0, 1),
-            expand=True,
-        ))
-        return [
-            f"  {line}"
-            for line in rendered.getvalue().rstrip("\n").splitlines()
-        ]
+        console.print(Markdown(body, code_theme="monokai"))
+
+        rail = self.style("▌", "1", "38;2;104;205;220")
+        foreground = "38;2;225;230;242"
+        timestamp = timestamp or datetime.now().strftime("%I:%M %p").lstrip("0")
+
+        def card_line(content: str = "") -> str:
+            visual_width = Text.from_ansi(content).cell_len
+            content += " " * max(render_width - visual_width, 0)
+            if self.use_color:
+                content = content.replace(
+                    "\033[0m", f"\033[0m\033[{PANEL_BACKGROUND_ANSI}m"
+                )
+            gutter = " " * horizontal_padding
+            return (
+                f"  {rail}"
+                f"{self.style(gutter + content + gutter, foreground, PANEL_BACKGROUND_ANSI)}"
+            )
+
+        lines = [card_line(" " * render_width)]
+        for line in rendered.getvalue().rstrip("\n").splitlines() or [""]:
+            lines.append(card_line(line))
+        lines.append(card_line(" " * render_width))
+        footer = f"apsara  {timestamp}"[:render_width].ljust(render_width)
+        if self.use_color:
+            footer = self.style(footer, "38;2;132;136;146").replace(
+                "\033[0m", f"\033[0m\033[{PANEL_BACKGROUND_ANSI}m"
+            )
+        lines.extend([card_line(footer), card_line(" " * render_width)])
+        return lines
 
     def render_markdown_panel(self, text: str) -> None:
-        """Render an assistant response in the original rounded panel."""
+        """Render an assistant response in the shared filled panel."""
         for line in self._markdown_card_lines(text):
             self.print_line(line)
 
