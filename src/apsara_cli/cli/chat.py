@@ -423,6 +423,8 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Workspace", [
         ("/diff", "", "Show Git status plus staged and unstaged changes"),
+        ("/turns", "", "List atomic checkpoints grouped by agent turn"),
+        ("/undo-turn", "[turn-id]", "Roll back every captured change from one turn"),
         ("/checkpoints", "", "List automatic file snapshots"),
         ("/undo", "[checkpoint-id]", "Restore the latest or selected snapshot"),
         ("/memory", "show", "Show persistent project memory"),
@@ -515,6 +517,23 @@ def handle_chat_command(
         from apsara_cli.engine.tools import list_workspace_checkpoints
         with agent_runtime_context(workspace_root=options.workspace_root):
             ui.info(list_workspace_checkpoints())
+        return True, current_model
+
+    if command_text == "/turns":
+        from apsara_cli.engine.tools import list_turn_checkpoints_tool
+        with agent_runtime_context(workspace_root=options.workspace_root):
+            ui.info(list_turn_checkpoints_tool())
+        return True, current_model
+
+    if command_text == "/undo-turn" or command_text.startswith("/undo-turn "):
+        from apsara_cli.engine.tools import undo_turn_checkpoint
+        turn_id = command_text[len("/undo-turn"):].strip()
+        if not ui.confirm_action("undo_turn", {"turn_id": turn_id or "latest"}):
+            ui.info("Turn rollback cancelled.")
+            return True, current_model
+        with agent_runtime_context(workspace_root=options.workspace_root, read_only=options.read_only):
+            result = undo_turn_checkpoint(turn_id)
+        (ui.error if result.startswith("Error:") else ui.success)(result)
         return True, current_model
 
     if command_text == "/undo" or command_text.startswith("/undo "):
@@ -1103,6 +1122,7 @@ async def execute_instruction(
     next_history = list(history)
     next_history.append({"role": "user", "content": instruction})
     aggregate_usage: Optional[dict[str, Any]] = None
+    turn_checkpoint_id: Optional[str] = None
     ui.begin_turn()
 
     with agent_runtime_context(
@@ -1137,6 +1157,8 @@ async def execute_instruction(
 
         async for chunk_str in run_agent_stream(next_history, model=model):
             event = json.loads(chunk_str)
+            if event.get("run_id"):
+                turn_checkpoint_id = str(event["run_id"])
             if event.get("type") == "usage":
                 from apsara_cli.engine.usage import add_usage, normalize_usage
 
@@ -1161,6 +1183,23 @@ async def execute_instruction(
             else:
                 print_event(event, ui)
                 update_history_from_event(next_history, event)
+
+    if turn_checkpoint_id:
+        try:
+            from apsara_cli.engine.turn_checkpoints import list_turn_checkpoints
+            manifest = next(
+                (item for item in list_turn_checkpoints(options.workspace_root)
+                 if item.get("id") == turn_checkpoint_id),
+                None,
+            )
+            if manifest and manifest.get("changes"):
+                ui.info(f"Turn checkpoint {turn_checkpoint_id} · rollback with /undo-turn {turn_checkpoint_id}")
+                ui.print_block("\n".join(
+                    f"{change.get('action', 'changed'):>8}  {change.get('path', '')}"
+                    for change in manifest["changes"]
+                ))
+        except (OSError, ValueError):
+            pass
 
     from apsara_cli.engine.executor import SYSTEM_PROMPT
     from apsara_cli.engine.llm import estimate_request_tokens

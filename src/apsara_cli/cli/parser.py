@@ -104,9 +104,16 @@ def build_parser() -> argparse.ArgumentParser:
     trust_parser.add_argument("--no-color", dest="color", action="store_false",
                               help="Disable colored terminal output.")
 
-    eval_parser = subparsers.add_parser("eval", help="Score recorded agent runs against a JSON regression suite.")
+    eval_parser = subparsers.add_parser("eval", help="Score recorded runs or execute coding benchmark suites.")
     eval_parser.add_argument("suite", help="Path to an evaluation suite JSON file.")
     eval_parser.add_argument("--workspace", default=None, help="Workspace containing .apsara/runs.")
+    eval_parser.add_argument("--live", action="store_true", default=False,
+                             help="Run coding benchmark cases with the configured model (uses provider tokens).")
+    eval_parser.add_argument("--model", default=None, help="Model used by a live coding benchmark.")
+    eval_parser.add_argument("--output", default=None,
+                             help="Directory for disposable benchmark workspaces and result evidence.")
+    eval_parser.add_argument("--results", default=None,
+                             help="Re-score an existing benchmark results.json without provider calls.")
 
     subparsers.add_parser("login", help="Choose a model provider and save your API key.")
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
@@ -151,9 +158,35 @@ async def dispatch_command(args: argparse.Namespace, config: object) -> int:
         return trust_command(args, config)
     if args.command == "eval":
         from pathlib import Path
-        from apsara_cli.engine.evals import run_suite
+        from apsara_cli.engine.evals import (
+            is_benchmark_suite,
+            run_benchmark_suite,
+            run_suite,
+            score_benchmark_results,
+        )
+        suite_path = Path(args.suite).resolve()
+        if is_benchmark_suite(suite_path):
+            if args.results:
+                results = score_benchmark_results(suite_path, Path(args.results).resolve())
+            elif args.live:
+                output = Path(args.output or ".apsara/benchmarks")
+                results, results_path = await run_benchmark_suite(
+                    suite_path,
+                    output,
+                    args.model or config.defaults.model,
+                )
+                print(f"Evidence: {results_path}")
+            else:
+                print("Coding benchmark suites require --live or --results <results.json>.")
+                return 2
+            for result in results:
+                print(
+                    f"{'PASS' if result.passed else 'FAIL'} {result.name} "
+                    f"[{result.language}] {result.score}/100: {'; '.join(result.checks)}"
+                )
+            return 0 if all(result.passed for result in results) else 1
         workspace = Path(args.workspace or ".").resolve()
-        results = run_suite(Path(args.suite).resolve(), workspace)
+        results = run_suite(suite_path, workspace)
         for result in results:
             print(f"{'PASS' if result.passed else 'FAIL'} {result.name}: {'; '.join(result.checks)}")
         return 0 if all(result.passed for result in results) else 1

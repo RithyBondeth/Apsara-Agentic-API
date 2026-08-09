@@ -46,5 +46,7 @@ venv.bak/
 .apsara/logs/
 .apsara/runs/
 .apsara/checkpoints/
+.apsara/turns/
+.apsara/benchmarks/
 .apsara/reports/
 .apsara/bugs/

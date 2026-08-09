@@ -188,7 +188,7 @@ def classify_tool_risk(tool_name: str) -> ToolRisk:
         return ToolRisk.EXTERNAL
     if tool_name in {"delete_file"}:
         return ToolRisk.DESTRUCTIVE
-    if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "move_file", "create_directory", "undo_last_checkpoint", "remember_project_note"}:
+    if tool_name in {"write_to_file", "edit_file", "replace_file_lines", "move_file", "create_directory", "undo_last_checkpoint", "undo_turn_checkpoint", "remember_project_note"}:
         return ToolRisk.WRITE
     if tool_name in {"run_bash_command", "start_process", "stop_process"}:
         return ToolRisk.EXECUTE
@@ -444,7 +444,21 @@ def _checkpoint(paths: list[Path], label: str) -> Optional[str]:
         return None
     try:
         from apsara_cli.engine.checkpoints import create_checkpoint
+        from apsara_cli.engine.turn_checkpoints import capture_turn_paths
 
+        workspace = _workspace_root().resolve()
+        turn_paths = list(paths)
+        for path in paths:
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(workspace)
+            except ValueError:
+                continue
+            parent = resolved.parent
+            while parent != workspace and not parent.exists():
+                turn_paths.append(parent)
+                parent = parent.parent
+        capture_turn_paths(workspace, turn_paths)
         return create_checkpoint(_workspace_root(), paths, label)
     except Exception:
         return None
@@ -532,6 +546,7 @@ def create_directory(path: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully created directory: {_display_path(resolved_path)} (simulated)"
 
+        _checkpoint([resolved_path], f"Before creating directory {_display_path(resolved_path)}")
         resolved_path.mkdir(parents=True, exist_ok=True)
         return f"Created directory: {_display_path(resolved_path)}"
     except Exception as exc:
@@ -832,6 +847,8 @@ def run_bash_command(command: str) -> str:
         if _dry_run():
             return f"[Dry Run] Successfully executed command: {command} (simulated)"
 
+        from apsara_cli.engine.turn_checkpoints import capture_turn_workspace
+        capture_turn_workspace(_workspace_root())
         timeout_seconds = _bash_timeout()
         result = subprocess.run(
             command,
@@ -871,6 +888,8 @@ def start_process(command: str) -> str:
         return f"Error: Background command '{command}' was not approved."
     if _dry_run():
         return f"[Dry Run] Would start background process: {command}"
+    from apsara_cli.engine.turn_checkpoints import capture_turn_workspace
+    capture_turn_workspace(_workspace_root())
     from apsara_cli.engine.processes import PROCESS_MANAGER
     item = PROCESS_MANAGER.start(command, _workspace_root())
     return f"Started process {item.process_id}: {command}"
@@ -1274,6 +1293,33 @@ def undo_last_checkpoint(checkpoint_id: str = "") -> str:
     )
 
 
+def list_turn_checkpoints_tool() -> str:
+    """List atomic checkpoints grouped by complete agent turn."""
+    from apsara_cli.engine.turn_checkpoints import format_turn_checkpoint, list_turn_checkpoints
+
+    turns = list_turn_checkpoints(_workspace_root())
+    if not turns:
+        return "No turn checkpoints available."
+    return "\n".join(format_turn_checkpoint(item) for item in turns[:20])
+
+
+def undo_turn_checkpoint(turn_id: str = "") -> str:
+    """Restore every built-in file mutation from one agent turn."""
+    if _read_only():
+        return "Error: Turn rollback is disabled in read-only mode."
+    from apsara_cli.engine.turn_checkpoints import restore_turn_checkpoint
+
+    try:
+        result = restore_turn_checkpoint(_workspace_root(), turn_id or None)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        return f"Error: {exc}"
+    rollback = result.get("rollback") or {}
+    changed = list(rollback.get("restored") or []) + list(rollback.get("removed") or [])
+    conflicts = list(rollback.get("conflicts") or [])
+    suffix = f" Conflicts left untouched: {', '.join(conflicts)}." if conflicts else ""
+    return f"Rolled back turn {result['id']}. Updated {len(changed)} path(s): {', '.join(changed) or 'none'}.{suffix}"
+
+
 def list_symbols(path: str) -> str:
     """List functions, classes, and important definitions in a source file.
     Currently supports Python (.py) files."""
@@ -1586,6 +1632,12 @@ def get_agent_tools() -> list[Dict[str, Any]]:
             "Restore an automatic file checkpoint. Omit checkpoint_id to undo the latest mutation.",
             {"checkpoint_id": {"type": "string", "description": "Optional checkpoint id."}},
         ),
+        _tool_definition("list_turn_checkpoints_tool", "List atomic checkpoints grouped by agent turn.", {}),
+        _tool_definition(
+            "undo_turn_checkpoint",
+            "Roll back every captured file mutation from an agent turn.",
+            {"turn_id": {"type": "string", "description": "Optional turn/run id; defaults to latest."}},
+        ),
         _tool_definition(
             "repository_map",
             "Build a compact multi-language repository map with manifests and symbols.",
@@ -1661,6 +1713,8 @@ def get_tool_registry() -> Dict[str, Callable[..., str]]:
         "list_symbols": list_symbols,
         "list_workspace_checkpoints": list_workspace_checkpoints,
         "undo_last_checkpoint": undo_last_checkpoint,
+        "list_turn_checkpoints_tool": list_turn_checkpoints_tool,
+        "undo_turn_checkpoint": undo_turn_checkpoint,
         "repository_map": repository_map,
         "find_symbol": find_symbol,
         "read_project_memory": read_project_memory,

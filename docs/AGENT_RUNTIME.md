@@ -13,6 +13,7 @@ flowchart LR
   TOOLS --> MCP[MCP governance]
   EX --> RUN[Run journal]
   FS --> CP[Checkpoints]
+  FS --> TURN[Turn transactions]
   RUN --> REPORT[Reports and evals]
   MEM[Project memory] --> EX
   MAP[Repository intelligence] --> TOOLS
@@ -35,6 +36,9 @@ error, and metadata contract.
 - All built-in paths resolve beneath the selected workspace.
 - Writes remain approval-gated and create a checkpoint before mutation.
 - `/undo` restores the latest snapshot, including removing a newly created file.
+- `/undo-turn` restores all captured mutations from a completed or interrupted
+  agent turn. Non-empty directories created after capture are left untouched
+  and reported as conflicts rather than recursively deleted.
 - `/diff` shows the repository's staged, unstaged, and untracked state without
   mutating Git.
 - Shell and background commands share the same allowlist validation.
