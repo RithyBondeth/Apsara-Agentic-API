@@ -36,6 +36,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+intelligence = [
+  "tree-sitter-language-pack>=1.0.0",
+]
 dev = [
   "pytest>=8.0.0",
 ]

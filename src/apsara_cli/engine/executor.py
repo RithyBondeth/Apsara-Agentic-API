@@ -183,7 +183,7 @@ async def run_agent_stream(
         })
     active_model_index = 0
     mutation_tools = {
-        "write_to_file", "edit_file", "replace_file_lines", "delete_file",
+        "write_to_file", "edit_file", "replace_file_lines", "replace_symbol", "delete_file",
         "move_file", "create_directory",
     }
 
