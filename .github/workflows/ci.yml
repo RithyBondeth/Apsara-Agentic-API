@@ -1,11 +1,10 @@
 name: CI
 
 on:
-  # Run on every branch push, not just the default branch — release prep happens
-  # on working branches (e.g. private-alpha-*), and those need to be validated
-  # across the whole support matrix before they are tagged.
+  # Pull requests validate feature branches. Direct pushes only need a second
+  # run on release-bearing branches; this avoids duplicate push + PR matrices.
   push:
-    branches: ["**"]
+    branches: [main, "private-alpha-*"]
     tags-ignore: ["**"]
   pull_request:
   workflow_dispatch:
