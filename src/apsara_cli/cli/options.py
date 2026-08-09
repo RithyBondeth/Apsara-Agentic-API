@@ -101,12 +101,12 @@ def parse_allowed_commands(raw_commands: Any) -> Optional[Set[str]]:
 
 def resolve_runtime_options(args: argparse.Namespace, config_defaults: Any) -> ResolvedOptions:
     from apsara_cli.engine.models import DEFAULT_MODEL, resolve_model_id as _resolve_mid
-    from apsara_cli.cli.auth import get_active_default_model
     workspace = resolve_value(args.workspace, config_defaults.workspace, ".")
-    # Precedence: --model flag > config default > active provider's default > Apsara default.
+    # Precedence: --model flag > config default > Apsara's Big Pickle default.
+    # Stored credentials provide keys, not a hidden startup-model override.
     _raw_model = resolve_value(args.model, config_defaults.model, None)
     if _raw_model is None:
-        _raw_model = get_active_default_model() or DEFAULT_MODEL
+        _raw_model = DEFAULT_MODEL
     model = _resolve_mid(str(_raw_model))  # expand short aliases at startup
     session = resolve_value(args.session, config_defaults.session, "default")
     stateless = bool(resolve_value(args.stateless, config_defaults.stateless, False))

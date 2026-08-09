@@ -127,7 +127,7 @@ def run_workspace_checks(options, config, args) -> list:
     else:
         results.append(DoctorCheckResult(
             "provider", "warn",
-            "No provider configured. Run 'apsara login' to choose a provider and add your API key.",
+            "No provider configured. Start `apsara`; the UI will request a key on first use.",
         ))
 
     config_path = getattr(config, "path", None)

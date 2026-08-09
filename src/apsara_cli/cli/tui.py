@@ -60,7 +60,6 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 
 from apsara_cli.cli.chat import (
-    _save_api_key_to_env,
     build_mode_line,
     build_model_rows,
     execute_instruction,
@@ -101,6 +100,11 @@ def _welcome_panel_width(columns: int) -> int:
     columns = max(1, columns)
     margin = min(16, max(4, columns // 5), max(columns - 1, 0))
     return max(1, min(84, columns - margin))
+
+
+def _model_needs_key(model: str) -> bool:
+    entry = lookup_model(model)
+    return bool(entry and entry.tier != "local" and not is_key_available(entry))
 
 
 class TurnController:
@@ -1060,9 +1064,7 @@ async def tui_loop(args: object, config: object) -> int:
     if not _key_ok:
         tip_ansi = ANSI(
             f"{ui.style('●', '38;2;240;170;90')} {ui.style('Tip', '1', '38;2;240;170;90')} "
-            f"{ui.style('Run', '38;2;200;205;215')} "
-            f"{ui.style(f'/key set {_entry.provider}', '1', '38;2;225;230;242')} "
-            f"{ui.style('to add an AI provider and start coding', '38;2;200;205;215')}"
+            f"{ui.style('Ask anything — your provider key will be requested securely on first use', '38;2;200;205;215')}"
         )
     else:
         tip_ansi = ANSI(
@@ -1440,20 +1442,33 @@ async def tui_loop(args: object, config: object) -> int:
             )
             raw_key = await _prompt_for_key(entry.env_var)
             if raw_key:
+                from apsara_cli.engine.models import validate_key_format
+                looks_valid, message = validate_key_format(entry.env_var, raw_key)
+                if not looks_valid:
+                    ui.warning(f"That doesn't match the usual format. {message}")
+                    if not await _prompt_yes_no(
+                        "Use this key anyway?", "y  use", "n  cancel"
+                    ):
+                        raw_key = None
+            if raw_key:
                 os.environ[entry.env_var] = raw_key
                 ui.success(f"{entry.env_var} active for this session.")
-                if await _prompt_yes_no("Save to .env?"):
+                if await _prompt_yes_no("Save securely for future sessions?"):
                     try:
-                        saved = _save_api_key_to_env(options.workspace_root, entry.env_var, raw_key)
-                        ui.success(f"Saved to {saved}")
+                        from apsara_cli.cli.auth import save_provider_key
+                        save_provider_key(
+                            entry.provider,
+                            api_key=raw_key,
+                            default_model=entry.model_id,
+                        )
+                        ui.success("Saved securely to ~/.apsara/credentials.json")
                     except Exception as exc:
-                        ui.error(f"Could not write .env: {exc}")
+                        ui.error(f"Could not save the provider key: {exc}")
                 else:
                     ui.info("Key active for this session only — not saved to disk.")
             else:
                 ui.warning(
-                    f"No key entered — switching anyway. "
-                    f"Add {entry.env_var} to your .env to make it permanent."
+                    f"No key entered. Use /key set {entry.provider} when you're ready."
                 )
 
         if resolved != state["model"]:
@@ -1697,6 +1712,15 @@ async def tui_loop(args: object, config: object) -> int:
                 if not keep:
                     app.exit()
                 return
+
+            # Bare `apsara` should be the complete onboarding path. Prompt for
+            # the default model's key inside the TUI on first use instead of
+            # requiring a separate `apsara login` step.
+            if _model_needs_key(state["model"]):
+                state["model"] = await _switch_model_tui(state["model"])
+                if _model_needs_key(state["model"]):
+                    ui.warning("A provider key is required before this request can run.")
+                    return
 
             # execute_instruction drives begin_turn/finish_turn, which render the
             # '+ Thought:' marker and the '◼ Build · model · 7.0s' footer.

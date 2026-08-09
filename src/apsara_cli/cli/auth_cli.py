@@ -131,7 +131,7 @@ async def login() -> int:
 
     if verdict is False:
         ui.error(f"The provider rejected this API key: {detail}")
-        ui.info("Nothing was saved. Double-check the key and run 'apsara login' again.")
+        ui.info("Nothing was saved. Double-check the key and try again.")
         return 1
 
     save_provider_key(provider, api_key=api_key, default_model=default_model)

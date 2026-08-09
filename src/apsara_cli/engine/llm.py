@@ -142,7 +142,7 @@ async def call_llm(messages: list[dict], model: str = DEFAULT_MODEL) -> tuple[An
     """
     from apsara_cli.cli.auth import credentials_present_for_model
     if not credentials_present_for_model(model):
-        return {"error": f"No API key found for model '{model}'. Run 'apsara login' to add one."}, {}
+        return {"error": f"No API key found for model '{model}'. Start `apsara` and add it when prompted."}, {}
 
     try:
         resolved_model, provider_options = resolve_litellm_request(model)
@@ -172,7 +172,7 @@ async def call_llm_stream(
     """
     from apsara_cli.cli.auth import credentials_present_for_model
     if not credentials_present_for_model(model):
-        yield {"type": "stream_error", "error": f"No API key found for model '{model}'. Run 'apsara login' to add one."}
+        yield {"type": "stream_error", "error": f"No API key found for model '{model}'. Start `apsara` and add it when prompted."}
         return
 
     for attempt in range(len(_RETRY_DELAYS) + 1):

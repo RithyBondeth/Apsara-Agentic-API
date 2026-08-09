@@ -10,6 +10,8 @@ This alpha release introduces the first polished local CLI experience for Apsara
 
 The focus of this release is:
 
+- zero-command startup: `apsara` opens the Big Pickle TUI immediately and
+  requests missing provider credentials securely inside the interface
 - local coding assistant workflows
 - safer code-edit review
 - better terminal presentation
@@ -20,7 +22,8 @@ The focus of this release is:
 ### Default Model
 
 - OpenCode Zen's `opencode/big-pickle` is the default model
-- `apsara login` supports OpenCode Zen and stores its key locally
+- bare `apsara` requests the OpenCode Zen key inline and stores it locally only
+  with approval
 - other LiteLLM-compatible models remain selectable with `--model`
 
 ### Branded CLI Experience

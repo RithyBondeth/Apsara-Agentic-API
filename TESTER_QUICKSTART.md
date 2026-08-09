@@ -14,29 +14,29 @@ pipx install apsara-agentic==0.1.0a1
 For source development instead, follow
 [RUN_PROJECT.md](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/main/RUN_PROJECT.md).
 
-## 2. Choose a Provider & Add Your API Key
+## 2. Start Apsara
 
 Apsara is **bring-your-own-key**: you pick a model provider and use your own API
-key. Apsara never sends your key to any Apsara server — it's stored locally.
+key. Apsara never sends your key to any Apsara server—it is stored locally only
+if you approve saving it.
 
 ```bash
-# Pick a provider and paste your key
-apsara login
+cd /path/to/your/work/project
+apsara
 ```
 
-You'll get a menu of providers (OpenCode Zen, OpenAI, Anthropic, Google, Groq,
-Mistral, DeepSeek, and local Ollama). OpenCode Zen with Big Pickle is the
-default. Choose one, paste that provider's API key when
-prompted (input is hidden), and Apsara verifies it and stores it securely in
-`~/.apsara/credentials.json` (owner-only, `chmod 600`). Ollama is local and
-needs no key.
+The full-screen UI opens immediately with OpenCode Zen's Big Pickle model. Send
+your first request; if the OpenCode key is missing, Apsara requests it inline
+with hidden input. Choose whether to keep it for the session or store it in
+`~/.apsara/credentials.json` (owner-only, `chmod 600`). Use `/models` to choose
+another provider or local Ollama.
 
 Run `apsara logout` at any time to clear all stored keys.
 
 ### Alternative: environment variables
 
-Instead of `apsara login`, you can export the provider's key yourself (or put it
-in a project `.env`). An explicitly-set environment variable always takes
+You can also export the provider's key yourself (or put it in a project
+`.env`). An explicitly-set environment variable always takes
 precedence over a stored key:
 
 ```bash
@@ -53,7 +53,7 @@ confidential repositories.
 
 Run `apsara doctor` to confirm your provider and key are detected.
 
-## 3. Initialize your Project
+## 3. Optional: Initialize your Project
 
 Go to the project you want to work on and initialize Apsara.
 
@@ -67,10 +67,12 @@ This will:
 - Create `.apsara/instructions.md` for **Team Standards** (edit this to tell the agent how you like your code formatted).
 - Update your `.gitignore` to keep Apsara logs and sessions private.
 
+Initialization is optional; bare `apsara` works directly in any project.
+
 ## 4. Start Chatting
 
 ```bash
-apsara chat
+apsara
 ```
 
 ### Useful Slash Commands:
@@ -87,8 +89,8 @@ apsara chat
 - Apsara asks before workspace file mutations by default. Shell commands,
   background processes, project-supplied code, and external mutations always
   require explicit approval, even with `--auto-approve`.
-- Use `apsara chat --dry-run` to see what it *would* do without touching your files.
-- Use `apsara chat --read-only` if you just want it to explain the code.
+- Use `apsara --dry-run` to see what it *would* do without touching your files.
+- Use `apsara --read-only` if you just want it to explain the code.
 
 ---
 **Happy Coding!** If you encounter unusual behavior, run `/bug`, open the newly

@@ -1210,7 +1210,7 @@ class ConsoleUI:
             if action == "trust_workspace_code":
                 self.error(
                     f"{payload.get('display_path', 'This workspace code')} needs approval "
-                    "before it can run, but stdin is not interactive. Run `apsara chat` "
+                    "before it can run, but stdin is not interactive. Run `apsara` "
                     "in this project once to review and approve it."
                 )
             elif allows_blanket:

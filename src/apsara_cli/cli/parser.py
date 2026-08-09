@@ -5,6 +5,35 @@ from typing import Optional, Sequence
 from apsara_cli.config.cli_config import DEFAULT_CONFIG_PATH
 
 
+def _argv_with_default_command(argv: Optional[Sequence[str]]) -> list[str]:
+    """Make the empty command line open the interactive Apsara experience."""
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if not raw:
+        return ["chat"]
+
+    # Keep root-level options ahead of the injected subcommand. Everything
+    # else beginning with '-' is an interactive option such as --model,
+    # --workspace, or --read-only and belongs after the implicit `chat`.
+    prefix: list[str] = []
+    remainder = list(raw)
+    if remainder[0] == "--config":
+        if len(remainder) < 2:
+            return raw
+        prefix = remainder[:2]
+        remainder = remainder[2:]
+    elif remainder[0].startswith("--config="):
+        prefix = remainder[:1]
+        remainder = remainder[1:]
+
+    if not remainder:
+        return [*prefix, "chat"]
+    if remainder[0] in {"-h", "--help", "--version"}:
+        return raw
+    if remainder[0].startswith("-"):
+        return [*prefix, "chat", *remainder]
+    return raw
+
+
 def _benchmark_repeat_count(value: str) -> int:
     try:
         repeat_count = int(value)
@@ -87,7 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("instruction", help="Instruction to send to the agent.")
     _add_shared_options(run_parser)
 
-    chat_parser = subparsers.add_parser("chat", help="Open an interactive local chat session.")
+    chat_parser = subparsers.add_parser(
+        "chat", help="Open the interactive UI explicitly (bare `apsara` does this by default)."
+    )
     _add_shared_options(chat_parser)
     chat_parser.add_argument("--tui", action="store_true", default=False,
                              help="Force the full-screen split-pane TUI (the default in a real terminal).")
@@ -163,7 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the suite's aggregate release pass-rate threshold.",
     )
 
-    subparsers.add_parser("login", help="Choose a model provider and save your API key.")
+    subparsers.add_parser(
+        "login", help="Optional standalone provider setup; the UI can request keys inline."
+    )
     subparsers.add_parser("logout", help="Clear stored provider API keys.")
 
     return parser
@@ -272,7 +305,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     _configure_output_streams()
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_argv_with_default_command(argv))
 
     try:
         config = load_cli_config(args.config, getattr(args, "workspace", None))
