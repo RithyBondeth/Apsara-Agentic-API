@@ -102,6 +102,18 @@ def _welcome_panel_width(columns: int) -> int:
     return max(1, min(84, columns - margin))
 
 
+def _composer_edge(left: str, right: str) -> VSplit:
+    """Build one rounded horizontal edge for the typing box."""
+    return VSplit(
+        [
+            Window(width=1, char=left, style="class:inputborder"),
+            Window(char="─", style="class:inputborder"),
+            Window(width=1, char=right, style="class:inputborder"),
+        ],
+        height=1,
+    )
+
+
 def _model_needs_key(model: str) -> bool:
     entry = lookup_model(model)
     return bool(entry and entry.tier != "local" and not is_key_available(entry))
@@ -941,19 +953,19 @@ async def tui_loop(args: object, config: object) -> int:
 
         def _row(content, height) -> VSplit:
             return VSplit([
+                Window(width=1, char="│", style="class:inputborder"),
                 Window(width=1, char="▌", style="class:accent"),
-                Window(width=_PANEL_GUTTER, char=" "),
+                Window(width=2, char=" "),
                 content,
-                Window(width=_PANEL_GUTTER, char=" "),
+                Window(width=2, char=" "),
                 Window(width=1, char="│", style="class:inputborder"),
             ], height=height)
 
-        padding_row = lambda: _row(Window(char=" "), 1)
         box = HSplit([
-            padding_row(),
+            _composer_edge("╭", "╮"),
             _row(control_window, input_height),
             _row(composer_meta, 1),
-            padding_row(),
+            _composer_edge("╰", "╯"),
         ], width=width, style="class:composer")
         return box, control_window
 
