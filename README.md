@@ -20,6 +20,14 @@ middle.
 pipx install apsara-agentic
 ```
 
+Python code intelligence works out of the box. For parser-accurate symbols and
+syntax diagnostics in JavaScript, TypeScript, Go, Rust, Java, Ruby, PHP, C#,
+C++, and C, install the optional Tree-sitter extra:
+
+```bash
+pipx install 'apsara-agentic[intelligence]'
+```
+
 Or, if you'd rather install through npm (it wraps the same Python package):
 
 ```bash
@@ -73,10 +81,11 @@ inside the workspace root; attempts to escape it fail.
 
 **Reading** — `read_file`, `parallel_read_files`, `read_file_lines`, `glob_search`,
 `search_files`, `repository_map`, `find_symbol`, `list_project_structure`,
-`list_symbols`, `git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
+`list_symbols`, `go_to_definition`, `find_references`, `code_diagnostics`,
+`git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`
 
 **Writing** — `edit_file`, `replace_file_lines`, `write_to_file`,
-`create_directory`, `move_file`, `delete_file`
+`replace_symbol`, `create_directory`, `move_file`, `delete_file`
 
 **Commands** — `run_bash_command` plus cancellable background processes via
 `start_process`, `process_output`, `list_processes`, and `stop_process`; off by
@@ -100,6 +109,12 @@ end failed or blocked; the default preserves work for review.
 and refuses ambiguous or missing matches, so an edit can't silently land in the
 wrong place after earlier changes shift the file. `replace_file_lines` still
 exists for the rare case with no unique text to match on.
+
+`replace_symbol` uses an AST or Tree-sitter source span to replace one complete
+definition and refuses ambiguous or pattern-only matches. Every source edit is
+followed by a fast syntax check. The agent can request a full project diagnostic
+separately; Apsara selects Pyright, `tsc`, `go test`, or `cargo check` from the
+project manifest and installed tools.
 
 Every write shows a diff preview and asks for approval. In the prompt, `Enter`
 approves, `n` rejects, `a` approves the rest of the session, `v` shows the full

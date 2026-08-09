@@ -99,6 +99,22 @@ def run_workspace_checks(options, config, args) -> list:
     except (subprocess.CalledProcessError, FileNotFoundError):
         results.append(DoctorCheckResult("ripgrep", "warn", "ripgrep (rg) not found. search_files tool will fallback to slower 'grep'."))
 
+    from apsara_cli.engine.intelligence import capabilities
+    intelligence = capabilities()
+    if intelligence["tree_sitter"]:
+        detail = "Python AST and optional Tree-sitter parsers are available."
+        status = "pass"
+    else:
+        detail = (
+            "Python AST intelligence is available; other languages use definition-pattern "
+            "fallbacks. Install 'apsara-agentic[intelligence]' for Tree-sitter parsing."
+        )
+        status = "warn"
+    checkers = intelligence["project_checkers"]
+    if checkers:
+        detail += f" Project checkers found: {', '.join(checkers)}."
+    results.append(DoctorCheckResult("code-intelligence", status, detail))
+
     # Check for a configured BYO-key provider
     from apsara_cli.cli.auth import get_active_provider, stored_providers, apply_credentials_to_env
     apply_credentials_to_env()
