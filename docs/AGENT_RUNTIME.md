@@ -58,11 +58,21 @@ error, and metadata contract.
 Before the first workspace mutation, the executor requires a baseline
 `verify_project` attempt. Only a passing full structured verification satisfies
 the completion gate; unrelated successful shell commands do not. Multi-file
-changes receive a separate read-only critic pass after verification. Repeated
+changes request a separate read-only critic review after verification; an
+unavailable or empty review is returned to the agent as an error. Repeated
 identical actions and failed calls
 are detected and redirected before the step budget is exhausted. Set
 `APSARA_FALLBACK_MODELS` to a comma-separated model chain for failures that
 occur before response output begins.
+
+An empty provider response is retried twice with explicit continuation context.
+If all three attempts are empty, the run ends as `failed`; empty output is never
+reported as a completed turn.
+
+Each streaming model request has a 180-second total deadline and is retried once
+when it times out before producing visible output. Auxiliary non-streaming calls
+use the same deadline and return an explicit timeout error. Advanced users may
+set `APSARA_LLM_CALL_TIMEOUT` in the shell; values are clamped to 30–600 seconds.
 
 Cancellation marks the current run `cancelled`. Long-running work should use
 the managed background-process tools so output can be inspected and the process

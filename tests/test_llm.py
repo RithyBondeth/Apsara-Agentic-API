@@ -43,6 +43,44 @@ def test_call_llm_requires_auth():
     assert usage == {}
 
 
+def test_llm_call_timeout_is_bounded(monkeypatch):
+    monkeypatch.delenv("APSARA_LLM_CALL_TIMEOUT", raising=False)
+    assert llm.llm_call_timeout() == llm.DEFAULT_LLM_CALL_TIMEOUT
+    monkeypatch.setenv("APSARA_LLM_CALL_TIMEOUT", "1")
+    assert llm.llm_call_timeout() == 30
+    monkeypatch.setenv("APSARA_LLM_CALL_TIMEOUT", "900")
+    assert llm.llm_call_timeout() == 600
+    monkeypatch.setenv("APSARA_LLM_CALL_TIMEOUT", "invalid")
+    assert llm.llm_call_timeout() == llm.DEFAULT_LLM_CALL_TIMEOUT
+
+
+def test_non_streaming_llm_call_reports_provider_timeout():
+    async def never_returns(**_kwargs):
+        await asyncio.sleep(1)
+
+    with patch("apsara_cli.cli.auth.credentials_present_for_model", return_value=True), \
+         patch.object(litellm, "acompletion", never_returns), \
+         patch.object(llm, "llm_call_timeout", return_value=0.01):
+        message, usage = _run(llm.call_llm([{"role": "user", "content": "hi"}]))
+
+    assert "timed out after 0.01 seconds" in message["error"]
+    assert usage == {}
+
+
+def test_summary_reports_provider_timeout():
+    async def never_returns(**_kwargs):
+        await asyncio.sleep(1)
+
+    with patch.object(litellm, "acompletion", never_returns), \
+         patch.object(llm, "llm_call_timeout", return_value=0.01):
+        summary, usage = _run(llm.summarize_messages_with_usage([
+            {"role": "user", "content": "hi"}
+        ]))
+
+    assert "timed out after 0.01 seconds" in summary
+    assert usage == {}
+
+
 def test_call_llm_routes_default_through_opencode(monkeypatch):
     monkeypatch.setenv("OPENCODE_API_KEY", "zen-test-key")
     request = {}

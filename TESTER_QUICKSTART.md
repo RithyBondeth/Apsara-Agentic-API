@@ -8,7 +8,7 @@ Ensure you have **Python 3.10–3.14**, **pipx**, and **Git** installed.
 
 ```bash
 # Install the exact private-alpha build
-pipx install apsara-agentic==0.1.0a1
+pipx install https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-py3-none-any.whl
 ```
 
 For source development instead, follow

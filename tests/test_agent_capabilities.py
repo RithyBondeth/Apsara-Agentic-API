@@ -211,7 +211,7 @@ def test_lsp_locations_decode_file_uris_once_and_filter_outside_workspace(tmp_pa
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git unavailable")
-def test_real_repository_benchmark_materializes_pinned_commit(tmp_path):
+def test_real_repository_benchmark_materializes_pinned_commit_and_verifier(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q")
@@ -228,6 +228,32 @@ def test_real_repository_benchmark_materializes_pinned_commit(tmp_path):
     evals._materialize_benchmark_case(
         {"repository": {"path": "repo", "ref": commit}}, suite, target
     )
+    evals._prepare_benchmark_agent_workspace(
+        target, [[sys.executable, "-m", "unittest", "-q"]]
+    )
 
     assert (target / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
     assert _git(target, "rev-parse", "HEAD") == commit
+    assert _git(target, "status", "--short") == ""
+    config = (target / ".apsara" / "config.toml").read_text(encoding="utf-8")
+    assert "unittest" in config
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git unavailable")
+def test_synthetic_benchmark_gets_isolated_git_and_verification_config(tmp_path):
+    workspace = tmp_path / "fixture"
+    workspace.mkdir()
+    (workspace / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    evals._prepare_benchmark_agent_workspace(
+        workspace, [[sys.executable, "-m", "unittest", "-q"]]
+    )
+
+    assert _git(workspace, "status", "--short") == ""
+    assert _git(workspace, "log", "-1", "--format=%s") == "benchmark baseline"
+    exclude = (workspace / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert "target/" in exclude
+    assert "__pycache__/" in exclude
+    config = (workspace / ".apsara" / "config.toml").read_text(encoding="utf-8")
+    assert "[verification]" in config
+    assert "unittest" in config

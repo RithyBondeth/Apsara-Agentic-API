@@ -17,7 +17,7 @@ middle.
 ## Install
 
 ```bash
-pipx install apsara-agentic==0.1.0a1
+pipx install https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-py3-none-any.whl
 ```
 
 Python code intelligence works out of the box. For parser-accurate symbols and
@@ -25,7 +25,7 @@ syntax diagnostics in JavaScript, TypeScript, Go, Rust, Java, Ruby, PHP, C#,
 C++, and C, install the optional Tree-sitter extra:
 
 ```bash
-pipx install 'apsara-agentic[intelligence]==0.1.0a1'
+pipx inject apsara-agentic 'tree-sitter-language-pack>=1.0.0'
 ```
 
 ## Quickstart

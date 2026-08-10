@@ -39,6 +39,12 @@ between those checks marks the trial flaky even if its final check passes.
 If the fixture baseline passes, is unavailable, or is flaky, the trial is
 recorded as invalid and skipped before any provider request is made.
 
+Live suites may set `agent_timeout` globally or per case. The timeout covers the
+complete agent turn, including provider waits and tool calls, and defaults to
+300 seconds. A timeout is saved as a failed trial instead of leaving a release
+gate hanging indefinitely. The bundled core release suite uses 600 seconds to
+accommodate the higher latency of the default free model.
+
 Each run produces `results.json`, an aggregate `summary.json`, per-trial run
 journals, turn checkpoints, and raw event streams. Re-score every saved trial
 offline with:

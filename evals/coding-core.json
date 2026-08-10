@@ -3,6 +3,7 @@
   "schema_version": 1,
   "name": "apsara-coding-core",
   "description": "Deterministic repository tasks covering correctness, constrained edits, multi-file reasoning, tool efficiency, and token use.",
+  "agent_timeout": 600,
   "verification_repeats": 2,
   "thresholds": {
     "min_pass_rate": 0.8,
