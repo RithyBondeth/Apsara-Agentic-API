@@ -132,8 +132,14 @@ def test_alpha_distribution_uses_pep440_prerelease_version():
 
     assert version == "0.1.0a1"
     assert f"Version: `{version}`" in (ROOT / "RELEASE_NOTES_ALPHA.md").read_text(encoding="utf-8")
-    assert f"apsara-agentic=={version}" in (ROOT / "README.md").read_text(encoding="utf-8")
-    assert f"apsara-agentic=={version}" in (ROOT / "TESTER_QUICKSTART.md").read_text(encoding="utf-8")
+    assert (
+        f"apsara_agentic-{version}-py3-none-any.whl"
+        in (ROOT / "README.md").read_text(encoding="utf-8")
+    )
+    assert (
+        f"apsara_agentic-{version}-py3-none-any.whl"
+        in (ROOT / "TESTER_QUICKSTART.md").read_text(encoding="utf-8")
+    )
 
 
 def test_public_install_docs_do_not_reference_removed_entrypoints():

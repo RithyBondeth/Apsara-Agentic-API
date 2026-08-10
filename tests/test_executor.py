@@ -68,6 +68,73 @@ def test_direct_final_answer():
     assert final["content"] == "The answer is 42."
 
 
+def test_empty_provider_responses_are_retried_before_completion():
+    empty = _final_event("")
+    fake, state = _scripted_llm([[empty], [empty], [_final_event("Recovered.")]])
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "finish the task"}])
+
+    retries = [
+        event for event in events
+        if event["type"] == "status" and "empty response" in event.get("message", "")
+    ]
+    assert len(retries) == 2
+    assert events[-1] == {"type": "final_answer", "content": "Recovered."}
+    assert state["calls"] == 3
+
+
+def test_repeated_empty_provider_responses_fail_instead_of_completing():
+    fake, state = _scripted_llm([[_final_event("")]])
+    with patch.object(executor, "call_llm_stream", fake):
+        events = _run([{"role": "user", "content": "finish the task"}])
+
+    assert events[-1]["type"] == "error"
+    assert "empty response repeatedly" in events[-1]["message"]
+    assert not any(event["type"] == "final_answer" for event in events)
+    assert state["calls"] == executor.MAX_EMPTY_RESPONSE_RETRIES + 1
+
+
+def test_provider_request_timeout_is_retried_once_before_completion():
+    calls = {"count": 0}
+
+    async def slow_then_recover(_messages, _model):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            await asyncio.sleep(1)
+        yield _final_event("Recovered after timeout.")
+
+    with patch.object(executor, "call_llm_stream", slow_then_recover), \
+         patch.object(executor, "llm_call_timeout", return_value=0.01):
+        events = _run([{"role": "user", "content": "finish the task"}])
+
+    assert any(
+        event["type"] == "status" and "retrying once" in event.get("message", "")
+        for event in events
+    )
+    assert events[-1] == {
+        "type": "final_answer",
+        "content": "Recovered after timeout.",
+    }
+    assert calls["count"] == 2
+
+
+def test_repeated_provider_request_timeout_fails_the_turn():
+    calls = {"count": 0}
+
+    async def always_slow(_messages, _model):
+        calls["count"] += 1
+        await asyncio.sleep(1)
+        yield _final_event("too late")
+
+    with patch.object(executor, "call_llm_stream", always_slow), \
+         patch.object(executor, "llm_call_timeout", return_value=0.01):
+        events = _run([{"role": "user", "content": "finish the task"}])
+
+    assert events[-1]["type"] == "error"
+    assert "timed out" in events[-1]["message"]
+    assert calls["count"] == executor.MAX_PROVIDER_TIMEOUT_RETRIES + 1
+
+
 def test_streamed_text_emits_response_end_not_final_answer():
     script = [
         {"type": "text_chunk", "content": "Think"},

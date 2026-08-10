@@ -18,8 +18,21 @@ litellm.return_response_headers = True
 # Max tokens per completion. Kept generous enough to avoid truncating
 # multi-step tool calls and longer code responses; override per-call if needed.
 DEFAULT_MAX_COMPLETION_TOKENS = 4096
+DEFAULT_LLM_CALL_TIMEOUT = 180.0
 
 _RETRY_DELAYS = [5, 15, 30]
+
+
+def llm_call_timeout() -> float:
+    """Bound one provider request without letting project files raise the limit."""
+    raw = _os.environ.get("APSARA_LLM_CALL_TIMEOUT")
+    if not raw:
+        return DEFAULT_LLM_CALL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_LLM_CALL_TIMEOUT
+    return max(30.0, min(value, 600.0))
 
 
 def _rate_limits_from_response(value: Any) -> dict[str, str]:
@@ -98,11 +111,14 @@ async def summarize_messages_with_usage(
 
     try:
         resolved_model, provider_options = resolve_litellm_request(model)
-        response = await litellm.acompletion(
-            model=resolved_model,
-            messages=summary_messages,
-            max_tokens=300,
-            **provider_options,
+        response = await asyncio.wait_for(
+            litellm.acompletion(
+                model=resolved_model,
+                messages=summary_messages,
+                max_tokens=300,
+                **provider_options,
+            ),
+            timeout=llm_call_timeout(),
         )
         usage = response.usage.model_dump() if response.usage else {}
         if usage:
@@ -120,6 +136,12 @@ async def summarize_messages_with_usage(
                 "auxiliary_calls": 1,
             }
         return response.choices[0].message.content.strip(), usage
+    except asyncio.TimeoutError:
+        return (
+            f"[Summary failed: Provider response timed out after "
+            f"{llm_call_timeout():g} seconds.]",
+            {},
+        )
     except Exception as e:
         return f"[Summary failed: {e}]", {}
 
@@ -151,14 +173,21 @@ async def call_llm(
         request_options: dict[str, Any] = {}
         if with_tools:
             request_options.update(tools=get_agent_tools(), tool_choice="auto")
-        response = await litellm.acompletion(
-            model=resolved_model,
-            messages=messages,
-            max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
-            **request_options,
-            **provider_options,
+        response = await asyncio.wait_for(
+            litellm.acompletion(
+                model=resolved_model,
+                messages=messages,
+                max_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+                **request_options,
+                **provider_options,
+            ),
+            timeout=llm_call_timeout(),
         )
         return response.choices[0].message, response.usage.model_dump() if response.usage else {}
+    except asyncio.TimeoutError:
+        return {
+            "error": f"Provider response timed out after {llm_call_timeout():g} seconds."
+        }, {}
     except Exception as e:
         return {"error": str(e)}, {}
 

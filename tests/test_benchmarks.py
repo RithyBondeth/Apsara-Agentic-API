@@ -65,6 +65,21 @@ def test_benchmark_cannot_pass_when_fixture_baseline_was_already_green():
     assert "baseline did not fail consistently" in " ".join(result.checks)
 
 
+def test_benchmark_cannot_pass_without_completed_agent_state():
+    result = score_benchmark_case(_case(), {
+        "agent_state": "failed",
+        "baseline_failed": True,
+        "verification": [{"status": "passed"}],
+        "changed_files": ["src/calc.py"],
+        "tool_calls": 2,
+        "usage": {"total_tokens": 100},
+    })
+
+    assert result.score == 85
+    assert result.passed is False
+    assert "agent state: failed" in result.checks
+
+
 def test_benchmark_rejects_flaky_verification_even_when_last_run_passes():
     result = score_benchmark_case(_case(), {
         "agent_state": "completed",
@@ -235,6 +250,30 @@ def test_live_benchmark_rejects_zero_verification_repeats(tmp_path):
         asyncio.run(run_benchmark_suite(suite, tmp_path / "output", "test/model"))
 
 
+@pytest.mark.parametrize("agent_timeout", [0, -1, 3601])
+def test_live_benchmark_rejects_invalid_agent_timeout(tmp_path, agent_timeout):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("broken = True\n", encoding="utf-8")
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({
+        "kind": "coding-benchmark",
+        "name": "invalid-agent-timeout",
+        "agent_timeout": agent_timeout,
+        "cases": [{
+            "name": "python-fix",
+            "language": "python",
+            "fixture": "fixture",
+            "instruction": "fix app.py",
+            "verify": [["python", "-m", "unittest", "-q"]],
+            "allowed_changes": ["app.py"],
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="agent_timeout"):
+        asyncio.run(run_benchmark_suite(suite, tmp_path / "output", "test/model"))
+
+
 def test_live_benchmark_repeats_trials_and_detects_flaky_verification(
     tmp_path, monkeypatch
 ):
@@ -354,6 +393,54 @@ def test_live_benchmark_skips_provider_when_baseline_is_invalid(
     assert evidence["cases"][0]["agent_state"] == "skipped_invalid_baseline"
     assert evidence["cases"][0]["baseline_verification_flaky"] is True
     assert evidence["cases"][0]["usage"]["total_tokens"] == 0
+
+
+def test_live_benchmark_records_agent_timeout_as_failed_trial(tmp_path, monkeypatch):
+    from apsara_cli.engine import evals, executor
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("broken = True\n", encoding="utf-8")
+    suite = tmp_path / "suite.json"
+    suite.write_text(json.dumps({
+        "kind": "coding-benchmark",
+        "name": "timeout-smoke",
+        "agent_timeout": 0.01,
+        "cases": [{
+            "name": "python-fix",
+            "language": "python",
+            "fixture": "fixture",
+            "instruction": "fix app.py",
+            "verify": [["python", "-m", "unittest", "-q"]],
+            "allowed_changes": ["app.py"],
+        }],
+    }), encoding="utf-8")
+
+    async def fake_verify(_commands, _workspace, _timeout):
+        return [{"command": ["python"], "status": "failed", "returncode": 1}]
+
+    async def slow_agent(_history, model):
+        del model
+        await asyncio.sleep(1)
+        yield json.dumps({"type": "run_state", "state": "completed"})
+
+    monkeypatch.setattr(evals, "_run_verification_commands", fake_verify)
+    monkeypatch.setattr(executor, "run_agent_stream", slow_agent)
+
+    results, results_path = asyncio.run(run_benchmark_suite(
+        suite, tmp_path / "output", "test/model"
+    ))
+    evidence = json.loads(results_path.read_text(encoding="utf-8"))
+    events = json.loads(
+        (results_path.parent / "python-fix" / "trial-1" / ".apsara" / "benchmark-events.json")
+        .read_text(encoding="utf-8")
+    )
+
+    assert results[0].passed is False
+    assert evidence["cases"][0]["agent_state"] == "failed"
+    assert evidence["cases"][0]["agent_timeout_seconds"] == 0.01
+    assert events[-1]["type"] == "error"
+    assert "timed out" in events[-1]["message"]
 
 
 def test_eval_cli_accepts_live_and_offline_benchmark_modes():

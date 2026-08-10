@@ -157,7 +157,8 @@ def score_benchmark_case(case: dict[str, Any], details: dict[str, Any]) -> Bench
     checks.append(f"tokens: {usage['total_tokens']}/{max_tokens}")
 
     passed = (
-        baseline_valid
+        state_ok
+        and baseline_valid
         and verification_ok
         and not flaky
         and change_ok
@@ -428,6 +429,69 @@ def _materialize_benchmark_case(
     _validate_benchmark_tree(workspace)
 
 
+def _prepare_benchmark_agent_workspace(
+    workspace: Path, commands: list[list[str]]
+) -> None:
+    """Give benchmark workspaces an isolated Git baseline and exact verifier."""
+    initialized_fixture = not (workspace / ".git").exists()
+    if initialized_fixture:
+        initialized = subprocess.run(
+            ["git", "init", "-q"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if initialized.returncode != 0:
+            raise RuntimeError(
+                initialized.stderr.strip() or "benchmark Git initialization failed"
+            )
+
+    exclude = workspace / ".git" / "info" / "exclude"
+    existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+    ignored = [".apsara/", "target/", "node_modules/", "__pycache__/", "*.pyc"]
+    existing_lines = set(existing.splitlines())
+    missing = [pattern for pattern in ignored if pattern not in existing_lines]
+    if missing:
+        exclude.write_text(
+            existing.rstrip() + "\n" + "\n".join(missing) + "\n",
+            encoding="utf-8",
+        )
+
+    config = workspace / ".apsara" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    encoded_commands = json.dumps(commands, ensure_ascii=False)
+    config.write_text(
+        f"[verification]\ncommands = {encoded_commands}\n"
+        f"targeted_commands = {encoded_commands}\n",
+        encoding="utf-8",
+    )
+
+    if not initialized_fixture:
+        return
+
+    for command in (
+        ["git", "add", "-A"],
+        [
+            "git", "-c", "user.name=Apsara Benchmark",
+            "-c", "user.email=benchmark@local.invalid",
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-qm", "benchmark baseline",
+        ],
+    ):
+        completed = subprocess.run(
+            command,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or "benchmark Git baseline failed")
+
+
 async def _run_verification_commands(
     commands: list[list[str]], workspace: Path, timeout: int
 ) -> list[dict[str, Any]]:
@@ -509,6 +573,14 @@ async def run_benchmark_suite(
         verification_repeats = int(configured_repeats)
         if not 1 <= verification_repeats <= 5:
             raise ValueError("verification_repeats must be between 1 and 5")
+        configured_agent_timeout = case.get("agent_timeout")
+        if configured_agent_timeout is None:
+            configured_agent_timeout = suite.get("agent_timeout", 300)
+        if configured_agent_timeout is None:
+            configured_agent_timeout = 300
+        agent_timeout = float(configured_agent_timeout)
+        if not 0 < agent_timeout <= 3600:
+            raise ValueError("agent_timeout must be greater than zero and at most 3600 seconds")
 
         for trial in range(1, repeats + 1):
             workspace = run_root / name / f"trial-{trial}"
@@ -556,9 +628,26 @@ async def run_benchmark_suite(
                 events_path.write_text("[]", encoding="utf-8")
                 continue
 
+            _prepare_benchmark_agent_workspace(workspace, commands)
+
             allowed_commands = {command[0] for command in commands if command}
+            allowed_commands.update(
+                command[2]
+                for command in commands
+                if len(command) >= 3 and command[1] == "-m"
+            )
             events: list[dict[str, Any]] = []
             aggregate_usage: dict[str, Any] = {}
+
+            async def collect_agent_events() -> None:
+                async for raw_event in run_agent_stream(
+                    [{"role": "user", "content": str(case["instruction"])}],
+                    model=model,
+                ):
+                    event = json.loads(raw_event)
+                    events.append(event)
+                    if event.get("type") == "usage" and isinstance(event.get("data"), dict):
+                        add_usage(aggregate_usage, event["data"])
 
             with agent_runtime_context(
                 workspace_root=workspace,
@@ -568,14 +657,13 @@ async def run_benchmark_suite(
                 trust_callback=lambda _action, _payload: True,
                 model=model,
             ):
-                async for raw_event in run_agent_stream(
-                    [{"role": "user", "content": str(case["instruction"])}],
-                    model=model,
-                ):
-                    event = json.loads(raw_event)
-                    events.append(event)
-                    if event.get("type") == "usage" and isinstance(event.get("data"), dict):
-                        add_usage(aggregate_usage, event["data"])
+                try:
+                    await asyncio.wait_for(collect_agent_events(), timeout=agent_timeout)
+                except asyncio.TimeoutError:
+                    events.append({
+                        "type": "error",
+                        "message": f"Agent trial timed out after {agent_timeout:g} seconds.",
+                    })
 
             verification_runs = await _run_verification_repeated(
                 commands, workspace, verify_timeout, verification_repeats
@@ -612,6 +700,7 @@ async def run_benchmark_suite(
                 "final_verification_flaky": final_flaky,
                 "verification_flaky": baseline_flaky or final_flaky,
                 "event_count": len(events),
+                "agent_timeout_seconds": agent_timeout,
             }
             evidence_cases.append(details)
             scored.append(score_benchmark_case(case, details))

@@ -2,7 +2,7 @@ import json
 import os
 import asyncio
 from typing import List, Dict, Any, AsyncGenerator
-from apsara_cli.engine.llm import call_llm_stream, estimate_request_tokens
+from apsara_cli.engine.llm import call_llm_stream, estimate_request_tokens, llm_call_timeout
 from apsara_cli.engine.models import DEFAULT_MODEL, lookup_model, model_availability
 from apsara_cli.engine.runtime import RunJournal
 from apsara_cli.engine.tools import (
@@ -19,6 +19,28 @@ DEFAULT_MAX_STEPS = 25
 # same command returning a different result is progress. The same command
 # returning the identical output this many times is a stuck agent.
 MAX_IDENTICAL_INVOCATIONS = 3
+MAX_EMPTY_RESPONSE_RETRIES = 2
+MAX_PROVIDER_TIMEOUT_RETRIES = 1
+
+
+async def _stream_with_deadline(messages: list[dict], model: str) -> AsyncGenerator[dict, None]:
+    """Stream one model response while enforcing a total per-request deadline."""
+    stream = call_llm_stream(messages, model)
+    loop = asyncio.get_running_loop()
+    timeout = llm_call_timeout()
+    deadline = loop.time() + timeout
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            try:
+                event = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                return
+            yield event
+    finally:
+        await stream.aclose()
 
 
 def _max_steps() -> int:
@@ -163,6 +185,7 @@ async def run_agent_stream(
     max_steps = _max_steps()
     consecutive_errors = 0
     consecutive_repeats = 0
+    consecutive_empty_responses = 0
     last_tool_invocation = None
     # Counts (tool, args, result) across the whole turn, not just consecutive
     # calls: an agent alternating A,B,A,B is as stuck as one repeating A,A,A.
@@ -216,12 +239,14 @@ async def run_agent_stream(
         tool_calls = None
         usage: dict = {}
         streamed_text = False
+        provider_timeout_retries = 0
 
         while True:
             stream_error = None
+            stream_timed_out = False
             active_model = model_candidates[active_model_index]
             try:
-                async for event in call_llm_stream(messages, active_model):
+                async for event in _stream_with_deadline(messages, active_model):
                     etype = event["type"]
 
                     if etype == "text_chunk":
@@ -246,9 +271,25 @@ async def run_agent_stream(
             except asyncio.CancelledError:
                 journal.transition(AgentRunState.CANCELLED, "Cancelled by user")
                 raise
+            except asyncio.TimeoutError:
+                stream_timed_out = True
+                stream_error = (
+                    f"Provider response timed out after {llm_call_timeout():g} seconds."
+                )
 
             if stream_error is None:
                 break
+            if (
+                stream_timed_out
+                and not streamed_text
+                and provider_timeout_retries < MAX_PROVIDER_TIMEOUT_RETRIES
+            ):
+                provider_timeout_retries += 1
+                yield json.dumps({
+                    "type": "status",
+                    "message": "Provider response timed out — retrying once.",
+                })
+                continue
             if not streamed_text and active_model_index + 1 < len(model_candidates):
                 previous = active_model
                 active_model_index += 1
@@ -273,6 +314,37 @@ async def run_agent_stream(
             }
         usage["apsara_model"] = active_model
         yield json.dumps({"type": "usage", "data": usage})
+
+        if not tool_calls and not full_content.strip():
+            consecutive_empty_responses += 1
+            if streamed_text:
+                yield json.dumps({"type": "response_end", "content": full_content})
+            if consecutive_empty_responses <= MAX_EMPTY_RESPONSE_RETRIES:
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "The provider returned an empty response. Continue the task from the "
+                        "current state. Use tools when work remains, or return a concrete final "
+                        "answer when the task is complete."
+                    ),
+                })
+                yield json.dumps({
+                    "type": "status",
+                    "message": (
+                        "Provider returned an empty response — retrying "
+                        f"({consecutive_empty_responses}/{MAX_EMPTY_RESPONSE_RETRIES})."
+                    ),
+                })
+                continue
+            message = (
+                "The provider returned an empty response repeatedly, so the turn was stopped "
+                "instead of being marked complete. Try again or select another model."
+            )
+            journal.transition(AgentRunState.FAILED, message)
+            yield json.dumps({"type": "error", "message": message})
+            return
+
+        consecutive_empty_responses = 0
 
         assistant_dict: Dict[str, Any] = {"role": "assistant", "content": full_content}
 

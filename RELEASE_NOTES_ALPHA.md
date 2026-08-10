@@ -1,116 +1,153 @@
-# Apsara by Bondeth Alpha Release Notes
+# Apsara Agentic 0.1.0a1 — Private Alpha
 
 Version: `0.1.0a1`
 
-Date: `2026-08-08`
+- Release date: 2026-08-10
+- Python package: `apsara-agentic==0.1.0a1`
+- Release tag: `v0.1.0a1`
 
 ## Overview
 
-This alpha release introduces the first polished local CLI experience for Apsara by Bondeth.
+This is the first private-alpha release of Apsara Agentic, a local,
+workspace-scoped coding assistant. Running `apsara` opens the full-screen
+terminal interface immediately with Big Pickle selected by default; no Apsara
+account or separate Apsara chat service is required.
 
-The focus of this release is:
-
-- zero-command startup: `apsara` opens the Big Pickle TUI immediately and
-  requests missing provider credentials securely inside the interface
-- local coding assistant workflows
-- safer code-edit review
-- better terminal presentation
-- faster tester onboarding
+The release is intended for trusted developer friends, technical early
+adopters, and small internal testing groups. It is not a production-stable
+release.
 
 ## Highlights
 
-### Default Model
+### Consistent boxed terminal interface
 
-- OpenCode Zen's `opencode/big-pickle` is the default model
-- bare `apsara` requests the OpenCode Zen key inline and stores it locally only
-  with approval
-- other LiteLLM-compatible models remain selectable with `--model`
+- full-screen transcript, right-side detail panel, and rounded input composer
+- matching boxed user and assistant responses
+- internal tool activity hidden by default and available with `Ctrl+B` or
+  `/details`
+- clean response presentation without redundant completion or build lines
+- compact author timestamps and responsive terminal sizing
+- each bare `apsara` launch starts a fresh conversation; saved sessions resume
+  only when explicitly requested
 
-### Branded CLI Experience
+### Strong coding-agent runtime
 
-- custom Apsara welcome screen
-- colorful terminal styling
-- branded identity with `Apsara by Bondeth`
-- loading animation while the agent is working
+- structured baseline, targeted, and full project verification
+- stale verification is invalidated after every subsequent workspace mutation
+- independent tool-free critic review request for multi-file changes
+- trusted lifecycle hooks at session, tool, verification, and completion
+  boundaries
+- disposable Git-worktree verification with external-symlink protection
+- optional LSP-backed definitions and references for Python, TypeScript,
+  JavaScript, Go, Rust, C, and C++
+- pinned real-repository benchmark support alongside bundled offline fixtures
+- bounded live benchmark trials with repeatable `results.json` and
+  `summary.json` evidence
+- bounded retries for empty provider responses, which otherwise fail the turn
+  instead of appearing as successful completion
+- per-request provider deadlines with one safe retry, preventing a stalled
+  model call from consuming an entire turn
 
-### Better Chat Experience
+### Safer local execution
 
-- cleaner assistant response formatting
-- hidden internal tool chatter by default
-- `/details` to inspect hidden activity on demand
-- local session history with trimming for oversized requests
-- typed run state, durable redacted journals, run reports, and evaluation suites
-- repeated coding evaluations with flaky-verification detection, aggregate
-  variance reports, and configurable release thresholds
-- planning and verification gates for multi-step coding tasks
-- privacy-safe `/bug` bundles that omit content by default and always redact
-  recognizable credentials
+- workspace path boundaries for built-in file tools
+- recoverable edit and turn checkpoints with undo support
+- digest-based approval for plugins, MCP servers, verification commands, and
+  lifecycle hooks
+- command allowlists, nested-interpreter validation, and redirection checks
+- `--read-only`, `--dry-run`, scoped `--auto-approve`, and process-group cleanup
+- privacy-safe bug bundles that omit content by default and redact recognizable
+  credentials
 
-### Safer Code Editing
+### Code intelligence and workflow
 
-- approval prompts before file writes and command execution
-- `--auto-approve` is limited to workspace file mutations; commands,
-  background processes, project code, and external mutations still ask
-- diff preview before code changes are applied
-- `v` to inspect a fuller diff in the terminal
-- `e` to open the proposed patch in `$EDITOR` or `$VISUAL`
-- workspace-scoped parallel reads with context isolation
-- checkpoints and undo support for agent edits
-- process-group cleanup for background commands
-- nested interpreter validation so `python -m pip` cannot bypass the command allowlist
-- MCP approvals are invalidated when execution environment values or HTTP
-  headers change
+- repository maps, symbol search, definitions, references, and diagnostics
+- Python AST support by default and optional Tree-sitter language support
+- Git status, diff, log, show, blame, and checkpoint tools
+- project memory, session history, context trimming, and usage reporting
+- optional MCP servers and locally approved tool plugins
+- model picker and BYO-provider-key setup inside the terminal
 
-### Local CLI Workflow
+### Packaging and compatibility
 
-- tested on Python 3.10 through 3.14
-- `init` command for project-first setup
-- `doctor` command for environment checks
-- `chat`, `run`, and `sessions` commands
-- automatic `.env` loading for local use
-- workspace-scoped tools and optional allowlisted bash execution
-- repository maps, symbol search, project memory, git tools, and MCP governance
-- background process management and bounded output capture
-- model fallback support and JSON plugin manifests
+- Python 3.10 through 3.14
+- tested wheel installation and pipx lifecycle
+- Linux and macOS test matrices plus Windows smoke coverage
+- offline doctor diagnostics and optional semantic-intelligence extra
 
-### Tester Support
+## Installation
 
-- step-by-step run guide
-- alpha testing guide
-- tester quickstart
+```bash
+pipx install https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-py3-none-any.whl
+apsara
+```
 
-## Recommended Test Areas
+For optional Tree-sitter parsers:
 
-Please focus alpha feedback on:
+```bash
+pipx inject apsara-agentic 'tree-sitter-language-pack>=1.0.0'
+```
 
-- first-run setup
-- CLI readability and overall UX
-- response organization
-- code-edit approval flow
-- editor-based patch review
-- failure handling for missing keys, billing limits, and rate limits
+This private alpha is distributed as the wheel attached to its GitHub
+prerelease. PyPI publication can follow separately without changing the tested
+release artifact.
 
-## Known Alpha Limitations
+## Release validation
 
-- live model usage still depends on the tester's own API key, billing, and rate limits
-- OpenCode currently warns against sending confidential code to Big Pickle
-- this remains an alpha release; users should review proposed changes and keep Git backups
+- full offline test suite across supported Python versions
+- wheel and source-distribution metadata validation
+- clean virtual-environment installation and dependency audit
+- pipx install, upgrade, execution, and uninstall lifecycle on Linux, macOS,
+  and Windows
+- three live trials per bundled coding benchmark case with Big Pickle
 
-## Suggested Launch Positioning
+The retained live benchmark evidence passed 15/15 trials (100%): zero flaky
+trials, zero unstable cases, and zero unsafe edits. One layered trial exceeded
+its soft token budget while still scoring 90/100 and passing every correctness
+and safety gate.
 
-Recommended label:
+- [Full benchmark results](https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-benchmark-results.json)
+- [Benchmark summary](https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-benchmark-summary.json)
 
-`Apsara by Bondeth - Private Alpha`
+## Known alpha limitations
 
-Recommended audience:
+- live model quality and latency depend on OpenCode Zen availability, the
+  tester's API key, billing, and rate limits
+- OpenCode warns against sending confidential code to Big Pickle
+- isolated verification protects ordinary workspace state but is not an
+  operating-system security sandbox
+- LSP tools require the corresponding language server to be installed
+- bundled benchmarks are intentionally small; larger pinned-repository cases
+  still need to be curated
+- users should review proposed changes and keep Git backups
 
-- trusted developer friends
-- technical early adopters
-- small internal testing group
+## Rollback
 
-## Related Docs
+Remove the alpha package with:
 
-- Tester quickstart: [TESTER_QUICKSTART.md](TESTER_QUICKSTART.md)
-- Alpha testing guide: [ALPHA_TESTING.md](ALPHA_TESTING.md)
-- Run guide: [RUN_PROJECT.md](RUN_PROJECT.md)
-- Main README: [README.md](README.md)
+```bash
+pipx uninstall apsara-agentic
+```
+
+If upgrading from another build, reinstall the exact alpha version:
+
+```bash
+pipx install --force https://github.com/RithyBondeth/Apsara-Agentic-Cli/releases/download/v0.1.0a1/apsara_agentic-0.1.0a1-py3-none-any.whl
+```
+
+## Feedback areas
+
+- first-run key setup and startup clarity
+- boxed UI consistency and terminal resizing
+- response cleanliness and detail-panel usefulness
+- edit approval, verification, critic, and undo flows
+- provider latency, retry behavior, and actionable errors
+- benchmark tasks that pass tests but reduce maintainability
+
+## Related documentation
+
+- [Tester quickstart](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/v0.1.0a1/TESTER_QUICKSTART.md)
+- [Alpha testing guide](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/v0.1.0a1/ALPHA_TESTING.md)
+- [Run guide](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/v0.1.0a1/RUN_PROJECT.md)
+- [Agent runtime](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/v0.1.0a1/docs/AGENT_RUNTIME.md)
+- [Evaluation strategy](https://github.com/RithyBondeth/Apsara-Agentic-Cli/blob/v0.1.0a1/docs/EVALUATION_STRATEGY.md)
